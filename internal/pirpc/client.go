@@ -1,0 +1,448 @@
+package pirpc
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+)
+
+// Client spawns `pi --mode rpc` and speaks JSONL with it.
+// Responses (type=response) are matched to sends by id; everything else
+// is forwarded to OnEvent. OnEvent runs on the reader goroutine — the
+// caller must bounce it to the UI thread (e.g. tea.Program.Send).
+type Client struct {
+	cmd     *exec.Cmd
+	stdin   *os.File
+	mu      sync.Mutex
+	pending map[string]chan Response
+	seq     int
+	OnEvent func(Event)
+	done    chan struct{}
+	once    sync.Once
+}
+
+// Options controls how pi is spawned.
+type Options struct {
+	Bin       string // default "pi" (or $PI_BIN)
+	Provider  string // --provider
+	Model     string // --model
+	Continue  bool   // -c (resume most recent session)
+	NoSession bool   // --no-session
+	Session   string // --session <path|id> (resume exact session)
+}
+
+// Spawn starts pi --mode rpc.
+func Spawn(opt Options) (*Client, error) {
+	bin := opt.Bin
+	if bin == "" {
+		bin = os.Getenv("PI_BIN")
+	}
+	if bin == "" {
+		bin = "pi"
+	}
+	args := []string{"--mode", "rpc"}
+	if opt.Continue {
+		args = append(args, "-c")
+	}
+	if opt.NoSession {
+		args = append(args, "--no-session")
+	}
+	if opt.Session != "" {
+		args = append(args, "--session", opt.Session)
+	}
+	if opt.Provider != "" {
+		args = append(args, "--provider", opt.Provider)
+	}
+	if opt.Model != "" {
+		args = append(args, "--model", opt.Model)
+	}
+	cmd := exec.Command(bin, args...)
+
+	stdinR, stdinW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	stdoutR, stdoutW, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	cmd.Stdin = stdinR
+	cmd.Stdout = stdoutW
+	logF, _ := os.Create("/tmp/gotui-pi-stderr.log")
+	if logF != nil {
+		cmd.Stderr = logF
+	}
+
+	if err := cmd.Start(); err != nil {
+		stdinR.Close()
+		stdinW.Close()
+		stdoutR.Close()
+		stdoutW.Close()
+		return nil, fmt.Errorf("start pi: %w", err)
+	}
+	stdinR.Close() // child owns read end (via dup); close parent copy
+	stdoutW.Close()
+
+	c := &Client{
+		cmd:     cmd,
+		stdin:   stdinW,
+		pending: make(map[string]chan Response),
+		done:    make(chan struct{}),
+	}
+	go c.readLoop(stdoutR)
+	go func() {
+		cmd.Wait()
+		if logF != nil {
+			logF.Close()
+		}
+		c.once.Do(func() { close(c.done) })
+		if c.OnEvent != nil {
+			c.OnEvent(Event{Type: "pi_exited"})
+		}
+	}()
+	return c, nil
+}
+
+// readLoop splits stdout on '\n' only (protocol requirement) and routes lines.
+func (c *Client) readLoop(r *os.File) {
+	defer r.Close()
+	br := bufio.NewReaderSize(r, 1<<20)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return
+		}
+		line = strings.TrimSuffix(line, "\n")
+		line = strings.TrimSuffix(line, "\r")
+		if strings.TrimSpace(line) == "" {
+			continue
+		}
+		var env struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(line), &env); err != nil {
+			continue
+		}
+		if env.Type == "response" {
+			var resp Response
+			if err := json.Unmarshal([]byte(line), &resp); err != nil {
+				continue
+			}
+			c.mu.Lock()
+			ch := c.pending[resp.ID]
+			delete(c.pending, resp.ID)
+			c.mu.Unlock()
+			if ch != nil {
+				ch <- resp
+			}
+			continue
+		}
+		if c.OnEvent != nil {
+			c.OnEvent(Event{Type: env.Type, Raw: json.RawMessage(line)})
+		}
+	}
+}
+
+// Done closes when the pi process exits.
+func (c *Client) Done() <-chan struct{} { return c.done }
+
+// nextID mints a request id.
+func (c *Client) nextID() string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.seq++
+	return fmt.Sprintf("go-%d", c.seq)
+}
+
+// Send writes one command and waits for its response.
+func (c *Client) Send(cmd Command, timeout time.Duration) (Response, error) {
+	if cmd.ID == "" {
+		cmd.ID = c.nextID()
+	}
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		return Response{}, err
+	}
+	ch := make(chan Response, 1)
+	c.mu.Lock()
+	c.pending[cmd.ID] = ch
+	c.mu.Unlock()
+	c.mu.Lock()
+	_, werr := c.stdin.Write(append(raw, '\n'))
+	c.mu.Unlock()
+	if werr != nil {
+		c.mu.Lock()
+		delete(c.pending, cmd.ID)
+		c.mu.Unlock()
+		return Response{}, werr
+	}
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	select {
+	case resp := <-ch:
+		if !resp.Success {
+			return resp, fmt.Errorf("pi: %s failed: %s", resp.Command, resp.Error)
+		}
+		return resp, nil
+	case <-time.After(timeout):
+		c.mu.Lock()
+		delete(c.pending, cmd.ID)
+		c.mu.Unlock()
+		return Response{}, fmt.Errorf("pi: %s timed out", cmd.Type)
+	case <-c.done:
+		return Response{}, fmt.Errorf("pi process exited")
+	}
+}
+
+// Fire writes a command that expects no response (extension_ui_response).
+func (c *Client) Fire(cmd Command) error {
+	raw, err := json.Marshal(cmd)
+	if err != nil {
+		return err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err = c.stdin.Write(append(raw, '\n'))
+	return err
+}
+
+// Close kills the pi process.
+func (c *Client) Close() {
+	if c.cmd.Process != nil {
+		_ = c.cmd.Process.Kill()
+	}
+}
+
+// Convenience wrappers -------------------------------------------------
+
+func (c *Client) Prompt(msg string) (Response, error) {
+	return c.Send(Command{Type: "prompt", Message: msg}, 60*time.Second)
+}
+
+func (c *Client) Steer(msg string) (Response, error) {
+	return c.Send(Command{Type: "prompt", Message: msg, StreamingBehavior: "steer"}, 60*time.Second)
+}
+
+func (c *Client) Abort() (Response, error) {
+	return c.Send(Command{Type: "abort"}, 15*time.Second)
+}
+
+func (c *Client) ClearQueue() (clearedSteer, clearedFollow []string, err error) {
+	resp, err := c.Send(Command{Type: "clear_queue"}, 15*time.Second)
+	if err != nil {
+		return nil, nil, err
+	}
+	var data struct {
+		Steering []string `json:"steering"`
+		FollowUp []string `json:"followUp"`
+	}
+	if len(resp.Data) > 0 {
+		_ = json.Unmarshal(resp.Data, &data)
+	}
+	return data.Steering, data.FollowUp, nil
+}
+
+func (c *Client) NewSession() error {
+	_, err := c.Send(Command{Type: "new_session"}, 30*time.Second)
+	return err
+}
+
+func (c *Client) GetState() (State, error) {
+	var s State
+	resp, err := c.Send(Command{Type: "get_state"}, 15*time.Second)
+	if err != nil {
+		return s, err
+	}
+	if len(resp.Data) > 0 {
+		err = json.Unmarshal(resp.Data, &s)
+	}
+	return s, err
+}
+
+func (c *Client) GetMessages() ([]AgentMessage, error) {
+	resp, err := c.Send(Command{Type: "get_messages"}, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Messages []AgentMessage `json:"messages"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data.Messages, nil
+}
+
+func (c *Client) GetStats() (Stats, error) {
+	var s Stats
+	resp, err := c.Send(Command{Type: "get_session_stats"}, 15*time.Second)
+	if err != nil {
+		return s, err
+	}
+	if len(resp.Data) > 0 {
+		err = json.Unmarshal(resp.Data, &s)
+	}
+	return s, err
+}
+
+// CycleModel switches to the next model, returns its display label.
+func (c *Client) CycleModel() (string, error) {
+	resp, err := c.Send(Command{Type: "cycle_model"}, 15*time.Second)
+	if err != nil {
+		return "", err
+	}
+	var data struct {
+		Model *struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"model"`
+	}
+	if len(resp.Data) > 0 {
+		_ = json.Unmarshal(resp.Data, &data)
+	}
+	if data.Model == nil {
+		return "", fmt.Errorf("only one model available")
+	}
+	if data.Model.ID != "" {
+		return data.Model.ID, nil
+	}
+	return data.Model.Name, nil
+}
+
+// GetCommands lists extension commands, prompt templates and skills.
+func (c *Client) GetCommands() ([]RepoCommand, error) {
+	resp, err := c.Send(Command{Type: "get_commands"}, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Commands []RepoCommand `json:"commands"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data.Commands, nil
+}
+
+// GetModels lists every configured model (including scoped ones).
+func (c *Client) GetModels() ([]ModelInfo, error) {
+	resp, err := c.Send(Command{Type: "get_available_models"}, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Models []ModelInfo `json:"models"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data.Models, nil
+}
+
+// SetModelByID switches model, returns its display label.
+func (c *Client) SetModelByID(provider, id string) (string, error) {
+	resp, err := c.Send(Command{Type: "set_model", Provider: provider, ModelID: id}, 20*time.Second)
+	if err != nil {
+		return "", err
+	}
+	var nested struct {
+		Model *struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"model"`
+	}
+	_ = json.Unmarshal(resp.Data, &nested)
+	if nested.Model != nil {
+		if nested.Model.ID != "" {
+			return nested.Model.ID, nil
+		}
+		return nested.Model.Name, nil
+	}
+	var flat struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	_ = json.Unmarshal(resp.Data, &flat)
+	if flat.ID != "" {
+		return flat.ID, nil
+	}
+	return flat.Name, nil
+}
+
+// GetLevels lists the current model's thinking levels.
+func (c *Client) GetLevels() ([]string, error) {
+	resp, err := c.Send(Command{Type: "get_available_thinking_levels"}, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Levels []string `json:"levels"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data.Levels, nil
+}
+
+// SetLevel changes the thinking level.
+func (c *Client) SetLevel(level string) error {
+	_, err := c.Send(Command{Type: "set_thinking_level", Level: level}, 15*time.Second)
+	return err
+}
+
+// GetTree fetches the session tree + leaf id.
+func (c *Client) GetTree() ([]TreeNode, string, error) {
+	resp, err := c.Send(Command{Type: "get_tree"}, 15*time.Second)
+	if err != nil {
+		return nil, "", err
+	}
+	var data struct {
+		Tree   []TreeNode `json:"tree"`
+		LeafID string     `json:"leafId"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, "", err
+		}
+	}
+	return data.Tree, data.LeafID, nil
+}
+
+// SetSteering changes the steering mode ("all" | "one-at-a-time").
+func (c *Client) SetSteering(mode string) error {
+	_, err := c.Send(Command{Type: "set_steering_mode", Mode: mode}, 15*time.Second)
+	return err
+}
+
+// SetFollowUp changes the follow-up mode ("all" | "one-at-a-time").
+func (c *Client) SetFollowUp(mode string) error {
+	_, err := c.Send(Command{Type: "set_follow_up_mode", Mode: mode}, 15*time.Second)
+	return err
+}
+
+// SetAutoCompact enables/disables auto compaction.
+func (c *Client) SetAutoCompact(on bool) error {
+	_, err := c.Send(Command{Type: "set_auto_compaction", Enabled: &on}, 15*time.Second)
+	return err
+}
+
+// SetAutoRetry enables/disables auto retry.
+func (c *Client) SetAutoRetry(on bool) error {
+	_, err := c.Send(Command{Type: "set_auto_retry", Enabled: &on}, 15*time.Second)
+	return err
+}

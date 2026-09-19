@@ -1,0 +1,42 @@
+# pi-wrap — Go TUI wrapping `pi --mode rpc`
+
+## Idea
+Pi (badlogic) has an ugly UI but a strong agent (multi-provider, tools, session, compaction).
+`pi --mode rpc` speaks JSONL over stdin/stdout → our polished Go TUI is the frontend,
+pi is the backend. No direct LLM calls anymore.
+
+## Architecture
+```
+main.go (Bubble Tea, existing theme)   <-events-  internal/pirpc/client.go  <-JSONL->  pi --mode rpc
+```
+
+## internal/pirpc (stdlib only: os/exec + encoding/json + bufio)
+- Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/gotui-pi-stderr.log
+- Reader: ReadString('\n'), strip \r (per protocol; no Scanner — its 64k buffer is too small, Reader is safe)
+- `type:response` + id → pending chan; everything else → OnEvent (calls prog.Send, thread-safe)
+- Command struct has explicit fields + omitempty, no map[string]any
+
+## TUI: event-driven rendering (keep the current orange/night theme)
+- `message_update` text_delta → appended to the assistant block (true streaming)
+- thinking_delta → gray block; toolcall_start/end + tool_execution_* → tool block (running → done + trimmed result)
+- message_end → finalizes the block (falls back to message text when no deltas arrived)
+- `extension_ui_request` select/confirm → centered modal dialog (↑↓, Enter, Esc);
+  input/editor → auto-cancelled; notify/setStatus/set_editor_text → shown/applied accordingly
+- `agent_settled` → refresh get_session_stats (tokens, cost, context %) into the sidebar
+- Enter: prompt (idle) / steer (streaming); Esc: dialog? close : clear_queue+abort; Ctrl+N: new_session; Ctrl+C: quit + kill pi
+- Startup: get_state (model) + get_messages (repaint history) + get_session_stats
+
+## Native built-ins (pi built-ins don't run over RPC, so re-implemented)
+- `/model` filterable picker (all configured/scoped models) + Ctrl+P quick cycle
+- `/thinking` level picker, `/tree` session-tree view
+- `/settings` overlay: model, thinking, steering/follow-up modes, auto-compact, auto-retry
+- `/login` / `/logout`: API-key keystore (0600) + auto-respawn pi; OAuth guided via stock pi
+- `/reload` + 45s background poll + post-turn refresh → auto-detect new pi commands
+
+## Out of scope (YAGNI)
+- Images, setWidget custom rendering, fork/tree UI, manual compaction, multi-session tabs.
+- Deleted the old internal/{llm,agent,tools} (replaced by pi).
+
+## Verify (no LLM spend)
+- `go vet + build`; test script calls get_state / get_available_models / get_commands via the client
+- 1 ultra-short live prompt on a free model, 120s timeout

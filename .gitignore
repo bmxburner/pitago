@@ -1,0 +1,24 @@
+# Build artifacts
+gotui
+/bin/
+
+# pi stderr log
+/tmp/gotui-pi-stderr.log
+
+# IDE / editor
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Go
+*.exe
+*.test
+*.out
+coverage.html
+coverage.txt
