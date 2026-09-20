@@ -30,7 +30,9 @@ jobs:
               -ldflags "-s -w -X main.version=$TAG" \
               -o "$out" ./src
             # Unversioned alias (stable "latest" link): pitago-<os>-<arch>[.exe]
-            cp "$out" "dist/$(echo "$out" | sed "s/$TAG-//")"
+            alias="dist/pitago-$1-$2"
+            [[ "$1" == windows ]] && alias="$alias.exe"
+            cp "$out" "$alias"
           done
           ls -la dist
 
