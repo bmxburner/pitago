@@ -10,7 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"gotui/src/pirpc"
+	"openpi/src/pirpc"
 )
 
 // Sidebar panels mirroring pi-sidebar-tui (MCP Servers + Todos), fed over
@@ -368,24 +368,6 @@ func getMcpServers() []McpServer {
 	mcpCacheData = readMcpServers(piAgentDir())
 	mcpCacheAt = time.Now()
 	return mcpCacheData
-}
-
-func fmtComma(n int) string {
-	s := fmt.Sprint(n)
-	if len(s) <= 3 {
-		return s
-	}
-	var b strings.Builder
-	r := len(s) % 3
-	if r == 0 {
-		r = 3
-	}
-	b.WriteString(s[:r])
-	for i := r; i < len(s); i += 3 {
-		b.WriteByte(',')
-		b.WriteString(s[i : i+3])
-	}
-	return b.String()
 }
 
 // rendering (same monochrome sidebar language as renderSidebar) -------------

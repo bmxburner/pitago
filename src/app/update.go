@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"gotui/src/extension"
-	"gotui/src/pirpc"
+	"openpi/src/extension"
+	"openpi/src/pirpc"
 )
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -19,7 +19,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if km, ok := msg.(tea.KeyMsg); ok {
 			return m.updateDialog(km)
 		}
-		if _, ok := msg.(tea.WindowSizeMsg); !ok {
+		// Async results stay swallowed while a dialog is open — except
+		// paste (Ctrl+V into the /login key field must land).
+		switch msg.(type) {
+		case tea.WindowSizeMsg, pasteDoneMsg:
+		default:
 			return m, nil
 		}
 	}
@@ -28,8 +32,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.winW, m.winH = msg.Width, msg.Height
 		mainW := m.mainW()
-		// Layout fits winH exactly: header(1) + viewport + input(6: textarea 3 + footer 1 + border 2).
-		vpH := msg.Height - 7
+		// Layout fits winH exactly: header(1) + viewport + input(6 + tray:
+		// textarea 3 + footer 1 + border 2 + image chips 0/1).
+		vpH := msg.Height - 7 - m.chipH()
 		if vpH < 5 {
 			vpH = 5
 		}
@@ -144,9 +149,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pasteDoneMsg:
+		m.applyPaste(msg)
+		return m, nil
+
 	case petTickMsg:
 		// 500ms loop while busy/flashing: face animation + elapsed counter.
-		if m.pet.status.busy() || m.pet.status.flashing() {
+		if m.pet.status.Busy() || m.pet.status.Flashing() {
 			m.pet.tick++
 			m.Refresh()
 			return m, petTickCmd()
@@ -174,6 +183,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pet = petState{}
 		m.Status = "ready"
 		m.Todos = nil
+		m.imgAtts = nil // pending chips belong to the old session
+		m.trayFocus = false
+		m.applyPopupH()
 		m.sessStart = time.Now()
 		m.turnStart = time.Time{}
 		m.pendSpeed = false
@@ -350,11 +362,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.SwitchToRecent(n)
 			}
 		}
+		// Alt+↑↓ PgUp PgDn Home End: scroll sidebar without a mouse.
+		// Wheel needs --mouse, so this is the only scroll path by default.
+		if msg.Alt {
+			switch msg.Type {
+			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
+				if m.showSide() {
+					km := msg
+					km.Alt = false // viewport KeyMap matches "up", not "alt+up"
+					var c tea.Cmd
+					m.sideVp, c = m.sideVp.Update(km)
+					return m, c
+				}
+			}
+		}
 		if m.atOpen && m.handleAtKey(msg) {
 			return m, nil
 		}
 		if m.cmdOpen && m.handleCmdKey(msg) {
 			return m, nil
+		}
+		// trayFocus: nav keys stay in the tray, everything else exits it
+		// and processes normally (typing lands in the input, Enter sends).
+		if m.trayFocus {
+			if cmd, done := m.handleTrayKey(msg); done {
+				return m, cmd
+			}
+			m.exitTray()
 		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
@@ -364,8 +398,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyCtrlY:
 			return m, m.YankLast()
+		case tea.KeyCtrlV:
+			// Owned here (not the textarea): multi-backend read + visible
+			// errors instead of the silent built-in paste.
+			return m, m.pasteCmd(false)
+		case tea.KeyDown:
+			// Last input line + tray → cursor moves into the [Image N] row.
+			if len(m.imgAtts) > 0 && m.onLastLine() {
+				m.enterTray()
+				return m, nil
+			}
+		case tea.KeyBackspace:
+			// Empty input + tray → pop the last [Image N] chip.
+			if m.ta.Value() == "" && len(m.imgAtts) > 0 {
+				m.imgAtts = m.imgAtts[:len(m.imgAtts)-1]
+				m.applyPopupH()
+				m.Refresh()
+				return m, nil
+			}
 		case tea.KeyCtrlO:
 			return m, m.OpenYank()
+		case tea.KeyCtrlG:
+			m.expandTools = !m.expandTools
+			m.RefreshFollow()
+			return m, nil
 		case tea.KeyCtrlR:
 			return m, m.OpenRecents()
 		case tea.KeyCtrlN:
@@ -397,26 +453,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyEnter:
-			text := strings.TrimSpace(m.ta.Value())
-			if text == "" {
-				return m, nil
-			}
-			if b, arg, ok := m.FindBuiltin(text); ok {
-				m.ta.Reset()
-				m.refreshCmds()
-				m.refreshAt()
-				m.Refresh()
-				return m, b.Run(&m, arg)
-			}
-			if m.thinking {
-				m.ta.Reset()
-				m.closeAt()
-				return m, m.sendCmd(true, text)
-			}
-			m.ta.Reset()
-			m.closeAt()
-			m.Refresh()
-			return m, m.sendCmd(false, text)
+			return m, m.submitInput()
 		}
 	}
 
@@ -433,6 +470,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 	m.ta, cmd = m.ta.Update(msg)
 	cmds = append(cmds, cmd)
+	if km, ok := msg.(tea.KeyMsg); ok && km.Paste {
+		m.collectDrops() // terminal drop/paste: long paths → [Image N] chips
+	}
 	if m.ready {
 		// wheel over the sidebar scrolls it, not the chat
 		if mm, ok := msg.(tea.MouseMsg); ok && mm.Action == tea.MouseActionPress &&
@@ -476,9 +516,7 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 		}
 		_ = json.Unmarshal(ev.Raw, &p)
 		i := m.ensureTool(p.ToolCallID, p.ToolName)
-		if len(p.Args) > 0 && m.blocks[i].ToolArgs == "" {
-			m.blocks[i].ToolArgs = compactArgs(string(p.Args))
-		}
+		m.setToolArgs(i, p.ToolName, string(p.Args))
 		m.blocks[i].ToolStatus = "running"
 		if isTodoTool(p.ToolName) {
 			m.updateTodosFromRaw(p.Args, rawField(ev.Raw, "details"), rawField(ev.Raw, "input"))
@@ -500,6 +538,7 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 			ToolName   string `json:"toolName"`
 			Result     struct {
 				Content []pirpc.ContentBlock `json:"content"`
+				Details json.RawMessage      `json:"details"`
 			} `json:"result"`
 			IsError bool `json:"isError"`
 		}
@@ -511,6 +550,9 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 			m.blocks[i].ToolStatus = "done"
 		}
 		m.blocks[i].ToolResult = joinText(p.Result.Content)
+		if m.blocks[i].ToolResult == "" {
+			m.blocks[i].ToolResult = diffOfDetails(p.Result.Details)
+		}
 		if isTodoTool(p.ToolName) {
 			m.updateTodosFromRaw(rawField(ev.Raw, "details"), rawField(ev.Raw, "result"))
 		}
@@ -598,7 +640,7 @@ func (m *Model) applyDelta(raw []byte) tea.Cmd {
 	case "toolcall_end":
 		if d.ToolCall != nil {
 			i := m.ensureTool(d.ToolCall.ID, d.ToolCall.Name)
-			m.blocks[i].ToolArgs = compactArgs(string(d.ToolCall.Arguments))
+			m.setToolArgs(i, d.ToolCall.Name, string(d.ToolCall.Arguments))
 		}
 		if m.pet.inTurn {
 			return m.petSet(petWorking)
@@ -629,7 +671,7 @@ func (m *Model) applyMessageEnd(raw []byte) tea.Cmd {
 	msg := env.Message
 	switch msg.Role {
 	case "user":
-		if t := pirpc.TextOf(msg.Content); strings.TrimSpace(t) != "" {
+		if t := withImages(pirpc.TextOf(msg.Content), pirpc.ImageCount(msg.Content)); strings.TrimSpace(t) != "" {
 			m.AddBlock(Block{Kind: "user", Text: t})
 		}
 	case "assistant":
@@ -660,15 +702,16 @@ func (m *Model) applyMessageEnd(raw []byte) tea.Cmd {
 				}
 			case "toolCall":
 				i := m.ensureTool(b.ID, b.Name)
-				if m.blocks[i].ToolArgs == "" {
-					m.blocks[i].ToolArgs = compactArgs(string(b.Arguments))
-				}
+				m.setToolArgs(i, b.Name, string(b.Arguments))
 			}
 		}
 	case "toolResult":
 		text := joinTextBlocks(pirpc.BlocksOf(msg.Content))
 		if text == "" {
 			text = pirpc.TextOf(msg.Content)
+		}
+		if text == "" {
+			text = diffOfDetails(msg.Details)
 		}
 		if isTodoTool(msg.ToolName) {
 			m.updateTodosFromRaw(msg.Content)
@@ -702,7 +745,7 @@ func (m *Model) restore(msgs []pirpc.AgentMessage) {
 	for _, msg := range msgs {
 		switch msg.Role {
 		case "user":
-			if t := strings.TrimSpace(pirpc.TextOf(msg.Content)); t != "" {
+			if t := withImages(strings.TrimSpace(pirpc.TextOf(msg.Content)), pirpc.ImageCount(msg.Content)); t != "" {
 				m.AddBlock(Block{Kind: "user", Text: t})
 			}
 		case "assistant":
@@ -716,7 +759,7 @@ func (m *Model) restore(msgs []pirpc.AgentMessage) {
 					m.ensureTool(b.ID, b.Name)
 					idx := m.tools[b.ID]
 					m.blocks[idx].ToolStatus = "done"
-					m.blocks[idx].ToolArgs = compactArgs(string(b.Arguments))
+					m.setToolArgs(idx, b.Name, string(b.Arguments))
 				}
 			}
 			if t := strings.TrimSpace(pirpc.TextOf(msg.Content)); t != "" && len(pirpc.BlocksOf(msg.Content)) == 0 {
@@ -726,6 +769,9 @@ func (m *Model) restore(msgs []pirpc.AgentMessage) {
 			text := joinTextBlocks(pirpc.BlocksOf(msg.Content))
 			if text == "" {
 				text = pirpc.TextOf(msg.Content)
+			}
+			if text == "" {
+				text = diffOfDetails(msg.Details)
 			}
 			if i, ok := m.tools[msg.ToolCallID]; ok {
 				m.blocks[i].ToolResult = text
@@ -745,13 +791,47 @@ func joinText(blocks []pirpc.ContentBlock) string {
 			out += b.Text
 		}
 	}
-	if len(out) > 2000 {
-		out = out[:2000] + "…"
+	// pi caps tool output at 51200 bytes / 2000 lines; the collapsible
+	// preview handles display, so keep the full text here (a 211-line
+	// file is ~8KB and must survive for expand).
+	if len(out) > maxToolResultChars {
+		out = out[:maxToolResultChars] + "…"
 	}
 	return out
 }
 
 func joinTextBlocks(blocks []pirpc.ContentBlock) string { return joinText(blocks) }
+
+// withImages appends a 📷 suffix for vision echoes (pi returns user content
+// as text + image blocks; TextOf drops the images, so count them back).
+func withImages(t string, n int) string {
+	if n <= 0 {
+		return t
+	}
+	s := "📷 1 image attached"
+	if n > 1 {
+		s = fmt.Sprintf("📷 %d images attached", n)
+	}
+	if strings.TrimSpace(t) == "" {
+		return s
+	}
+	return t + "\n" + s
+}
+
+// diffOfDetails pulls an edit diff out of a toolResult details payload
+// ({"diff": "..."}), so edit blocks can preview the change like pi.
+func diffOfDetails(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var d struct {
+		Diff string `json:"diff"`
+	}
+	if err := json.Unmarshal(raw, &d); err != nil {
+		return ""
+	}
+	return d.Diff
+}
 
 // extension UI ---------------------------------------------------------------
 
@@ -815,6 +895,11 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "secret") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
+		}
+		return m, nil
+	case tea.KeyCtrlV:
+		if d.Kind == "secret" {
+			return m, m.pasteCmd(true) // paste API key into /login
 		}
 		return m, nil
 	case tea.KeyEsc:

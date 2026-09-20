@@ -1,11 +1,20 @@
 package app
 
 import (
-	"fmt"
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"openpi/src/components/format"
+)
+
+// Shared formatting lives in components/format (single source of truth).
+// The Short/ShortID/OrDefault/FmtNum names are re-exported here because
+// src/builtin calls them as app.Short etc.
+var (
+	Short     = format.Short
+	ShortID   = format.ShortID
+	OrDefault = format.OrDefault
+	FmtNum    = format.FmtNum
 )
 
 func (m Model) firstUser() string {
@@ -17,109 +26,21 @@ func (m Model) firstUser() string {
 	return ""
 }
 
-// fmtDur formats durations like pi: 2m37s, 3m0s, 5s.
+// maxToolResultChars caps stored tool output like pi (51200 bytes): enough
+// for a whole file so expand can show it, small enough to stay in memory.
+const maxToolResultChars = 51200
 
-func fmtDur(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	d = d.Round(time.Second)
-	h, mm, s := int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60
-	if h > 0 {
-		return fmt.Sprintf("%dh%dm", h, mm)
-	}
-	if mm > 0 {
-		return fmt.Sprintf("%dm%ds", mm, s)
-	}
-	return fmt.Sprintf("%ds", s)
-}
+// expandHint is the inline key hint pi shows after a collapsed tool
+// preview. Ctrl+O is the yank picker here, so expand lives on Ctrl+G.
+const expandHint = "ctrl+g to expand"
 
-// twoCol pads a two-column sidebar row (left col 17 wide).
+const collapseHint = "ctrl+g to collapse"
 
-func twoCol(l, r string, inner int) string {
-	const lw = 17
-	l, r = Short(l, lw-1), Short(r, inner-lw-1)
-	p := lw - lipgloss.Width(l)
-	if p < 1 {
-		p = 1
-	}
-	return l + strings.Repeat(" ", p) + r
-}
-
-// ctxBar renders a fixed-width context usage bar like pi's session panel.
-
-func ctxBar(pct float64, w int) string {
-	if w < 1 {
-		w = 1
-	}
-	f := int(pct/100*float64(w) + 0.5)
-	if f > w {
-		f = w
-	}
-	if f < 0 {
-		f = 0
-	}
-	return strings.Repeat("█", f) + strings.Repeat("░", w-f)
-}
-
-// recentAt maps a mouse click to a sidebar recent-model row.
-// Layout: header(1) + body; sidebar starts at x=mainW+1; inside its box,
-// content row 0 is at screen y=2; recents start at recentContentRow.
-
-func ShortID(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
-}
-
-func Short(s string, n int) string {
-	s = strings.ReplaceAll(s, "\n", " ⏎ ")
-	if len(s) > n {
-		return s[:n] + "…"
-	}
-	return s
-}
-
-func oneLineStr(s string) string { return strings.ReplaceAll(s, "\n", " ⏎ ") }
-
-func OrDefault(s, d string) string {
-	if s == "" {
-		return d
-	}
-	return s
-}
-
-func boolPtr(b bool) *bool { return &b }
-
-// stripANSI strips ANSI color codes (e.g. pi-lens extension status).
-
-func stripANSI(s string) string {
-	var b strings.Builder
-	in := false
-	for i := 0; i < len(s); i++ {
-		if !in && s[i] == 0x1b && i+1 < len(s) && s[i+1] == '[' {
-			in = true
-			i++
-			continue
-		}
-		if in {
-			if (s[i] >= 'a' && s[i] <= 'z') || (s[i] >= 'A' && s[i] <= 'Z') {
-				in = false
-			}
-			continue
-		}
-		b.WriteByte(s[i])
-	}
-	return strings.TrimSpace(b.String())
-}
-
-func FmtNum(n int) string {
-	if n >= 1000000 {
-		return fmt.Sprintf("%.1fM", float64(n)/1000000)
-	}
-	if n >= 1000 {
-		return fmt.Sprintf("%.1fk", float64(n)/1000)
-	}
-	return fmt.Sprintf("%d", n)
-}
+func fmtDur(d time.Duration) string        { return format.FmtDur(d) }
+func twoCol(l, r string, inner int) string { return format.TwoCol(l, r, inner) }
+func ctxBar(pct float64, w int) string     { return format.CtxBar(pct, w) }
+func stripANSI(s string) string            { return format.StripANSI(s) }
+func fmtComma(n int) string                { return format.FmtComma(n) }
+func prettyArgs(tool, raw string) string   { return format.PrettyArgs(tool, raw) }
+func oneLineStr(s string) string           { return strings.ReplaceAll(s, "\n", " ⏎ ") }
+func boolPtr(b bool) *bool                 { return &b }

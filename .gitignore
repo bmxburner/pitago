@@ -1,9 +1,9 @@
 # Build artifacts
-gotui
+openpi
 /bin/
 
 # pi stderr log
-/tmp/gotui-pi-stderr.log
+/tmp/openpi-pi-stderr.log
 
 # IDE / editor
 .idea/

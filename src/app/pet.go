@@ -4,46 +4,35 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"openpi/src/components/pet"
 )
 
-// Sidebar pet — Go port of sidebar-pet.ts (pi extension).
-//
-// Tracks the turn live: idle | thinking (reasoning streaming)
-// | writing (text streaming) | working (tools/steps)
-// | success (turn finished) | error.
+// Sidebar pet — state core lives in components/pet; this file keeps the
+// Model wiring (transition timers, tick loop, sidebar render).
 //
 // Busy states are TIMED per cycle: the row shows elapsed seconds for the
 // current status period ("Thinking... 7s"). Every transition restarts the
 // count. done(stop) gates the Done flash, so Esc-abort decays quietly.
 
-type petStatus string
+// Aliases so existing wiring (update.go, tests) keeps reading naturally.
+type petStatus = pet.Status
 
 const (
-	petIdle     petStatus = "idle"
-	petThinking petStatus = "thinking"
-	petWriting  petStatus = "writing"
-	petWorking  petStatus = "working"
-	petSuccess  petStatus = "success"
-	petError    petStatus = "error"
+	petIdle     = pet.Idle
+	petThinking = pet.Thinking
+	petWriting  = pet.Writing
+	petWorking  = pet.Working
+	petSuccess  = pet.Success
+	petError    = pet.Error
 )
+
+var petFaces = pet.Faces
 
 const (
 	petFlashDelay = 4 * time.Second
 	petTickEvery  = 500 * time.Millisecond
 )
-
-// Faces are ≤8 cells wide so the sidebar row doesn't jitter while cycling.
-var petFaces = map[petStatus][]string{
-	petIdle:     {"(◉‿◉)", "(˘‿˘)", "(◉‿◉)", "(-‿-)"},
-	petThinking: {"(◔_◔)", "(◉_◔)", "(◔_◔)", "(¬_¬)", "(ᵕ_ᵕ)"},
-	petWriting:  {"(•‿•)✎", "(•o•)⋆", "(•‿•)✎", "(•o•)⋆", "(•ᴗ•)✎", "(•ᴗ•)⋆", "(ᵔᴗᵔ)✎"},
-	petWorking:  {"(◉▿◉)⚙", "(◉▽◉)⋆", "(◉▿◉)⚙", "(●▿●)⋆", "(•ᴗ•)⚙", "(•_•)⋆", "(ᗒᴗᗕ)⚙", "(•̀ᴗ•́)⋆"},
-	petSuccess:  {"(ᵔᴥᵔ)", "(ᵔᴥᵔ)", "(ᵔᴥᵔ)", "(^‿^)", "(ᵔᴗᵔ)♡", "(•ᴗ•)✦", "(^ᴗ^)", "(ᵔ‿ᵔ)"},
-	petError:    {"(ಠ_ಠ)", "()ಠ_ಠ)", "(T_T)", "(T_T)"},
-}
-
-func (p petStatus) busy() bool     { return p == petThinking || p == petWriting || p == petWorking }
-func (p petStatus) flashing() bool { return p == petSuccess || p == petError }
 
 type petState struct {
 	status  petStatus
@@ -70,17 +59,17 @@ func (m *Model) petSet(next petStatus) tea.Cmd {
 	}
 	m.pet.status = next
 	m.pet.gen++
-	if next.busy() {
+	if next.Busy() {
 		m.pet.since = time.Now()
 	}
 	var cmds []tea.Cmd
-	if next.flashing() {
+	if next.Flashing() {
 		gen := m.pet.gen
 		cmds = append(cmds, tea.Tick(petFlashDelay, func(time.Time) tea.Msg {
 			return petFlashMsg{gen: gen}
 		}))
 	}
-	if (next.busy() || next.flashing()) && !m.pet.ticking {
+	if (next.Busy() || next.Flashing()) && !m.pet.ticking {
 		m.pet.ticking = true
 		cmds = append(cmds, petTickCmd())
 	}
@@ -101,7 +90,7 @@ func (m *Model) petSet(next petStatus) tea.Cmd {
 func (m *Model) petAnchor() tea.Cmd {
 	m.pet.inTurn = true
 	m.pet.sawStop = false
-	if m.pet.status.flashing() || m.pet.status.busy() {
+	if m.pet.status.Flashing() || m.pet.status.Busy() {
 		return nil
 	}
 	return m.petSet(petWorking)
@@ -111,7 +100,7 @@ func (m *Model) petAnchor() tea.Cmd {
 // Without a preceding done(stop) (Esc-abort) it decays quietly to idle.
 func (m *Model) petSettled() tea.Cmd {
 	m.pet.inTurn = false
-	if m.pet.status.flashing() {
+	if m.pet.status.Flashing() {
 		return nil
 	}
 	if m.pet.sawStop {
@@ -121,43 +110,18 @@ func (m *Model) petSettled() tea.Cmd {
 }
 
 func (m Model) petFace() string {
-	s := m.pet.status
-	if s == "" {
-		s = petIdle // zero value reads as idle
-	}
-	faces := petFaces[s]
-	if len(faces) == 0 {
-		return ""
-	}
-	return faces[m.pet.tick%len(faces)]
+	return pet.Face(m.pet.status, m.pet.tick)
 }
 
 func (m Model) petLabel() string {
-	var s string
-	switch m.pet.status {
-	case petThinking:
-		s = "Thinking..."
-	case petWriting:
-		s = "Writing..."
-	case petWorking:
-		s = "Working..."
-	case petSuccess:
-		s = "Done!"
-	case petError:
-		s = "Error"
-	default:
-		s = "Ready"
-	}
-	if m.pet.status.busy() && !m.pet.since.IsZero() {
-		s += " " + fmtDur(time.Since(m.pet.since))
-	}
-	return s
+	return pet.Label(m.pet.status, m.pet.since)
 }
 
 // renderPet draws the PET sidebar section (face + timed status line).
 // Fixed height: petRows content rows (title + face + separator) —
 // recentAt's click mapping depends on this, keep them in sync.
 const petRows = 3
+
 func (m Model) renderPet(inner int) string {
 	face := m.petFace()
 	fstyle := statusBarStyle

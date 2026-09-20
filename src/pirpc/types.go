@@ -2,12 +2,24 @@ package pirpc
 
 import "encoding/json"
 
+// ImageContent is one vision attachment for prompt/steer/follow_up.
+// Matches pi's RPC type: {type:"image", data:<base64>, mimeType}.
+type ImageContent struct {
+	Type     string `json:"type"`
+	Data     string `json:"data"`
+	MimeType string `json:"mimeType"`
+}
+
 // Command is one JSONL line sent to pi stdin. Only set the fields your
-// command needs; the rest are omitted.
+// command needs; the rest are omitted. Message has NO omitempty: pi does
+// command.message.startsWith(...) unguarded, so a missing message crashes
+// the prompt ("Cannot read properties of undefined") — tray-only sends
+// (images, empty text) must still transmit "message":"".
 type Command struct {
 	ID                 string `json:"id,omitempty"`
 	Type               string `json:"type"`
-	Message            string `json:"message,omitempty"`
+	Message            string `json:"message"`
+	Images             []ImageContent `json:"images,omitempty"`
 	StreamingBehavior  string `json:"streamingBehavior,omitempty"`
 	ShellCommand       string `json:"command,omitempty"`
 	SessionPath        string `json:"sessionPath,omitempty"`
@@ -45,6 +57,7 @@ type Event struct {
 }
 
 // ContentBlock is one entry of an assistant/toolResult content array.
+// User echoes may also carry {"type":"image"} blocks (no text payload).
 type ContentBlock struct {
 	Type      string          `json:"type"`
 	Text      string          `json:"text,omitempty"`
@@ -52,6 +65,17 @@ type ContentBlock struct {
 	ID        string          `json:"id,omitempty"`
 	Name      string          `json:"name,omitempty"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
+}
+
+// ImageCount returns how many {"type":"image"} blocks raw holds.
+func ImageCount(raw json.RawMessage) int {
+	n := 0
+	for _, b := range BlocksOf(raw) {
+		if b.Type == "image" {
+			n++
+		}
+	}
+	return n
 }
 
 // AgentMessage is one row of get_messages (role: user/assistant/toolResult/bashExecution).
@@ -63,6 +87,7 @@ type AgentMessage struct {
 	ExitCode     int             `json:"exitCode,omitempty"`
 	ToolCallID   string          `json:"toolCallId,omitempty"` // toolResult
 	ToolName     string          `json:"toolName,omitempty"`   // toolResult
+	Details      json.RawMessage `json:"details,omitempty"`    // toolResult (e.g. edit diff)
 	IsError      bool            `json:"isError,omitempty"`
 	StopReason   string          `json:"stopReason,omitempty"`   // assistant
 	ErrorMessage string          `json:"errorMessage,omitempty"` // assistant

@@ -1,6 +1,10 @@
 package app
 
-import "testing"
+import (
+	"testing"
+
+	"openpi/src/components/yank"
+)
 
 func TestLastAssistantText(t *testing.T) {
 	blocks := []Block{
@@ -11,10 +15,10 @@ func TestLastAssistantText(t *testing.T) {
 		{Kind: "assistant", Text: "latest"},
 		{Kind: "notice", Text: "yanked…"},
 	}
-	if got := lastAssistantText(blocks); got != "latest" {
+	if got := yank.LastAssistantText(blocks); got != "latest" {
 		t.Errorf("got %q, want latest", got)
 	}
-	if got := lastAssistantText(nil); got != "" {
+	if got := yank.LastAssistantText(nil); got != "" {
 		t.Errorf("empty blocks should yield empty, got %q", got)
 	}
 }
@@ -45,7 +49,7 @@ func TestYankEntriesRecentFirst(t *testing.T) {
 		{Kind: "assistant", Text: "  "},
 		{Kind: "user", Text: "thanks"},
 	}
-	opts, descs, payload := yankEntries(blocks)
+	opts, descs, payload := yank.Entries(blocks)
 	if len(opts) != 3 || len(descs) != 3 || len(payload) != 3 {
 		t.Fatalf("want 3 copyable entries, got %d/%d/%d", len(opts), len(descs), len(payload))
 	}

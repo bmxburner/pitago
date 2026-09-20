@@ -7,7 +7,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"gotui/src/extension"
+	"openpi/src/components/format"
+	"openpi/src/components/markdown"
+	"openpi/src/extension"
 )
 
 func (m Model) showSide() bool { return !m.hideSide && m.winW >= 80 }
@@ -64,6 +66,12 @@ func (m Model) renderBlocks() string {
 		b.WriteString(gutter(errStyle.Render("×"), errStyle.Render("! "+m.connErr)+"\n"))
 	}
 	for _, bl := range m.blocks {
+		// Streaming can leave content-less assistant/thinking blocks behind
+		// (e.g. bare newlines around a tool call). They render as stray
+		// blank gaps, so skip them: they carry no information.
+		if (bl.Kind == "assistant" || bl.Kind == "thinking") && strings.TrimSpace(bl.Text) == "" {
+			continue
+		}
 		var icon, body string
 		switch bl.Kind {
 		case "user":
@@ -71,7 +79,7 @@ func (m Model) renderBlocks() string {
 			body = userStyle.Width(cw-2).Render(bl.Text) + "\n\n"
 		case "assistant":
 			icon = statusBarStyle.Render("●")
-			body = lipgloss.NewStyle().Foreground(cText).Width(cw).Render(bl.Text) + "\n\n"
+			body = renderMarkdown(bl.Text, cw) + "\n\n"
 		case "thinking":
 			t := bl.Text
 			if len(t) > 300 {
@@ -89,20 +97,46 @@ func (m Model) renderBlocks() string {
 				icon = statusBarStyle.Render("○")
 			}
 			head := bl.ToolName
-			if bl.ToolArgs != "" {
-				head += " " + bl.ToolArgs
+			switch strings.ToLower(bl.ToolName) {
+			case "bash":
+				head = "$"
+				if bl.ToolArgs != "" {
+					head += " " + bl.ToolArgs
+				}
+			case "powershell":
+				head = "PS>"
+				if bl.ToolArgs != "" {
+					head += " " + bl.ToolArgs
+				}
+			default:
+				if bl.ToolArgs != "" {
+					head += " " + bl.ToolArgs
+				}
+			}
+			// pi suffixes the write header with the added line count
+			// ("write game.js +211").
+			if strings.ToLower(bl.ToolName) == "write" {
+				if content, ok := format.WriteContent(bl.ToolArgsRaw); ok {
+					if n := countLines(content); n > 0 {
+						head += fmt.Sprintf(" +%d", n)
+					}
+				}
 			}
 			if strings.TrimSpace(head) == "" {
 				head = "tool"
 			}
-			body = lipgloss.NewStyle().Foreground(cText).Render(Short(head, 140)) + "\n"
-			if r := strings.TrimSpace(bl.ToolResult); r != "" {
-				body += toolStyle.Render("  └ "+Short(oneLineStr(r), 160)) + "\n"
-			}
-			body += "\n"
+		body = lipgloss.NewStyle().Foreground(cText).Render(Short(head, 140)) + "\n"
+		if r := m.renderToolBody(bl); r != "" {
+			body += r
+		}
+		// pi wraps every tool execution in a status-colored Box
+		// (pending → green → red). Width(cw) pads short lines so the
+		// background spans the chat column full-bleed like pi.
+		body = lipgloss.NewStyle().Background(toolBg(bl.ToolStatus)).Width(cw).
+			Render(strings.TrimRight(body, "\n")) + "\n\n"
 		case "bash":
 			icon = statusBarStyle.Render("●")
-			body = codeStyle.Render(Short(bl.Text, 400)) + "\n\n"
+			body = markdown.Highlight("bash", Short(bl.Text, 400)) + "\n\n"
 		case "tree":
 			icon = statusBarStyle.Render("●")
 			body = codeStyle.Render(Short(bl.Text, 3000)) + "\n\n"
@@ -124,6 +158,251 @@ func (m Model) renderBlocks() string {
 		b.WriteString(gutter(statusBarStyle.Render("○"), statusBarStyle.Render(m.Status)+"\n"))
 	}
 	return b.String()
+}
+
+// renderMarkdown renders assistant output with pi's own Markdown (headings,
+// lists, bold, fenced code with pi's highlight.js theme) wrapped to the chat
+// width. Plain text comes back unchanged from markdown.Render and keeps the
+// old unstyled render.
+func renderMarkdown(src string, width int) string {
+	if out := markdown.Render(src, width); out != src {
+		return out
+	}
+	return lipgloss.NewStyle().Foreground(cText).Width(width).Render(src)
+}
+
+// codeLang detects code in a one-line tool result: fenced block (with
+// optional language), JSON, or a unified diff. Plain prose returns ok=false
+// so it keeps the dim style instead of risking a wrong lexer. A fence
+// without lang still returns ok=true with lang="": pi has no auto-detect
+// and falls back to its mdCodeBlock color.
+func codeLang(s string) (lang string, ok bool) {
+	if i := strings.Index(s, "```"); i >= 0 {
+		rest := s[i+3:]
+		if j := strings.IndexAny(rest, " \t⏎\n`"); j >= 0 {
+			rest = rest[:j]
+		}
+		return rest, true // "" → Chroma auto-detect
+	}
+	t := strings.TrimSpace(s)
+	if (strings.HasPrefix(t, "{") && strings.HasSuffix(t, "}")) ||
+		(strings.HasPrefix(t, "[") && strings.HasSuffix(t, "]")) {
+		return "json", true
+	}
+	if strings.Contains(s, "diff --git") ||
+		(strings.Contains(s, "+++") && strings.Contains(s, "---")) {
+		return "diff", true
+	}
+	return "", false
+}
+
+// toolBg is pi's tool Box background by execution status: pending while
+// running, green on success, red on error.
+func toolBg(status string) lipgloss.Color {
+	switch status {
+	case "done":
+		return cToolSuccess
+	case "error":
+		return cToolError
+	default:
+		return cToolPending
+	}
+}
+
+// renderToolBody renders a tool's collapsible content like pi's TUI:
+// write shows the file text from the call args (10 lines collapsed,
+// ctrl+g expands), read shows the file content only when expanded (or on
+// error), edit shows the diff, and bash/grep/ls show head/tail previews.
+// Collapsed previews end with "... (N more lines[, T total], ctrl+g to
+// expand)"; expanded blocks end with "(ctrl+g to collapse)" when lines
+// were hidden.
+func (m Model) renderToolBody(bl Block) string {
+	expanded := m.expandTools
+	switch strings.ToLower(bl.ToolName) {
+	case "write":
+		if content, ok := format.WriteContent(bl.ToolArgsRaw); ok && strings.TrimSpace(content) != "" {
+			p := format.CallPreview(content, expanded)
+			if p.Hidden || len(p.Lines) == 0 {
+				return ""
+			}
+			return renderPreview(p, format.LangFromPath(toolPath(bl)), expanded)
+		}
+		return renderToolResultExpanded(bl.ToolName, bl.ToolStatus, bl.ToolResult, expanded)
+	case "read":
+		if bl.ToolStatus == "error" {
+			return renderToolResultExpanded(bl.ToolName, bl.ToolStatus, bl.ToolResult, expanded)
+		}
+		if !expanded {
+			if n := countLines(bl.ToolResult); n > 0 {
+				return toolStyle.Render(fmt.Sprintf("  ... (%d lines, %s)", n, expandHint))
+			}
+			return ""
+		}
+		p := format.ToolResultPreviewExpanded(bl.ToolName, bl.ToolStatus, bl.ToolResult, true)
+		if p.Hidden || len(p.Lines) == 0 {
+			return ""
+		}
+		return renderPreview(p, format.LangFromPath(toolPath(bl)), true)
+	case "edit":
+		if bl.ToolStatus == "error" {
+			return renderToolResultExpanded(bl.ToolName, bl.ToolStatus, bl.ToolResult, expanded)
+		}
+		text := strings.TrimSpace(bl.ToolResult)
+		lang := ""
+		if text == "" {
+			// no details.diff reported: preview - old / + new from args
+			text = format.EditDiffFallback(bl.ToolArgsRaw)
+			lang = "diff"
+		}
+		if text == "" {
+			return ""
+		}
+		p := format.CallPreview(text, expanded)
+		if p.Hidden || len(p.Lines) == 0 {
+			return ""
+		}
+		if lang == "" {
+			lang = format.LangFromPath(toolPath(bl))
+			if _, ok := codeLang(text); ok {
+				lang = "diff"
+			}
+		}
+		return renderPreview(p, lang, expanded)
+	default:
+		return renderToolResultExpanded(bl.ToolName, bl.ToolStatus, bl.ToolResult, expanded)
+	}
+}
+
+// toolPath is the file path for highlight-language detection: raw args
+// first (clean path), then the pretty header with any :offset-limit range
+// stripped.
+func toolPath(bl Block) string {
+	if p := format.ArgPath(bl.ToolArgsRaw); p != "" {
+		return p
+	}
+	p := bl.ToolArgs
+	if i := strings.LastIndex(p, ":"); i > 0 {
+		// "path:10-14" or "path:10" — strip the range, keep the path.
+		num := true
+		for _, c := range p[i+1:] {
+			if (c < '0' || c > '9') && c != '-' {
+				num = false
+				break
+			}
+		}
+		if num {
+			return p[:i]
+		}
+	}
+	return p
+}
+
+func countLines(s string) int {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\r", ""))
+	if s == "" {
+		return 0
+	}
+	return len(strings.Split(s, "\n"))
+}
+
+// renderPreview renders one collapsed/expanded preview: code blocks go
+// through pi's highlighter (falling back to dim rows), other lines keep
+// the dim └-tree style, and the matching pi-style hint closes the block.
+func renderPreview(p format.ToolPreview, lang string, expanded bool) string {
+	if p.Hidden || len(p.Lines) == 0 {
+		return ""
+	}
+	if lang != "" && len(p.Lines) > 1 {
+		if out := markdown.Highlight(lang, strings.Join(p.Lines, "\n")); out != strings.Join(p.Lines, "\n") {
+			rows := strings.Split(out, "\n")
+			for i := range rows {
+				rows[i] = "  " + rows[i]
+			}
+			if hint := previewHint(p, expanded); hint != "" {
+				rows = append(rows, toolStyle.Render(hint))
+			}
+			return strings.Join(rows, "\n")
+		}
+	}
+	rows := make([]string, 0, len(p.Lines)+1)
+	for i, ln := range p.Lines {
+		pre := "    "
+		if i == 0 {
+			pre = "  └ "
+		}
+		rows = append(rows, toolStyle.Render(pre+ln))
+	}
+	if hint := previewHint(p, expanded); hint != "" {
+		rows = append(rows, toolStyle.Render(hint))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// previewHint is pi's trailing hint: collapsed shows what is hidden,
+// expanded offers to collapse back (only when lines were hidden).
+func previewHint(p format.ToolPreview, expanded bool) string {
+	if p.Skipped > 0 && !expanded {
+		hint := fmt.Sprintf("  ... (%d more lines", p.Skipped)
+		if p.Total > 0 {
+			hint += fmt.Sprintf(", %d total", p.Total)
+		}
+		return hint + ", " + expandHint + ")"
+	}
+	if expanded && p.Total > 0 {
+		return "  (" + collapseHint + ")"
+	}
+	return ""
+}
+
+// renderToolResult renders tool output multi-line like pi: bash shows the
+// last 5 lines with an "... (N earlier lines)" hint, ls/find/grep show the
+// first 15-20 lines with an "... (N more lines)" hint, and read/write hide
+// output on success (errors still show). Single-line code keeps pi's code
+// highlight; anything else falls back to the dim style.
+func renderToolResult(tool, status, s string) string {
+	return renderToolResultExpanded(tool, status, s, false)
+}
+
+// renderToolResultExpanded is renderToolResult with the expand toggle:
+// expanded shows every line instead of the head/tail window, with a hint
+// to collapse back.
+func renderToolResultExpanded(tool, status, s string, expanded bool) string {
+	p := format.ToolResultPreviewExpanded(tool, status, s, expanded)
+	if p.Hidden || len(p.Lines) == 0 {
+		return ""
+	}
+	if len(p.Lines) == 1 && p.Skipped == 0 {
+		line := p.Lines[0]
+		if lang, ok := codeLang(line); ok {
+			if out := markdown.Highlight(lang, line); out != line {
+				return "  └ " + out
+			}
+		}
+		return toolStyle.Render("  └ " + line)
+	}
+	rows := make([]string, 0, len(p.Lines)+1)
+	if p.Skipped > 0 && !expanded {
+		hint := fmt.Sprintf("... (%d more lines)", p.Skipped)
+		if p.Tail {
+			hint = fmt.Sprintf("... (%d earlier lines)", p.Skipped)
+		}
+		rows = append(rows, toolStyle.Render("  "+hint+", "+expandHint+")"))
+	}
+	for i, ln := range p.Lines {
+		pre := "    "
+		if i == 0 {
+			pre = "  └ "
+		}
+		rows = append(rows, toolStyle.Render(pre+ln))
+	}
+	if hint := previewHint(p, expanded); hint != "" {
+		// previewHint duplicates the collapsed top hint at the bottom —
+		// keep only the expanded collapse offer here.
+		if expanded {
+			rows = append(rows, toolStyle.Render(hint))
+		}
+	}
+	return strings.Join(rows, "\n")
 }
 
 // renderSidebar mirrors pi's session panel: SESSION, model+ctx, STATS,
@@ -328,38 +607,70 @@ func (m Model) renderHeader() string {
 	if m.session != "" {
 		left = Short(m.session+" · "+m.cwd, 48)
 	}
-	dot := "○"
-	if m.thinking {
-		dot = "●"
-	}
-	right := dot + " " + Short(m.Status, 32)
-	gap := m.winW - lipgloss.Width(left) - lipgloss.Width(right) - 2
-	if gap < 1 {
-		gap = 1
-	}
-	return headerStyle.Render(left + strings.Repeat(" ", gap) + right)
+	// Status lives on the pet row (sidebar) — header keeps cwd/session only.
+	return headerStyle.Render(left)
 }
 
 func (m Model) renderInput() string {
 	mainW := m.mainW()
-	style := inputFocusStyle
+	innerW := mainW - 4
+	if innerW < 10 {
+		innerW = 10
+	}
+	border, title := cInput, ""
 	left := "○ ready · ↵ send · / commands · @ files · ^P model · ^R recents · ^C quit"
 	if m.thinking {
-		style = inputRunStyle // green border + live status, pi-style
-		left = "○ " + m.Status + " · ↵ steer · Esc cancel"
+		border = cGreen
+		title = "⋯ " + m.Status
+		left = "↵ steer · Esc cancel"
 	} else if len(m.Dialogs) > 0 {
-		style = inputStyle
+		border = cInputDim
 	}
 	right := m.statsLine()
 	if m.extStat != "" {
 		right = Short(m.extStat, 30) + " · " + right
 	}
-	gap := mainW - lipgloss.Width(left) - lipgloss.Width(right) - 6
+	gap := innerW - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
 	foot := statusBarStyle.Render(left + strings.Repeat(" ", gap) + right)
-	return style.Width(mainW).Render(m.ta.View() + "\n" + foot)
+	lines := []string{m.ta.View()}
+	if m.chipH() > 0 {
+		lines = append(lines, m.chipRow(innerW))
+	}
+	lines = append(lines, foot)
+	return inputBox(title, lines, innerW, border)
+}
+
+// inputBox draws a rounded box with an optional live-status title spliced
+// into the top border (pi embeds its working status there while running).
+// Content lines are wrapped/padded to innerW; only the frame carries the
+// border color so typed text keeps its own colors. Total height matches
+// the old style box (textarea rows + chips 0/1 + footer + 2 border rows)
+// so the viewport math in Update stays valid.
+func inputBox(title string, lines []string, innerW int, border lipgloss.Color) string {
+	frame := lipgloss.NewStyle().Foreground(border)
+	var b strings.Builder
+	if title == "" {
+		b.WriteString(frame.Render("╭" + strings.Repeat("─", innerW+2) + "╮") + "\n")
+	} else {
+		title = Short(title, innerW-1)
+		fill := innerW - lipgloss.Width(title) - 1
+		if fill < 0 {
+			fill = 0
+		}
+		b.WriteString(frame.Render("╭─ ") + statusBarStyle.Render(title) +
+			frame.Render(" "+strings.Repeat("─", fill)+"╮") + "\n")
+	}
+	wrap := lipgloss.NewStyle().Width(innerW)
+	for _, ln := range lines {
+		for _, wln := range strings.Split(wrap.Render(ln), "\n") {
+			b.WriteString(frame.Render("│ ") + wln + frame.Render(" │") + "\n")
+		}
+	}
+	b.WriteString(frame.Render("╰" + strings.Repeat("─", innerW+2) + "╯"))
+	return b.String()
 }
 
 func (m Model) renderDialog() string {

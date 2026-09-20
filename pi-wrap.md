@@ -15,12 +15,12 @@ src/pirpc/client.go  <-JSONL->  pi --mode rpc
 ```
 - `src/app` never imports `builtin`/`extension` (wired in main via
   `UseBuiltins`); `builtin` operates on `*app.Model`, `extension` is pure.
-- Origin rule: `src/builtin` = pi TUI builtins (`OriginPi`) + gotui's own
-  (`OriginGotui`, e.g. `/recent`); everything from `get_commands`
+- Origin rule: `src/builtin` = pi TUI builtins (`OriginPi`) + openpi's own
+  (`OriginOpenpi`, e.g. `/recent`); everything from `get_commands`
   (extension/prompt/skill) is extension-side and runs via Prompt forwarding.
 
 ## src/pirpc (stdlib only: os/exec + encoding/json + bufio)
-- Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/gotui-pi-stderr.log
+- Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/openpi-pi-stderr.log
 - Reader: ReadString('\n'), strip \r (per protocol; no Scanner — its 64k buffer is too small, Reader is safe)
 - `type:response` + id → pending chan; everything else → OnEvent (calls prog.Send, thread-safe)
 - Command struct has explicit fields + omitempty, no map[string]any
@@ -43,7 +43,11 @@ src/pirpc/client.go  <-JSONL->  pi --mode rpc
 - `/reload` + 45s background poll + post-turn refresh → auto-detect new pi commands
 
 ## Out of scope (YAGNI)
-- Images, setWidget custom rendering, fork/tree UI, manual compaction, multi-session tabs.
+- Clipboard-paste / drag-drop images, setWidget custom rendering, fork/tree UI, manual compaction, multi-session tabs.
+- `@image.png` vision IS in scope (components/image → RPC `images`, pi CLI parity).
+  Dropped/pasted/Tab-completed image paths collapse into an input-tray
+  (`[Image N]` chips, src/app/attach.go) so long escaped paths never clog
+  the prompt; Backspace on empty input pops the last chip.
 - Deleted the old internal/{llm,agent,tools} (replaced by pi).
 
 ## Verify (no LLM spend)

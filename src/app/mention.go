@@ -2,39 +2,25 @@ package app
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"openpi/src/components/image"
+	"openpi/src/components/mention"
 )
 
 // @ file mentions (pi parity) -------------------------------------------------
 //
+// Lookup lives in components/mention (pure, no TUI state); this file keeps
+// the popup wiring on Model: refresh/complete/navigate/render.
+//
 // Pi's TUI completes @path with a fuzzy file finder (fd, respects
 // .gitignore) and sends the raw "@path" text to the agent — the model reads
 // the file with its tools. Only CLI startup @args are expanded locally into
-// <file> blocks. So gotui only needs the autocomplete half: typing @ opens
+// <file> blocks. So openpi only needs the autocomplete half: typing @ opens
 // this popup, Tab/Enter completes, the prompt text reaches pi untouched.
 //
-// Divergence: stdlib walk instead of fd (no binary dependency), skips .git
-// and node_modules, no .gitignore parsing. Scoped "dir/" prefixes list that
-// directory directly; a bare query fuzzy-matches basenames recursively.
-
-// atItem is one file suggestion.
-type atItem struct {
-	value string // completion incl @ + quotes, e.g. @src/app/ or @"my dir/x.go"
-	label string // basename (+ / for dirs)
-	desc  string // display path
-	dir   bool
-}
-
-const (
-	atWin      = 10 // visible rows, same window style as cmdWin
-	atMaxFuzzy = 20 // fuzzy results (matches pi's top-20)
-	atMaxList  = 30 // direct directory listing cap
-)
 
 // cursorPos returns the textarea cursor as (row, rune-col), clamped.
 func (m *Model) cursorPos() (row, col int) {
@@ -59,242 +45,9 @@ func (m *Model) cursorPos() (row, col int) {
 	return row, col
 }
 
-func isAtDelim(r rune) bool {
-	switch r {
-	case ' ', '\t', '"', '\'', '=': // pi's PATH_DELIMITERS
-		return true
-	}
-	return false
-}
-
-// unclosedQuote finds an unterminated " before the cursor (@"..." paths
-// with spaces), -1 when quotes are balanced.
-func unclosedQuote(text []rune) int {
-	in := false
-	start := -1
-	for i, r := range text {
-		if r == '"' {
-			in = !in
-			if in {
-				start = i
-			}
-		}
-	}
-	if in {
-		return start
-	}
-	return -1
-}
-
-// atToken extracts the @file token ending at col (port of pi's
-// extractAtPrefix). ok=false for plain text, emails (a@b) and non-@
-// quoted paths.
-func atToken(line []rune, col int) (prefix string, start int, ok bool) {
-	if col < 0 {
-		col = 0
-	}
-	if col > len(line) {
-		col = len(line)
-	}
-	text := line[:col]
-	if q := unclosedQuote(text); q >= 0 {
-		if q > 0 && text[q-1] == '@' && (q-1 == 0 || isAtDelim(text[q-2])) {
-			return string(text[q-1:]), q - 1, true
-		}
-		return "", 0, false
-	}
-	tok := 0
-	for i := len(text) - 1; i >= 0; i-- {
-		if isAtDelim(text[i]) {
-			tok = i + 1
-			break
-		}
-	}
-	if tok >= len(text) || text[tok] != '@' {
-		return "", 0, false
-	}
-	if tok > 0 && !isAtDelim(text[tok-1]) {
-		return "", 0, false // email-like: a@b
-	}
-	return string(text[tok:]), tok, true
-}
-
-// atValue builds the completion text: @"..." when quoted or spaced.
-func atValue(rel string, quoted bool) string {
-	if !quoted && !strings.Contains(rel, " ") {
-		return "@" + rel
-	}
-	return "@\"" + rel + "\""
-}
-
-// atListDir lists one directory filtered by a filename prefix.
-func atListDir(searchDir, displayBase, filePart string, quoted bool) []atItem {
-	ents, err := os.ReadDir(searchDir)
-	if err != nil {
-		return nil
-	}
-	fl := strings.ToLower(filePart)
-	items := make([]atItem, 0, len(ents))
-	for _, e := range ents {
-		if filePart != "" && !strings.HasPrefix(strings.ToLower(e.Name()), fl) {
-			continue
-		}
-		dir := e.IsDir()
-		if !dir && e.Type()&os.ModeSymlink != 0 { // follow symlinked dirs (pi does)
-			if st, err := os.Stat(filepath.Join(searchDir, e.Name())); err == nil && st.IsDir() {
-				dir = true
-			}
-		}
-		rel := displayBase + e.Name()
-		if dir {
-			rel += "/"
-		}
-		label := e.Name()
-		if dir {
-			label += "/"
-		}
-		items = append(items, atItem{value: atValue(rel, quoted), label: label, desc: rel, dir: dir})
-	}
-	sort.Slice(items, func(i, j int) bool { // dirs first, then alpha (pi order)
-		if items[i].dir != items[j].dir {
-			return items[i].dir
-		}
-		return strings.ToLower(items[i].label) < strings.ToLower(items[j].label)
-	})
-	if len(items) > atMaxList {
-		items = items[:atMaxList]
-	}
-	return items
-}
-
-// atScore ranks a path against the query (port of pi's scoreEntry).
-func atScore(rel, q string, dir bool) int {
-	lrel := strings.ToLower(rel)
-	name := lrel
-	if i := strings.LastIndex(lrel, "/"); i >= 0 {
-		name = lrel[i+1:]
-	}
-	var s int
-	switch {
-	case name == q:
-		s = 100
-	case strings.HasPrefix(name, q):
-		s = 80
-	case strings.Contains(name, q):
-		s = 50
-	case strings.Contains(lrel, q):
-		s = 30
-	default:
-		return 0
-	}
-	if dir {
-		s += 10
-	}
-	return s
-}
-
-// atFuzzy recursively matches basenames under base (stdlib stand-in for fd).
-func (m *Model) atFuzzy(base, query string, quoted bool) []atItem {
-	q := strings.ToLower(query)
-	type scored struct {
-		rel   string
-		dir   bool
-		score int
-		depth int
-	}
-	var out []scored
-	count := 0
-	_ = filepath.WalkDir(base, func(p string, d os.DirEntry, err error) error {
-		if err != nil {
-			return nil
-		}
-		rel, err := filepath.Rel(base, p)
-		if err != nil || rel == "." {
-			return nil
-		}
-		rel = filepath.ToSlash(rel)
-		depth := strings.Count(rel, "/")
-		if d.IsDir() {
-			if d.Name() == ".git" || d.Name() == "node_modules" {
-				return filepath.SkipDir
-			}
-			if depth > 6 || count > 8000 {
-				return filepath.SkipDir
-			}
-		} else {
-			count++
-			if count > 8000 {
-				return nil
-			}
-		}
-		if s := atScore(rel, q, d.IsDir()); s > 0 {
-			out = append(out, scored{rel: rel, dir: d.IsDir(), score: s, depth: depth})
-		}
-		return nil
-	})
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].score != out[j].score {
-			return out[i].score > out[j].score
-		}
-		if out[i].depth != out[j].depth {
-			return out[i].depth < out[j].depth
-		}
-		if len(out[i].rel) != len(out[j].rel) {
-			return len(out[i].rel) < len(out[j].rel)
-		}
-		return out[i].rel < out[j].rel
-	})
-	if len(out) > atMaxFuzzy {
-		out = out[:atMaxFuzzy]
-	}
-	items := make([]atItem, 0, len(out))
-	for _, s := range out {
-		rel := s.rel
-		if s.dir {
-			rel += "/"
-		}
-		label := filepath.Base(strings.TrimSuffix(rel, "/"))
-		if s.dir {
-			label += "/"
-		}
-		items = append(items, atItem{value: atValue(rel, quoted), label: label, desc: rel, dir: s.dir})
-	}
-	return items
-}
-
-// atCandidates lists suggestions for the raw text after @.
-func (m *Model) atCandidates(raw string, quoted bool) []atItem {
-	base := m.cwd
-	if base == "" {
-		base = "."
-	}
-	if raw == "" {
-		return atListDir(base, "", "", quoted)
-	}
-	if raw == "~" {
-		if home, err := os.UserHomeDir(); err == nil {
-			return atListDir(home, "~/", "", quoted)
-		}
-		return nil
-	}
-	if i := strings.LastIndex(raw, "/"); i >= 0 {
-		dirPart, filePart := raw[:i+1], raw[i+1:]
-		var searchDir string
-		switch {
-		case strings.HasPrefix(dirPart, "~/"):
-			home, err := os.UserHomeDir()
-			if err != nil {
-				return nil
-			}
-			searchDir = filepath.Join(home, dirPart[2:])
-		case filepath.IsAbs(dirPart):
-			searchDir = dirPart
-		default:
-			searchDir = filepath.Join(base, dirPart)
-		}
-		return atListDir(searchDir, dirPart, filePart, quoted)
-	}
-	return m.atFuzzy(base, raw, quoted)
+// atCandidates lists suggestions for the raw text after @ under m.cwd.
+func (m *Model) atCandidates(raw string, quoted bool) []mention.Item {
+	return mention.Candidates(m.cwd, raw, quoted)
 }
 
 // refreshAt recomputes the @ popup from the token before the cursor.
@@ -305,7 +58,7 @@ func (m *Model) refreshAt() {
 	if row >= 0 && row < len(lines) {
 		line = []rune(lines[row])
 	}
-	prefix, start, ok := atToken(line, col)
+	prefix, start, ok := mention.Token(line, col)
 	if !ok {
 		m.closeAt()
 		return
@@ -349,8 +102,8 @@ func (m *Model) ensureAtVisible() {
 	if m.atCursor < m.atOffset {
 		m.atOffset = m.atCursor
 	}
-	if m.atCursor >= m.atOffset+atWin {
-		m.atOffset = m.atCursor - atWin + 1
+	if m.atCursor >= m.atOffset+mention.Win {
+		m.atOffset = m.atCursor - mention.Win + 1
 	}
 	if m.atOffset < 0 {
 		m.atOffset = 0
@@ -400,6 +153,32 @@ func (m *Model) completeAt() {
 		m.atCursor = 0
 	}
 	it := m.atItems[m.atCursor]
+	// Tab-completed @image → tray chip, not long path text (the typed
+	// @token is stripped so send doesn't deliver it twice).
+	if ref := image.Dequote(strings.TrimPrefix(it.Value, "@")); !it.Dir && image.ExistsImage(m.cwd, ref) {
+		row, col := m.cursorPos()
+		if row != m.atRow {
+			m.refreshAt() // cursor wandered off; resync, don't corrupt text
+			return
+		}
+		lines := strings.Split(m.ta.Value(), "\n")
+		if row >= 0 && row < len(lines) {
+			line := []rune(lines[row])
+			if m.atStart <= len(line) && col <= len(line) && m.atStart <= col {
+				rest := strings.TrimPrefix(string(line[col:]), " ")
+				lines[row] = string(line[:m.atStart]) + rest
+				abs := m.atStart
+				for i := 0; i < row; i++ {
+					abs += len([]rune(lines[i])) + 1
+				}
+				m.setValueAt(strings.Join(lines, "\n"), abs)
+			}
+		}
+		m.attachPaths([]string{ref})
+		m.closeAt()
+		m.Refresh()
+		return
+	}
 	lines := strings.Split(m.ta.Value(), "\n")
 	row, col := m.cursorPos()
 	if row != m.atRow || row < 0 || row >= len(lines) {
@@ -411,8 +190,8 @@ func (m *Model) completeAt() {
 		m.refreshAt()
 		return
 	}
-	ins := it.value
-	if !it.dir {
+	ins := it.Value
+	if !it.Dir {
 		ins += " "
 	}
 	lines[row] = string(line[:m.atStart]) + ins + string(line[col:])
@@ -429,14 +208,14 @@ func (m *Model) atPopupH() int {
 		return 0
 	}
 	n := len(m.atItems)
-	if n > atWin {
-		n = atWin
+	if n > mention.Win {
+		n = mention.Win
 	}
 	extra := 0
 	if m.atOffset > 0 {
 		extra++
 	}
-	if m.atOffset+atWin < len(m.atItems) {
+	if m.atOffset+mention.Win < len(m.atItems) {
 		extra++
 	}
 	return n + extra + 3 // rows + hints + footer + border
@@ -445,7 +224,7 @@ func (m *Model) atPopupH() int {
 func (m Model) renderAtPopup() string {
 	mainW := m.mainW()
 	var b strings.Builder
-	end := m.atOffset + atWin
+	end := m.atOffset + mention.Win
 	if end > len(m.atItems) {
 		end = len(m.atItems)
 	}
@@ -454,9 +233,9 @@ func (m Model) renderAtPopup() string {
 	}
 	for i := m.atOffset; i < end; i++ {
 		it := m.atItems[i]
-		row := it.label
-		if it.desc != "" && it.desc != it.label {
-			row += " — " + it.desc
+		row := it.Label
+		if it.Desc != "" && it.Desc != it.Label {
+			row += " — " + it.Desc
 		}
 		row = Short(row, mainW-8)
 		if i == m.atCursor {

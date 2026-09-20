@@ -1,0 +1,38 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Build binaries
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p dist
+          for target in "linux amd64" "darwin amd64" "darwin arm64" "windows amd64"; do
+            set -- $target
+            out="dist/openpi-$TAG-$1-$2"
+            [[ "$1" == windows ]] && out="$out.exe"
+            GOOS="$1" GOARCH="$2" go build -trimpath \
+              -ldflags "-s -w -X main.version=$TAG" \
+              -o "$out" ./src
+          done
+          ls -la dist
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --generate-notes

@@ -34,6 +34,7 @@ type Options struct {
 	Continue  bool   // -c (resume most recent session)
 	NoSession bool   // --no-session
 	Session   string // --session <path|id> (resume exact session)
+	Dir       string // working directory for the pi child (default: ours)
 }
 
 // Spawn starts pi --mode rpc.
@@ -62,6 +63,9 @@ func Spawn(opt Options) (*Client, error) {
 		args = append(args, "--model", opt.Model)
 	}
 	cmd := exec.Command(bin, args...)
+	if opt.Dir != "" {
+		cmd.Dir = opt.Dir // pi takes its session cwd from the process dir
+	}
 
 	stdinR, stdinW, err := os.Pipe()
 	if err != nil {
@@ -73,7 +77,7 @@ func Spawn(opt Options) (*Client, error) {
 	}
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
-	logF, _ := os.Create("/tmp/gotui-pi-stderr.log")
+	logF, _ := os.Create("/tmp/openpi-pi-stderr.log")
 	if logF != nil {
 		cmd.Stderr = logF
 	}
@@ -222,12 +226,12 @@ func (c *Client) Close() {
 
 // Convenience wrappers -------------------------------------------------
 
-func (c *Client) Prompt(msg string) (Response, error) {
-	return c.Send(Command{Type: "prompt", Message: msg}, 60*time.Second)
+func (c *Client) Prompt(msg string, images ...ImageContent) (Response, error) {
+	return c.Send(Command{Type: "prompt", Message: msg, Images: images}, 60*time.Second)
 }
 
-func (c *Client) Steer(msg string) (Response, error) {
-	return c.Send(Command{Type: "prompt", Message: msg, StreamingBehavior: "steer"}, 60*time.Second)
+func (c *Client) Steer(msg string, images ...ImageContent) (Response, error) {
+	return c.Send(Command{Type: "prompt", Message: msg, Images: images, StreamingBehavior: "steer"}, 60*time.Second)
 }
 
 func (c *Client) Abort() (Response, error) {

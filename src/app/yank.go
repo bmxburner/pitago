@@ -6,6 +6,8 @@ import (
 
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"openpi/src/components/yank"
 )
 
 // YankLast copies the last assistant answer to the system clipboard.
@@ -13,7 +15,7 @@ import (
 // so this is the clean way to copy chat-only text.
 
 func (m *Model) YankLast() tea.Cmd {
-	text := lastAssistantText(m.blocks)
+	text := yank.LastAssistantText(m.blocks)
 	if strings.TrimSpace(text) == "" {
 		m.AddBlock(Block{Kind: "notice", Text: "nothing to yank yet"})
 		m.Refresh()
@@ -34,16 +36,12 @@ func (m *Model) YankText(text string) {
 	m.Refresh()
 }
 
-// maxYank lists how many recent messages the yank picker shows.
-
-const maxYank = 20
-
 // OpenYank shows the message picker: ↑↓ pick any chat message, Enter
 // copies its full text. The sidebar stays visible — copied text is
 // always chat-only, like opencode's single-column copy.
 
 func (m *Model) OpenYank() tea.Cmd {
-	opts, descs, payload := yankEntries(m.blocks)
+	opts, descs, payload := yank.Entries(m.blocks)
 	if len(opts) == 0 {
 		m.AddBlock(Block{Kind: "notice", Text: "nothing to yank yet"})
 		m.Refresh()
@@ -55,31 +53,4 @@ func (m *Model) OpenYank() tea.Cmd {
 	m.Dialogs = append(m.Dialogs, d)
 	m.Refresh()
 	return nil
-}
-
-// yankEntries is pure (no clipboard) so tests stay hermetic.
-// Most recent message first; Options previews align with Payload full texts.
-
-func yankEntries(blocks []Block) (opts, descs, payload []string) {
-	for i := len(blocks) - 1; i >= 0 && len(opts) < maxYank; i-- {
-		b := blocks[i]
-		if (b.Kind != "user" && b.Kind != "assistant") || strings.TrimSpace(b.Text) == "" {
-			continue
-		}
-		opts = append(opts, b.Kind+": "+Short(b.Text, 60))
-		descs = append(descs, fmt.Sprintf("%d chars", len([]rune(b.Text))))
-		payload = append(payload, b.Text)
-	}
-	return opts, descs, payload
-}
-
-// lastAssistantText is pure (no clipboard) so tests stay hermetic.
-
-func lastAssistantText(blocks []Block) string {
-	for i := len(blocks) - 1; i >= 0; i-- {
-		if blocks[i].Kind == "assistant" && strings.TrimSpace(blocks[i].Text) != "" {
-			return blocks[i].Text
-		}
-	}
-	return ""
 }

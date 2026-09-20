@@ -2,11 +2,12 @@
 // library resolves and compiles together. Import paths matter here: the Charm
 // v2 modules moved from github.com/charmbracelet/* to charm.land/*.
 //
+// Chat markdown/code renders with pi's own renderer (see src/pimark), so no
+// Go markdown/highlight library is pinned here.
+//
 //	tea      // event loop + state management (Bubble Tea v2)
 //	bubbles  // textarea, viewport, spinner, list (Bubbles v2)
 //	lipgloss // styling (Lip Gloss v2)
-//	glamour  // Markdown rendering
-//	chroma   // code highlighting
 //	cobra    // CLI commands
 //	exec     // external tool runner (stdlib os/exec, no install needed)
 package stack
@@ -19,15 +20,13 @@ import (
 	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
-	"charm.land/glamour/v2"
 	lipgloss "charm.land/lipgloss/v2"
-	"github.com/alecthomas/chroma/v2/lexers"
 	"github.com/spf13/cobra"
 )
 
 // EventLoop touches the Bubble Tea v2 event-loop entry points.
 func EventLoop() (tea.Cmd, tea.ProgramOption) {
-	return tea.Quit, tea.WithAltScreen()
+	return tea.Quit, tea.WithoutSignalHandler()
 }
 
 // Widgets builds the Bubbles v2 inputs used by chat.
@@ -35,7 +34,7 @@ func Widgets() (textarea.Model, viewport.Model, spinner.Model) {
 	ta := textarea.New()
 	ta.Placeholder = "Nhap tin nhan..."
 	ta.Focus()
-	return ta, viewport.New(0, 0), spinner.New()
+	return ta, viewport.New(), spinner.New()
 }
 
 // ItemList builds an empty selection list.
@@ -48,29 +47,10 @@ func Style(s string) string {
 	return lipgloss.NewStyle().Bold(true).Render(s)
 }
 
-// Markdown renders Markdown text via Glamour.
-func Markdown(src string) (string, error) {
-	r, err := glamour.NewTermRenderer(glamour.WithAutoStyle())
-	if err != nil {
-		return "", err
-	}
-	return r.Render(src)
-}
-
-// HasLexer reports whether Chroma can highlight the named language.
-func HasLexer(name, src string) bool {
-	l := lexers.Get(name)
-	if l == nil {
-		return false
-	}
-	it, err := l.Tokenise(nil, src)
-	return err == nil && it != nil
-}
-
 // RootCommand builds the Cobra CLI root.
 func RootCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "gotui",
+		Use:   "openpi",
 		Short: "TUI frontend",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()

@@ -5,7 +5,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 
-	"gotui/src/pirpc"
+	"openpi/src/components/palette"
+
+	"openpi/src/pirpc"
 )
 
 // "/" must match everything (no 8-item cap); the popup window scrolls.
@@ -33,12 +35,12 @@ func TestRefreshCmdsShowsAll(t *testing.T) {
 	if len(m.cmdItems) != len(m.Cmds) {
 		t.Fatalf("want all %d cmds, got %d", len(m.Cmds), len(m.cmdItems))
 	}
-	if h := m.popupH(); h > cmdWin+5 {
-		t.Fatalf("popup height %d exceeds window %d", h, cmdWin)
+	if h := m.popupH(); h > palette.Win+5 {
+		t.Fatalf("popup height %d exceeds window %d", h, palette.Win)
 	}
 	m.cmdCursor = len(m.cmdItems) - 1
 	m.ensureCmdVisible()
-	if m.cmdOffset+cmdWin != len(m.cmdItems) {
+	if m.cmdOffset+palette.Win != len(m.cmdItems) {
 		t.Fatalf("last row must scroll into view, offset=%d", m.cmdOffset)
 	}
 }

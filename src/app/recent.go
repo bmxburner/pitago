@@ -1,12 +1,12 @@
 package app
 
 import (
-	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"openpi/src/components/recent"
 )
 
 // recentContentRow is the sidebar content row of the first recent model:
@@ -17,67 +17,15 @@ import (
 // petRows is added (not inlined) so a PET height change moves this too.
 const recentContentRow = 16 + petRows
 
-func loadRecents(path string) []RecentModel {
-	var out []RecentModel
-	if path == "" {
-		return nil
-	}
-	raw, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	_ = json.Unmarshal(raw, &out)
-	if len(out) > maxRecent {
-		out = out[:maxRecent]
-	}
-	return out
-}
-
-// saveRecents persists the list best-effort (dir 0700, file 0600).
-
-func saveRecents(path string, list []RecentModel) {
-	if path == "" {
-		return
-	}
-	if err := os.MkdirAll(dirOf(path), 0o700); err != nil {
-		return
-	}
-	raw, err := json.MarshalIndent(list, "", "  ")
-	if err != nil {
-		return
-	}
-	_ = os.WriteFile(path, raw, 0o600)
-}
-
-func dirOf(path string) string {
-	if i := strings.LastIndex(path, "/"); i >= 0 {
-		return path[:i]
-	}
-	return "."
-}
-
 // pushRecent moves (provider, id) to the front, dedupes, caps, persists.
+// Ordering/cap live in components/recent; empty ids stay ignored (no write).
 
 func (m *Model) pushRecent(provider, id, label string) {
-	id = strings.TrimSpace(id)
-	if id == "" {
+	if strings.TrimSpace(id) == "" {
 		return
 	}
-	provider = strings.TrimSpace(provider)
-	label = strings.TrimSpace(label)
-	out := make([]RecentModel, 0, maxRecent)
-	out = append(out, RecentModel{Provider: provider, ID: id, Label: label})
-	for _, r := range m.recentModels {
-		if r.ID == id || (label != "" && (r.Label == label || r.DispLabel() == label)) {
-			continue
-		}
-		out = append(out, r)
-		if len(out) >= maxRecent {
-			break
-		}
-	}
-	m.recentModels = out
-	saveRecents(m.recentPath, out)
+	m.recentModels = recent.Push(m.recentModels, provider, id, label)
+	recent.Save(m.recentPath, m.recentModels)
 }
 
 // openRecents shows the recent-models picker (Ctrl+R / /recent).
@@ -147,7 +95,8 @@ func (m *Model) SwitchToRecent(idx int) tea.Cmd {
 
 // firstUser returns the first user message text (session title line).
 
-func (m Model) recentAt(x, y int) (int, bool) {	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 || len(m.recentModels) == 0 {
+func (m Model) recentAt(x, y int) (int, bool) {
+	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 || len(m.recentModels) == 0 {
 		return 0, false
 	}
 	if x < m.mainW()+1 || x > m.winW || y < 2+recentContentRow {
@@ -165,9 +114,9 @@ func (m Model) recentAt(x, y int) (int, bool) {	if !m.ready || !m.showSide() || 
 // events (--mouse); otherwise clicks never reach the app, so show keys.
 func (m Model) recentHint() string {
 	if m.Mouse {
-		return "click to switch · ^R list"
+		return "click to switch · Alt+↑↓ scroll"
 	}
-	return "^R list · Alt+1…5"
+	return "^R list · Alt+1…5 · Alt+↑↓ scroll"
 }
 
 // command palette (/ autocomplete) --------------------------------------------

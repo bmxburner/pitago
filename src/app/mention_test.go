@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textarea"
+
+	"openpi/src/components/mention"
 )
 
 func TestAtToken(t *testing.T) {
@@ -27,9 +29,9 @@ func TestAtToken(t *testing.T) {
 		{`"unclosed @x`, 12, "", false}, // " wins: non-@ path context
 	}
 	for _, c := range cases {
-		prefix, _, ok := atToken([]rune(c.in), c.col)
+		prefix, _, ok := mention.Token([]rune(c.in), c.col)
 		if ok != c.ok || prefix != c.want {
-			t.Errorf("atToken(%q,%d) = (%q,%v), want (%q,%v)",
+			t.Errorf("mention.Token(%q,%d) = (%q,%v), want (%q,%v)",
 				c.in, c.col, prefix, ok, c.want, c.ok)
 		}
 	}
@@ -52,27 +54,27 @@ func mkAtTree(t *testing.T) string {
 
 func TestAtListDir(t *testing.T) {
 	dir := mkAtTree(t)
-	items := atListDir(dir, "", "ma", false)
-	if len(items) != 1 || items[0].value != "@main.go" {
+	items := mention.ListDir(dir, "", "ma", false)
+	if len(items) != 1 || items[0].Value != "@main.go" {
 		t.Fatalf("prefix filter: got %+v", items)
 	}
-	items = atListDir(dir, "", "", false)
+	items = mention.ListDir(dir, "", "", false)
 	if len(items) != 3 { // main.go, a b.txt, sub/
 		t.Fatalf("want 3 items, got %+v", items)
 	}
-	if !items[0].dir || items[0].label != "sub/" { // dirs first
+	if !items[0].Dir || items[0].Label != "sub/" { // dirs first
 		t.Fatalf("dirs first: got %+v", items)
 	}
-	var spaced *atItem
+	var spaced *mention.Item
 	for i := range items {
-		if items[i].label == "a b.txt" {
+		if items[i].Label == "a b.txt" {
 			spaced = &items[i]
 		}
 	}
-	if spaced == nil || spaced.value != `@"a b.txt"` {
+	if spaced == nil || spaced.Value != `@"a b.txt"` {
 		t.Fatalf("spaced path must be quoted: %+v", items)
 	}
-	if got := atListDir(filepath.Join(dir, "sub"), "sub/", "", false); len(got) != 2 || got[0].value != "@sub/deep/" {
+	if got := mention.ListDir(filepath.Join(dir, "sub"), "sub/", "", false); len(got) != 2 || got[0].Value != "@sub/deep/" {
 		t.Fatalf("scoped listing: got %+v", got)
 	}
 }
@@ -83,7 +85,7 @@ func TestAtFuzzy(t *testing.T) {
 	items := m.atCandidates("inner", false)
 	found := false
 	for _, it := range items {
-		if it.value == "@sub/inner.go" {
+		if it.Value == "@sub/inner.go" {
 			found = true
 		}
 	}

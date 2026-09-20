@@ -2,13 +2,15 @@ package app
 
 import (
 	"github.com/charmbracelet/lipgloss"
+
+	"openpi/src/components/recent"
 )
 
 const sideW = 34 // sidebar width
 
 const sideInnerW = sideW - 4 // sidebar content width (box minus border 2 + padding 2)
 
-const maxRecent = 5 // recent models kept in the sidebar
+const maxRecent = recent.MaxRecent // recent models kept in the sidebar
 
 // palette (opencode-like monochrome: subtle borders, dim text, no rainbow)
 const (
@@ -22,6 +24,13 @@ const (
 	cSide     = lipgloss.Color("240") // unused now, kept subtle
 	cInput    = lipgloss.Color("252") // input focus: white, not cyan
 	cInputDim = lipgloss.Color("240") // input idle: subtle gray
+	// tool block backgrounds, resolved from pi's dark theme vars:
+	// toolPendingBg / toolSuccessBg / toolErrorBg (pi wraps every tool
+	// execution in a Box with these: pending while running, green on
+	// success, red on error).
+	cToolPending = lipgloss.Color("#282832")
+	cToolSuccess = lipgloss.Color("#283228")
+	cToolError   = lipgloss.Color("#3c2828")
 )
 
 var (
@@ -43,18 +52,6 @@ var (
 			Padding(0, 1)
 	sideTitleStyle = lipgloss.NewStyle().Bold(true).Foreground(cText)
 	sepStyle       = lipgloss.NewStyle().Foreground(cBorder)
-	inputStyle     = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cInputDim).
-			Padding(0, 1)
-	inputFocusStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cInput).
-			Padding(0, 1)
-	inputRunStyle = lipgloss.NewStyle().
-			Border(lipgloss.RoundedBorder()).
-			BorderForeground(cGreen).
-			Padding(0, 1)
 	cmdPopStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(cBorder).

@@ -5,12 +5,12 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"openpi/src/components/palette"
 )
 
-// cmdWin is the visible row window of the / command popup (the full match
-// list scrolls; the popup never grows past this).
-const cmdWin = 10
-
+// Matching + window size live in components/palette; this file keeps the
+// popup wiring on Model.
 func (m *Model) cmdPrefix() (string, bool) {
 	v := m.ta.Value()
 	if !strings.HasPrefix(v, "/") || strings.ContainsAny(v, " \n") {
@@ -22,13 +22,11 @@ func (m *Model) cmdPrefix() (string, bool) {
 func (m *Model) refreshCmds() {
 	m.cmdItems = m.cmdItems[:0]
 	if p, ok := m.cmdPrefix(); ok {
-		pl := strings.ToLower(p)
+		names := make([]string, len(m.Cmds))
 		for i := range m.Cmds {
-			name := strings.ToLower(m.Cmds[i].Name)
-			if strings.HasPrefix(name, pl) || strings.Contains(name, pl) {
-				m.cmdItems = append(m.cmdItems, i)
-			}
+			names[i] = m.Cmds[i].Name
 		}
+		m.cmdItems = append(m.cmdItems, palette.Match(p, names)...)
 	}
 	m.cmdOpen = len(m.cmdItems) > 0
 	if m.cmdCursor >= len(m.cmdItems) {
@@ -41,14 +39,14 @@ func (m *Model) refreshCmds() {
 	m.applyPopupH()
 }
 
-// ensureCmdVisible keeps cmdCursor inside the [cmdOffset, cmdOffset+cmdWin) window.
+// ensureCmdVisible keeps cmdCursor inside the [cmdOffset, cmdOffset+palette.Win) window.
 
 func (m *Model) ensureCmdVisible() {
 	if m.cmdCursor < m.cmdOffset {
 		m.cmdOffset = m.cmdCursor
 	}
-	if m.cmdCursor >= m.cmdOffset+cmdWin {
-		m.cmdOffset = m.cmdCursor - cmdWin + 1
+	if m.cmdCursor >= m.cmdOffset+palette.Win {
+		m.cmdOffset = m.cmdCursor - palette.Win + 1
 	}
 	if m.cmdOffset < 0 {
 		m.cmdOffset = 0
@@ -60,14 +58,14 @@ func (m *Model) popupH() int {
 		return 0
 	}
 	n := len(m.cmdItems)
-	if n > cmdWin {
-		n = cmdWin
+	if n > palette.Win {
+		n = palette.Win
 	}
 	extra := 0 // scroll hints above/below the window
 	if m.cmdOffset > 0 {
 		extra++
 	}
-	if m.cmdOffset+cmdWin < len(m.cmdItems) {
+	if m.cmdOffset+palette.Win < len(m.cmdItems) {
 		extra++
 	}
 	return n + extra + 3 // rows + hints + footer + border
@@ -77,7 +75,7 @@ func (m *Model) applyPopupH() {
 	if !m.ready {
 		return
 	}
-	h := m.baseVpH - m.popupH() - m.atPopupH()
+	h := m.baseVpH - m.popupH() - m.atPopupH() - m.chipH()
 	if h < 3 {
 		h = 3
 	}
@@ -152,7 +150,7 @@ func (m *Model) completeCmd() {
 func (m Model) renderCmdPopup() string {
 	mainW := m.mainW()
 	var b strings.Builder
-	end := m.cmdOffset + cmdWin
+	end := m.cmdOffset + palette.Win
 	if end > len(m.cmdItems) {
 		end = len(m.cmdItems)
 	}

@@ -9,20 +9,14 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"gotui/src/pirpc"
+	"openpi/src/components/chat"
+	"openpi/src/components/mention"
+	"openpi/src/components/recent"
+	"openpi/src/pirpc"
 )
 
-// Block is one rendered unit in the chat column.
-type Block struct {
-	Kind       string // user, assistant, thinking, tool, bash, notice
-	Text       string
-	ToolName   string
-	ToolArgs   string
-	ToolStatus string // running, done, error
-	ToolResult string
-	ToolCallID string
-	Err        bool
-}
+// Block is one rendered unit in the chat column (see components/chat).
+type Block = chat.Block
 
 // Dialog is a modal: extension permission prompt or native picker/settings.
 
@@ -52,27 +46,12 @@ type SettingsState struct {
 	Thinking, Model        string
 }
 
-// RecentModel is one entry of the sidebar list (provider may be "" for
-// entries learned from a bare label; resolved via GetModels on switch).
-
-type RecentModel struct {
-	Provider string `json:"provider,omitempty"`
-	ID       string `json:"id"`
-	Label    string `json:"label,omitempty"`
-}
-
-// dispLabel is what the sidebar/dialog show.
-
-func (r RecentModel) DispLabel() string {
-	if r.Label != "" {
-		return r.Label
-	}
-	return r.ID
-}
+// RecentModel is one entry of the sidebar list (see components/recent).
+type RecentModel = recent.RecentModel
 
 type Model struct {
 	vp           viewport.Model
-	sideVp       viewport.Model // sidebar scroll: clips content to sideH, wheel over sidebar scrolls it
+	sideVp       viewport.Model // sidebar scroll: clips content to sideH, Alt+↑↓/PgUp/PgDn or wheel over it scrolls
 	ta           textarea.Model
 	Pi           *pirpc.Client
 	blocks       []Block
@@ -125,12 +104,18 @@ type Model struct {
 	atRow        int // input row holding the @ token
 	atStart      int // rune index where the @ token starts
 	atPrefix     string
-	atItems      []atItem
+	atItems      []mention.Item
+	imgAtts      []imgAttach // input tray: dropped/pasted/@-completed images as [Image N] chips
+	imgSeq       int         // chip counter, never renumbered
+	trayFocus    bool        // cursor moved into the tray (↓ from last input line)
+	imgCursor    int         // selected chip while trayFocus
+	trayRet      int         // input offset to restore on Esc
 	pet          petState
 	recentModels []RecentModel
 	recentPath   string // persisted recent models ("" = don't persist)
 	builtins     []Builtin
 	confirm      map[string]ConfirmFunc
+	expandTools  bool // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
 }
 
 type connectedMsg struct {
@@ -212,11 +197,11 @@ type CmdsRefreshMsg struct {
 
 func New(pi *pirpc.Client, cwd string) Model {
 	ta := textarea.New()
-	ta.Placeholder = "Type a message… (/ for commands)"
+	ta.Placeholder = "Type a message… (/ commands · ^V paste)"
 	ta.Focus()
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
-	ta.Prompt = "> "
+	ta.Prompt = "❯ "
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(cInput)
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(cMuted)
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(cMuted)
@@ -284,32 +269,69 @@ func (m *Model) ensureTool(callID, name string) int {
 	return i
 }
 
-func compactArgs(raw string) string {
-	s := strings.Join(strings.Fields(raw), " ")
-	if len(s) > 120 {
-		return s[:120] + "…"
+// setToolArgs records a tool call's arguments: the raw JSON (so write
+// content can render a collapsible preview like pi) plus the pretty
+// one-line header. Later (fuller) args overwrite earlier partials.
+func (m *Model) setToolArgs(i int, name, raw string) {
+	if strings.TrimSpace(raw) == "" {
+		return
 	}
-	return s
+	m.blocks[i].ToolArgsRaw = raw
+	if h := prettyArgs(name, raw); h != "" {
+		m.blocks[i].ToolArgs = h
+	}
 }
 
 // update -------------------------------------------------------------------
 
-func (m *Model) sendCmd(steer bool, text string) tea.Cmd {
+func (m *Model) sendCmd(steer bool, text string, images []pirpc.ImageContent) tea.Cmd {
 	m.thinking = true
 	m.Status = "pi is running…"
 	m.RefreshFollow()
 	return func() tea.Msg {
 		var err error
 		if steer {
-			_, err = m.Pi.Steer(text)
+			_, err = m.Pi.Steer(text, images...)
 			if err != nil { // fallback: follow_up via plain prompt
-				_, err = m.Pi.Prompt(text)
+				_, err = m.Pi.Prompt(text, images...)
 			}
 		} else {
-			_, err = m.Pi.Prompt(text)
+			_, err = m.Pi.Prompt(text, images...)
 		}
 		return sentAckMsg{err: err}
 	}
+}
+
+// submitInput sends the input (or steers mid-turn). Shared by Enter and
+// tray-Enter. Empty text + tray sends the images alone.
+func (m *Model) submitInput() tea.Cmd {
+	text := strings.TrimSpace(m.ta.Value())
+	if text == "" && len(m.imgAtts) == 0 {
+		return nil
+	}
+	if b, arg, ok := m.FindBuiltin(text); ok {
+		m.ta.Reset()
+		m.refreshCmds()
+		m.refreshAt()
+		m.Refresh()
+		return b.Run(m, arg)
+	}
+	// @image.png → vision attachments (pi CLI parity); the @text
+	// stays so history keeps the file ref, images ride the RPC.
+	// Tray chips (drops/pastes/Tab-completed @) join in too.
+	images, notes := m.takeImages(text)
+	for _, n := range notes {
+		m.AddBlock(Block{Kind: "notice", Text: n})
+	}
+	if m.thinking {
+		m.ta.Reset()
+		m.closeAt()
+		return m.sendCmd(true, text, images)
+	}
+	m.ta.Reset()
+	m.closeAt()
+	m.Refresh()
+	return m.sendCmd(false, text, images)
 }
 
 func (m *Model) queryStats() tea.Cmd {
@@ -392,7 +414,7 @@ func (m *Model) RefreshFollow() {
 //
 // Origin tells where the feature comes from and is shown in /help-style
 // surfaces: "pi" re-implements one of pi's TUI-level builtins over RPC
-// (pi's own builtins never arrive via get_commands), "gotui" is ours.
+// (pi's own builtins never arrive via get_commands), "openpi" is ours.
 // Implementations live in src/builtin; this package only holds the table.
 type Builtin struct {
 	Name, Desc, Usage, Origin string
@@ -414,7 +436,11 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.spawnOpts = opts
 	m.KeyPath = keyPath
 	m.recentPath = pirpc.RecentPath()
-	m.recentModels = loadRecents(m.recentPath)
+	m.recentModels = recent.Load(m.recentPath)
+	if len(m.recentModels) == 0 {
+		// pre-rename fallback: adopt the gotui list, saves migrate it
+		m.recentModels = recent.Load(pirpc.LegacyRecentPath())
+	}
 }
 
 // FindBuiltin matches "/name" or "/name args" against the registry.
