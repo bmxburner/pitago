@@ -621,7 +621,7 @@ func (m Model) renderInput() string {
 	left := "○ ready · ↵ send · / commands · @ files · ^P model · ^R recents · ^C quit"
 	if m.thinking {
 		border = cGreen
-		title = "⋯ " + m.Status
+		title = spinFrame(m.pet.tick) + " " + m.inputStatus()
 		left = "↵ steer · Esc cancel"
 	} else if len(m.Dialogs) > 0 {
 		border = cInputDim
@@ -641,6 +641,25 @@ func (m Model) renderInput() string {
 	}
 	lines = append(lines, foot)
 	return inputBox(title, lines, innerW, border)
+}
+
+// spinFrames is pi's working spinner: braille dots cycling on the input
+// border while a turn runs. Indexed by pet.tick (500ms loop already
+// Refresh()es), so no extra timer — the frame advances for free.
+var spinFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+func spinFrame(tick int) string {
+	return spinFrames[tick%len(spinFrames)]
+}
+
+// inputStatus is the live turn status for the input border: the pet's timed
+// label ("Working... 7s" / "Thinking... 3s" / "Writing... 2s") while busy,
+// falling back to m.Status before the first stream event anchors the pet.
+func (m Model) inputStatus() string {
+	if m.pet.status.Busy() {
+		return m.petLabel()
+	}
+	return m.Status
 }
 
 // inputBox draws a rounded box with an optional live-status title spliced

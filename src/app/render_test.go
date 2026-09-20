@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -241,6 +242,14 @@ func TestRenderInputStatusTitle(t *testing.T) {
 	// status lives in the border now, not duplicated in the footer
 	if strings.Contains(out, "○ pi is running") {
 		t.Fatalf("status duplicated in footer: %q", out)
+	}
+	// busy pet → live label (Working... + elapsed) with spinner, pi-style
+	m.pet.status = petWorking
+	m.pet.since = time.Now()
+	out = stripANSI(m.renderInput())
+	top = strings.Split(out, "\n")[0]
+	if !strings.Contains(top, "Working...") {
+		t.Fatalf("busy input should show live Working label: %q", top)
 	}
 	m.thinking = false
 	out = stripANSI(m.renderInput())

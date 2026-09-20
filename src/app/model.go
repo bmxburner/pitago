@@ -51,7 +51,7 @@ type RecentModel = recent.RecentModel
 
 type Model struct {
 	vp           viewport.Model
-	sideVp       viewport.Model // sidebar scroll: clips content to sideH, Alt+↑↓/PgUp/PgDn or wheel over it scrolls
+	sideVp       viewport.Model // sidebar scroll: clips content to sideH, Ctrl/Alt+↑↓/PgUp/PgDn or wheel over it scrolls
 	ta           textarea.Model
 	Pi           *pirpc.Client
 	blocks       []Block

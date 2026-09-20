@@ -13,6 +13,27 @@ import (
 	"openpi/src/pirpc"
 )
 
+// sideScrollKey maps Ctrl+scroll keys to their plain equivalent for the
+// sidebar viewport (whose KeyMap only matches plain keys). Plain ↑↓ stays
+// on chat scroll, so Ctrl is the no-mouse sidebar path.
+func sideScrollKey(t tea.KeyType) (tea.KeyType, bool) {
+	switch t {
+	case tea.KeyCtrlUp:
+		return tea.KeyUp, true
+	case tea.KeyCtrlDown:
+		return tea.KeyDown, true
+	case tea.KeyCtrlPgUp:
+		return tea.KeyPgUp, true
+	case tea.KeyCtrlPgDown:
+		return tea.KeyPgDown, true
+	case tea.KeyCtrlHome:
+		return tea.KeyHome, true
+	case tea.KeyCtrlEnd:
+		return tea.KeyEnd, true
+	}
+	return t, false
+}
+
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// dialog captures all keys while open
 	if len(m.Dialogs) > 0 {
@@ -362,18 +383,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.SwitchToRecent(n)
 			}
 		}
-		// Alt+↑↓ PgUp PgDn Home End: scroll sidebar without a mouse.
-		// Wheel needs --mouse, so this is the only scroll path by default.
-		if msg.Alt {
-			switch msg.Type {
-			case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
-				if m.showSide() {
+		// Alt+↑↓ PgUp PgDn Home End, or Ctrl+↑↓ PgUp PgDn Home End:
+		// scroll sidebar without a mouse. Wheel needs --mouse; Alt is
+		// broken on some terminals (macOS Option), so Ctrl is the
+		// reliable default. Plain ↑↓ stays on chat scroll.
+		if m.showSide() {
+			if msg.Alt {
+				switch msg.Type {
+				case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
 					km := msg
 					km.Alt = false // viewport KeyMap matches "up", not "alt+up"
 					var c tea.Cmd
 					m.sideVp, c = m.sideVp.Update(km)
 					return m, c
 				}
+			}
+			if plain, ok := sideScrollKey(msg.Type); ok {
+				km := msg
+				km.Type = plain // viewport KeyMap matches plain keys
+				var c tea.Cmd
+				m.sideVp, c = m.sideVp.Update(km)
+				return m, c
 			}
 		}
 		if m.atOpen && m.handleAtKey(msg) {

@@ -69,6 +69,32 @@ func wheelAt(x, y int, down bool) tea.MouseMsg {
 	return tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: b}
 }
 
+// Ctrl+↓ scrolls the sidebar without a mouse (Alt+↓ keeps working);
+// neither may move the chat viewport.
+func TestSidebarCtrlScroll(t *testing.T) {
+	m := tallModel(t)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = tm.(Model)
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlDown})
+	m = tm.(Model)
+	if m.sideVp.YOffset <= 0 {
+		t.Fatal("Ctrl+Down did not scroll the sidebar")
+	}
+	if m.vp.YOffset != 0 {
+		t.Fatal("sidebar Ctrl+Down must not scroll the chat")
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyCtrlUp})
+	m = tm.(Model)
+	if m.sideVp.YOffset != 0 {
+		t.Fatalf("Ctrl+Up did not scroll back, offset=%d", m.sideVp.YOffset)
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown, Alt: true})
+	m = tm.(Model)
+	if m.sideVp.YOffset <= 0 {
+		t.Fatal("Alt+Down did not scroll the sidebar")
+	}
+}
+
 // Wheel over the sidebar scrolls the sidebar, not the chat; wheel over the
 // chat leaves the sidebar alone.
 func TestSidebarWheelScroll(t *testing.T) {

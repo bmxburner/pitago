@@ -156,7 +156,7 @@ script/release.sh v0.0.1
 | `Tab`          | Complete `/command` or `@file`                                                                   |
 | `@`            | Mention a file (fuzzy finder, like pi — Tab/Enter completes, text goes to pi raw; `@*.png/.jpg/.gif/.webp` also sends vision) |
 | `↑↓ PgUp PgDn` | Scroll chat (when input is single-line) |
-| `Alt+↑↓ PgUp PgDn Home End` | Scroll sidebar (keyboard, always works) |
+| `Alt+↑↓ PgUp PgDn Home End` or `Ctrl+↑↓ PgUp PgDn Home End` | Scroll sidebar (keyboard, always works) |
 | `Mouse wheel` | On by default: hover sidebar to scroll it, chat otherwise; `--mouse=false` disables |
 
 ### Copying text

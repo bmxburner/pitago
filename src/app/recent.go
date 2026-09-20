@@ -112,11 +112,12 @@ func (m Model) recentAt(x, y int) (int, bool) {
 
 // recentHint advertises click-switch only when the terminal reports mouse
 // events (--mouse); otherwise clicks never reach the app, so show keys.
+// Sidebar scrolls with Ctrl+↑↓ (Alt+↑↓ also works, wheel with --mouse).
 func (m Model) recentHint() string {
 	if m.Mouse {
-		return "click to switch · Alt+↑↓ scroll"
+		return "click to switch · ^↑↓ scroll"
 	}
-	return "^R list · Alt+1…5 · Alt+↑↓ scroll"
+	return "^R list · ^↑↓ scroll"
 }
 
 // command palette (/ autocomplete) --------------------------------------------
