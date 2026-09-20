@@ -7,16 +7,25 @@ pi is the backend. No direct LLM calls anymore.
 
 ## Architecture
 ```
-main.go (Bubble Tea, existing theme)   <-events-  internal/pirpc/client.go  <-JSONL->  pi --mode rpc
+src/main.go (entry, wiring) ──uses──▶ src/app (Bubble Tea TUI shell)
+                                          │ ▲
+                    src/builtin (pi builtins over RPC) │ │ registry+confirmers
+                    src/extension (extension protocol) ┘ │
+src/pirpc/client.go  <-JSONL->  pi --mode rpc
 ```
+- `src/app` never imports `builtin`/`extension` (wired in main via
+  `UseBuiltins`); `builtin` operates on `*app.Model`, `extension` is pure.
+- Origin rule: `src/builtin` = pi TUI builtins (`OriginPi`) + gotui's own
+  (`OriginGotui`, e.g. `/recent`); everything from `get_commands`
+  (extension/prompt/skill) is extension-side and runs via Prompt forwarding.
 
-## internal/pirpc (stdlib only: os/exec + encoding/json + bufio)
+## src/pirpc (stdlib only: os/exec + encoding/json + bufio)
 - Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/gotui-pi-stderr.log
 - Reader: ReadString('\n'), strip \r (per protocol; no Scanner — its 64k buffer is too small, Reader is safe)
 - `type:response` + id → pending chan; everything else → OnEvent (calls prog.Send, thread-safe)
 - Command struct has explicit fields + omitempty, no map[string]any
 
-## TUI: event-driven rendering (keep the current orange/night theme)
+## TUI: event-driven rendering (opencode-like monochrome; chat + session sidebar)
 - `message_update` text_delta → appended to the assistant block (true streaming)
 - thinking_delta → gray block; toolcall_start/end + tool_execution_* → tool block (running → done + trimmed result)
 - message_end → finalizes the block (falls back to message text when no deltas arrived)

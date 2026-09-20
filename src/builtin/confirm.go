@@ -1,0 +1,155 @@
+package builtin
+
+import (
+	"fmt"
+	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"gotui/src/app"
+	"gotui/src/pirpc"
+)
+
+// Confirmers runs the Enter action of each picker dialog kind.
+// Wired into app via UseBuiltins; app's confirmDialog only dispatches.
+func Confirmers() map[string]app.ConfirmFunc {
+	return map[string]app.ConfirmFunc{
+		"model":       confirmModel,
+		"recent":      confirmRecent,
+		"thinking":    confirmThinking,
+		"settings":    confirmSettings,
+		"login":       confirmLogin,
+		"loginMethod": confirmLoginMethod,
+		"loginOAuth":  confirmLoginOAuth,
+		"logout":      confirmLogout,
+		"secret":      confirmSecret,
+		"yank":        confirmYank,
+	}
+}
+
+func confirmModel(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	prov, id := d.Providers[ri], d.Options[ri]
+	m.Dialogs = m.Dialogs[1:]
+	m.Status = "switching model…"
+	m.Refresh()
+	return m, func() tea.Msg {
+		label, err := m.Pi.SetModelByID(prov, id)
+		return app.ModelCycleMsg{Label: label, Provider: prov, ID: id, Err: err}
+	}
+}
+
+func confirmRecent(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	return m, m.SwitchToRecent(ri)
+}
+
+func confirmThinking(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	level := d.Options[ri]
+	m.Dialogs = m.Dialogs[1:]
+	m.Status = "switching thinking…"
+	m.Refresh()
+	return m, func() tea.Msg {
+		if err := m.Pi.SetLevel(level); err != nil {
+			return app.SettingsRefreshMsg{Err: err}
+		}
+		return app.SettingsRefreshMsg{Notice: "thinking → " + level}
+	}
+}
+
+func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	return settingsAction(m, ri)
+}
+
+func confirmLogin(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	prov := d.Options[ri]
+	m.Dialogs = m.Dialogs[1:]
+	openLoginMethod(m, prov, pirpc.LookupEnv(prov))
+	return m, nil
+}
+
+func confirmLoginMethod(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	prov := d.LoginProvider
+	switch ri {
+	case 0: // enter API key
+		env := d.LoginEnv
+		m.Dialogs[0] = &app.Dialog{Kind: "secret", Title: "API key — " + prov,
+			Message:       "Save to " + env + " (gotui keystore, file 0600). Pi reconnects automatically.",
+			LoginProvider: prov, LoginEnv: env}
+		m.Refresh()
+		return m, nil
+	case 1: // OAuth
+		m.Dialogs[0] = &app.Dialog{Kind: "loginOAuth", Title: "OAuth — " + prov,
+			Message:       "1. Open another terminal\n2. Run: pi\n3. Type: /login " + prov + " then follow the steps\n4. Come back here and reload",
+			Options:       []string{"Done — reload", "Close"},
+			LoginProvider: prov}
+		m.Dialogs[0].Reindex()
+		m.Refresh()
+		return m, nil
+	default: // reload models
+		m.Dialogs = m.Dialogs[1:]
+		m.Status = "reloading models…"
+		m.Refresh()
+		return m, func() tea.Msg {
+			models, err := m.Pi.GetModels()
+			if err != nil {
+				return app.SettingsRefreshMsg{Err: err}
+			}
+			return app.SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+		}
+	}
+}
+
+func confirmLoginOAuth(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	if ri == 0 {
+		m.Status = "reloading models…"
+		m.Refresh()
+		return m, func() tea.Msg {
+			models, err := m.Pi.GetModels()
+			if err != nil {
+				return app.SettingsRefreshMsg{Err: err}
+			}
+			return app.SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+		}
+	}
+	m.Refresh()
+	return m, nil
+}
+
+func confirmLogout(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	prov := d.Options[ri]
+	desc := app.DescOf(d, ri)
+	m.Dialogs = m.Dialogs[1:]
+	return m, doLogout(m, prov, desc)
+}
+
+func confirmSecret(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	key := strings.TrimSpace(d.Filter)
+	if key == "" {
+		return m, nil
+	}
+	prov, env := d.LoginProvider, d.LoginEnv
+	m.Dialogs = m.Dialogs[1:]
+	m.Refresh()
+	return m, func() tea.Msg {
+		return app.LoginKeyMsg{Provider: prov, Env: env, Key: key}
+	}
+}
+
+// confirmYank copies the picked message's full text (Payload parallel to
+// Options) to the clipboard.
+
+func confirmYank(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	text := ""
+	if ri < len(d.Payload) {
+		text = d.Payload[ri]
+	}
+	if strings.TrimSpace(text) == "" {
+		m.AddBlock(app.Block{Kind: "notice", Text: "nothing to yank yet"})
+		m.Refresh()
+		return m, nil
+	}
+	m.YankText(text)
+	return m, nil
+}

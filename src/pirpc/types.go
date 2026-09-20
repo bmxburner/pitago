@@ -102,9 +102,10 @@ func BlocksOf(raw json.RawMessage) []ContentBlock {
 // State mirrors get_state data (subset we display).
 type State struct {
 	Model struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Provider string `json:"provider"`
+		ID            string `json:"id"`
+		Name          string `json:"name"`
+		Provider      string `json:"provider"`
+		ContextWindow int    `json:"contextWindow"`
 	} `json:"model"`
 	ThinkingLevel  string `json:"thinkingLevel"`
 	IsStreaming    bool   `json:"isStreaming"`
@@ -142,20 +143,35 @@ type TreeNode struct {
 // Stats mirrors get_session_stats data (subset we display).
 type Stats struct {
 	SessionID   string  `json:"sessionId"`
+	UserMsgs    int     `json:"-"`
+	AsstMsgs    int     `json:"-"`
 	ToolCalls   int     `json:"toolCalls"`
+	ToolResults int     `json:"-"`
 	Cost        float64 `json:"cost"`
+	In          int     `json:"-"`
+	Out         int     `json:"-"`
+	CacheRead   int     `json:"-"`
+	CacheWrite  int     `json:"-"`
 	TokensTotal int     `json:"-"`
 	ContextPct  float64 `json:"-"`
-	ContextTxt  string  `json:"-"`
+	ContextToks int     `json:"-"`
+	ContextWin  int     `json:"-"`
 }
 
 func (s *Stats) UnmarshalJSON(data []byte) error {
 	var wire struct {
-		SessionID string  `json:"sessionId"`
-		ToolCalls int     `json:"toolCalls"`
-		Cost      float64 `json:"cost"`
-		Tokens    struct {
-			Total int `json:"total"`
+		SessionID     string  `json:"sessionId"`
+		UserMessages  int     `json:"userMessages"`
+		AssistantMsgs int     `json:"assistantMessages"`
+		ToolCalls     int     `json:"toolCalls"`
+		ToolResults   int     `json:"toolResults"`
+		Cost          float64 `json:"cost"`
+		Tokens        struct {
+			Input      int `json:"input"`
+			Output     int `json:"output"`
+			CacheRead  int `json:"cacheRead"`
+			CacheWrite int `json:"cacheWrite"`
+			Total      int `json:"total"`
 		} `json:"tokens"`
 		ContextUsage *struct {
 			Tokens        *int     `json:"tokens"`
@@ -167,11 +183,24 @@ func (s *Stats) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	s.SessionID = wire.SessionID
+	s.UserMsgs = wire.UserMessages
+	s.AsstMsgs = wire.AssistantMsgs
 	s.ToolCalls = wire.ToolCalls
+	s.ToolResults = wire.ToolResults
 	s.Cost = wire.Cost
+	s.In = wire.Tokens.Input
+	s.Out = wire.Tokens.Output
+	s.CacheRead = wire.Tokens.CacheRead
+	s.CacheWrite = wire.Tokens.CacheWrite
 	s.TokensTotal = wire.Tokens.Total
-	if wire.ContextUsage != nil && wire.ContextUsage.Percent != nil {
-		s.ContextPct = *wire.ContextUsage.Percent
+	if wire.ContextUsage != nil {
+		if wire.ContextUsage.Tokens != nil {
+			s.ContextToks = *wire.ContextUsage.Tokens
+		}
+		s.ContextWin = wire.ContextUsage.ContextWindow
+		if wire.ContextUsage.Percent != nil {
+			s.ContextPct = *wire.ContextUsage.Percent
+		}
 	}
 	return nil
 }
@@ -181,6 +210,7 @@ type Delta struct {
 	Type         string `json:"type"`
 	ContentIndex int    `json:"contentIndex"`
 	Delta        string `json:"delta,omitempty"`
+	Reason       string `json:"reason,omitempty"` // done: stop | toolUse | ...
 	ID           string `json:"id,omitempty"`
 	ToolName     string `json:"toolName,omitempty"`
 	ToolCall     *struct {

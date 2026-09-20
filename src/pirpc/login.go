@@ -57,6 +57,15 @@ func KeyPath() string {
 	return filepath.Join(home, ".config", "gotui", "keys.json")
 }
 
+// RecentPath is ~/.config/gotui/recent_models.json: [{provider, id, label}].
+func RecentPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "gotui", "recent_models.json")
+}
+
 // LoadKeys reads the keystore (missing file → empty map, no error).
 func LoadKeys(path string) map[string]string {
 	keys := make(map[string]string)
