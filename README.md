@@ -1,10 +1,13 @@
 # gotui
 
+![gotui screenshot](resources/Screenshot.png)
+
 A polished Terminal User Interface (TUI) frontend for the `pi` agent, built with Bubble Tea. `pi --mode rpc` serves as the backend (multi-provider, tools, sessions, compaction), while gotui provides a rich terminal interface communicating over JSONL.
 
 ## Overview
 
 gotui wraps the `pi` agent in a beautiful terminal interface with:
+
 - Real-time chat with streaming responses
 - Sidebar showing session info, model details, token usage, and git status
 - Command palette with builtins and extension commands
@@ -52,22 +55,22 @@ go test ./...
 
 ## Keybindings
 
-| Key | Action |
-| --- | ------ |
-| `Enter` | Send (idle) / steer (while running) |
-| `Esc` | Cancel running turn (clear queue + abort) |
-| `Ctrl+C` | Quit |
-| `Ctrl+N` | New session |
-| `Ctrl+P` | Cycle model |
-| `Ctrl+R` | Recent-models picker |
-| `Ctrl+B` | Hide/show sidebar (hide for clean drag-select of chat only) |
-| `Ctrl+Y` | Yank last assistant answer to clipboard (chat-only, no sidebar) |
-| `Ctrl+O` | Yank picker: choose any message to copy (sidebar stays visible) |
-| `Alt+1…5` | Jump straight to a recent model |
-| `Tab` | Complete `/command` or `@file` |
-| `@` | Mention a file (fuzzy finder, like pi — Tab/Enter completes, text goes to pi raw) |
-| `↑↓ PgUp PgDn` | Scroll chat (when input is single-line) |
-| `Mouse` | Off by default so you can highlight-to-copy; run with `--mouse` for sidebar click + wheel scroll |
+| Key            | Action                                                                                           |
+| -------------- | ------------------------------------------------------------------------------------------------ |
+| `Enter`        | Send (idle) / steer (while running)                                                              |
+| `Esc`          | Cancel running turn (clear queue + abort)                                                        |
+| `Ctrl+C`       | Quit                                                                                             |
+| `Ctrl+N`       | New session                                                                                      |
+| `Ctrl+P`       | Cycle model                                                                                      |
+| `Ctrl+R`       | Recent-models picker                                                                             |
+| `Ctrl+B`       | Hide/show sidebar (hide for clean drag-select of chat only)                                      |
+| `Ctrl+Y`       | Yank last assistant answer to clipboard (chat-only, no sidebar)                                  |
+| `Ctrl+O`       | Yank picker: choose any message to copy (sidebar stays visible)                                  |
+| `Alt+1…5`      | Jump straight to a recent model                                                                  |
+| `Tab`          | Complete `/command` or `@file`                                                                   |
+| `@`            | Mention a file (fuzzy finder, like pi — Tab/Enter completes, text goes to pi raw)                |
+| `↑↓ PgUp PgDn` | Scroll chat (when input is single-line)                                                          |
+| `Mouse`        | Off by default so you can highlight-to-copy; run with `--mouse` for sidebar click + wheel scroll |
 
 ### Copying text
 
@@ -82,7 +85,9 @@ go test ./...
 Type `/` to open the command popup. Two kinds:
 
 ### Builtins
+
 (intercepted locally, re-implemented over RPC):
+
 - `/model` — change model
 - `/recent` — recent models picker
 - `/yank` / `/copy` — copy last answer to clipboard
@@ -97,11 +102,13 @@ Type `/` to open the command popup. Two kinds:
 - `/session` — session management
 
 ### Extension / prompt / skill
+
 (from pi's `get_commands`): forwarded to pi as `/...` prompt text, executed server-side.
 
 ## Sidebar
 
 The right column (pi session-panel style) shows:
+
 - **SESSION** — first message + session id
 - Model + thinking level
 - Context bar (`used/total tkns`)
