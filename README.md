@@ -38,12 +38,18 @@ pitago wraps the `pi` agent in a beautiful terminal interface with:
 
 ### Option 1 — install into bin (use anywhere)
 
-From a release binary (latest version, pick your OS):
+From a release binary (latest version, pick your OS).
+
+Step 1 — resolve the latest version tag (run this first, same terminal):
 
 ```bash
-# Resolve the latest version tag, e.g. v0.0.3
 TAG=$(curl -fsSL https://api.github.com/repos/cavaldos/pitago/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+echo $TAG   # must print something like v0.0.3 — empty means no network / API error
+```
 
+Step 2 — download your OS (needs `$TAG` from step 1):
+
+```bash
 # macOS (Apple Silicon)
 curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-darwin-arm64"
 
@@ -57,6 +63,11 @@ chmod +x pitago
 sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
 pitago --version
 ```
+
+> If `pitago --version` says `Not: command not found`, the download saved a
+> 9-byte `Not Found` page instead of the binary — that means `$TAG` was empty
+> (step 1 skipped, or run in another terminal). Delete the bad file and redo
+> steps 1–2 in the same terminal.
 
 Windows (PowerShell):
 
