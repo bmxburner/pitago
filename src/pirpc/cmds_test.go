@@ -3,6 +3,7 @@ package pirpc
 import "testing"
 
 func TestRPCCommands(t *testing.T) {
+	needPi(t)
 	c, err := Spawn(Options{NoSession: true})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)

@@ -1,11 +1,24 @@
 package pirpc
 
 import (
+	"os"
+	"os/exec"
 	"testing"
 	"time"
 )
 
+func needPi(t *testing.T) {
+	t.Helper()
+	if bin := os.Getenv("PI_BIN"); bin != "" {
+		return
+	}
+	if _, err := exec.LookPath("pi"); err != nil {
+		t.Skip("pi not in PATH (set PI_BIN to run RPC tests)")
+	}
+}
+
 func TestRPCNoLLM(t *testing.T) {
+	needPi(t)
 	c, err := Spawn(Options{NoSession: true})
 	if err != nil {
 		t.Fatalf("spawn: %v", err)
