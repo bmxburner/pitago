@@ -38,42 +38,39 @@ pitago wraps the `pi` agent in a beautiful terminal interface with:
 
 ### Option 1 — install into bin (use anywhere)
 
-From a release binary (latest version, pick your OS).
+From a release binary (latest version, pick your OS — single block, no variables):
 
-Step 1 — resolve the latest version tag (run this first, same terminal):
-
-```bash
-TAG=$(curl -fsSL https://api.github.com/repos/cavaldos/pitago/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
-echo $TAG   # must print something like v0.0.3 — empty means no network / API error
-```
-
-Step 2 — download your OS (needs `$TAG` from step 1):
+macOS (Apple Silicon):
 
 ```bash
-# macOS (Apple Silicon)
-curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-darwin-arm64"
-
-# macOS (Intel)
-curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-darwin-amd64"
-
-# Linux
-curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-linux-amd64"
-
+curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-arm64
 chmod +x pitago
 sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
 pitago --version
 ```
 
-> If `pitago --version` says `Not: command not found`, the download saved a
-> 9-byte `Not Found` page instead of the binary — that means `$TAG` was empty
-> (step 1 skipped, or run in another terminal). Delete the bad file and redo
-> steps 1–2 in the same terminal.
+macOS (Intel):
+
+```bash
+curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-amd64
+chmod +x pitago
+sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
+pitago --version
+```
+
+Linux:
+
+```bash
+curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-linux-amd64
+chmod +x pitago
+sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
+pitago --version
+```
 
 Windows (PowerShell):
 
 ```powershell
-$TAG=(Invoke-RestMethod https://api.github.com/repos/cavaldos/pitago/releases/latest).tag_name
-Invoke-WebRequest "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-windows-amd64.exe" -OutFile pitago.exe
+Invoke-WebRequest https://github.com/cavaldos/pitago/releases/latest/download/pitago-windows-amd64.exe -OutFile pitago.exe
 # move pitago.exe somewhere on your PATH, then: pitago --version
 ```
 
