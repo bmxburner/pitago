@@ -8,7 +8,7 @@
 //
 // Pi's TUI only sends raw "@path" text (the model reads files via tools),
 // but pi's RPC protocol accepts images: [{type:"image", data:<base64>,
-// mimeType}] on prompt/steer/follow_up. openpi uses that channel so a
+// mimeType}] on prompt/steer/follow_up. pitago uses that channel so a
 // png/jpg/gif/webp is seen directly (vision) instead of costing an extra
 // read-tool roundtrip. Non-image @refs are left untouched — the model
 // still reads those with its tools, exactly like before.

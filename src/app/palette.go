@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/palette"
+	"pitago/src/components/palette"
 )
 
 // Matching + window size live in components/palette; this file keeps the

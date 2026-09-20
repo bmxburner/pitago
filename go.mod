@@ -1,4 +1,4 @@
-module openpi
+module pitago
 
 go 1.27.0
 

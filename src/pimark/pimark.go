@@ -1,5 +1,5 @@
 // Package pimark renders markdown/code with pi's OWN renderer (marked +
-// highlight.js, dark theme) over a persistent node bridge. openpi draws the
+// highlight.js, dark theme) over a persistent node bridge. pitago draws the
 // TUI chrome itself; chat content looks exactly like pi.
 //
 // Bridge protocol is JSONL on the node's stdin/stdout (see bridge.mjs,

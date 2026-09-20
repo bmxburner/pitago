@@ -10,7 +10,7 @@ import (
 	"regexp"
 	"strings"
 
-	"openpi/src/pimark"
+	"pitago/src/pimark"
 )
 
 // ansiSeq matches one SGR escape; trailPad matches end-of-line padding:

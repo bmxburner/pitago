@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/image"
-	"openpi/src/components/mention"
+	"pitago/src/components/image"
+	"pitago/src/components/mention"
 )
 
 // @ file mentions (pi parity) -------------------------------------------------
@@ -18,7 +18,7 @@ import (
 // Pi's TUI completes @path with a fuzzy file finder (fd, respects
 // .gitignore) and sends the raw "@path" text to the agent — the model reads
 // the file with its tools. Only CLI startup @args are expanded locally into
-// <file> blocks. So openpi only needs the autocomplete half: typing @ opens
+// <file> blocks. So pitago only needs the autocomplete half: typing @ opens
 // this popup, Tab/Enter completes, the prompt text reaches pi untouched.
 //
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build openpi: script/build.sh
-# Env: VERSION (default: git tag/commit), OUT (default: bin/openpi),
+# Build pitago: script/build.sh
+# Env: VERSION (default: git tag/commit), OUT (default: bin/pitago),
 #      GOOS/GOARCH (default: host).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 VERSION="${VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
-OUT="${OUT:-bin/openpi}"
+OUT="${OUT:-bin/pitago}"
 mkdir -p "$(dirname "$OUT")"
 go vet ./...
 CGO_ENABLED=0 go build -trimpath \

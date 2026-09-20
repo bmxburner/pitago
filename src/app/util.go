@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"openpi/src/components/format"
+	"pitago/src/components/format"
 )
 
 // Shared formatting lives in components/format (single source of truth).

@@ -7,9 +7,9 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"openpi/src/components/format"
-	"openpi/src/components/markdown"
-	"openpi/src/extension"
+	"pitago/src/components/format"
+	"pitago/src/components/markdown"
+	"pitago/src/extension"
 )
 
 func (m Model) showSide() bool { return !m.hideSide && m.winW >= 80 }

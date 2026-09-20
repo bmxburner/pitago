@@ -48,47 +48,25 @@ func LookupEnv(provider string) string {
 	return ""
 }
 
-// KeyPath is ~/.config/openpi/keys.json (0600): {ENV_VAR: key}.
+// KeyPath is ~/.config/pitago/keys.json (0600): {ENV_VAR: key}.
 func KeyPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "openpi", "keys.json")
+	return filepath.Join(home, ".config", "pitago", "keys.json")
 }
 
-// legacyKeyPath is the pre-rename keystore location. Reads fall back to
-// it so saved API keys survive the gotui → openpi rename; writes always
-// go to KeyPath.
-func legacyKeyPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "gotui", "keys.json")
-}
-
-// RecentPath is ~/.config/openpi/recent_models.json: [{provider, id, label}].
+// RecentPath is ~/.config/pitago/recent_models.json: [{provider, id, label}].
 func RecentPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
 	}
-	return filepath.Join(home, ".config", "openpi", "recent_models.json")
-}
-
-// LegacyRecentPath is the pre-rename recents file. Loaded once when the
-// openpi file doesn't exist yet; saves always go to RecentPath.
-func LegacyRecentPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	return filepath.Join(home, ".config", "gotui", "recent_models.json")
+	return filepath.Join(home, ".config", "pitago", "recent_models.json")
 }
 
 // LoadKeys reads the keystore (missing file → empty map, no error).
-// A legacy gotui keystore is used when the openpi one doesn't exist yet.
 func LoadKeys(path string) map[string]string {
 	keys := make(map[string]string)
 	if path == "" {
@@ -96,11 +74,6 @@ func LoadKeys(path string) map[string]string {
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
-		if path == KeyPath() {
-			if legacy, lerr := os.ReadFile(legacyKeyPath()); lerr == nil {
-				_ = json.Unmarshal(legacy, &keys)
-			}
-		}
 		return keys
 	}
 	_ = json.Unmarshal(raw, &keys)

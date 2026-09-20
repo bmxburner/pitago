@@ -15,12 +15,12 @@ src/pirpc/client.go  <-JSONL->  pi --mode rpc
 ```
 - `src/app` never imports `builtin`/`extension` (wired in main via
   `UseBuiltins`); `builtin` operates on `*app.Model`, `extension` is pure.
-- Origin rule: `src/builtin` = pi TUI builtins (`OriginPi`) + openpi's own
-  (`OriginOpenpi`, e.g. `/recent`); everything from `get_commands`
+- Origin rule: `src/builtin` = pi TUI builtins (`OriginPi`) + pitago's own
+  (`OriginPitago`, e.g. `/recent`); everything from `get_commands`
   (extension/prompt/skill) is extension-side and runs via Prompt forwarding.
 
 ## src/pirpc (stdlib only: os/exec + encoding/json + bufio)
-- Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/openpi-pi-stderr.log
+- Spawn `pi --mode rpc [-c] [--provider X] [--model Y]`, stderr → /tmp/pitago-pi-stderr.log
 - Reader: ReadString('\n'), strip \r (per protocol; no Scanner — its 64k buffer is too small, Reader is safe)
 - `type:response` + id → pending chan; everything else → OnEvent (calls prog.Send, thread-safe)
 - Command struct has explicit fields + omitempty, no map[string]any

@@ -9,10 +9,10 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"openpi/src/components/chat"
-	"openpi/src/components/mention"
-	"openpi/src/components/recent"
-	"openpi/src/pirpc"
+	"pitago/src/components/chat"
+	"pitago/src/components/mention"
+	"pitago/src/components/recent"
+	"pitago/src/pirpc"
 )
 
 // Block is one rendered unit in the chat column (see components/chat).
@@ -414,7 +414,7 @@ func (m *Model) RefreshFollow() {
 //
 // Origin tells where the feature comes from and is shown in /help-style
 // surfaces: "pi" re-implements one of pi's TUI-level builtins over RPC
-// (pi's own builtins never arrive via get_commands), "openpi" is ours.
+// (pi's own builtins never arrive via get_commands), "pitago" is ours.
 // Implementations live in src/builtin; this package only holds the table.
 type Builtin struct {
 	Name, Desc, Usage, Origin string
@@ -437,10 +437,6 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.KeyPath = keyPath
 	m.recentPath = pirpc.RecentPath()
 	m.recentModels = recent.Load(m.recentPath)
-	if len(m.recentModels) == 0 {
-		// pre-rename fallback: adopt the gotui list, saves migrate it
-		m.recentModels = recent.Load(pirpc.LegacyRecentPath())
-	}
 }
 
 // FindBuiltin matches "/name" or "/name args" against the registry.

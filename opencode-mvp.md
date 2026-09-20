@@ -34,5 +34,5 @@ internal/agent/agent.go  # loop: messages -> LLM -> tool_calls -> exec -> repeat
 - Enter send, Ctrl+C / q quit, ↑/↓ scroll when input is empty (if easy)
 
 ## Verify
-- `go vet ./... && go build -o /tmp/openpi .`
+- `go vet ./... && go build -o /tmp/pitago .`
 - Manual run `OPENAI_API_KEY=... go run .`, try: "list files", "read main.go", "run ls"

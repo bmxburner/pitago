@@ -1,4 +1,4 @@
-// openpi entry: spawn pi --mode rpc, wire app + builtin + extension, run.
+// pitago entry: spawn pi --mode rpc, wire app + builtin + extension, run.
 package main
 
 import (
@@ -10,10 +10,10 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/app"
-	"openpi/src/builtin"
-	"openpi/src/pimark"
-	"openpi/src/pirpc"
+	"pitago/src/app"
+	"pitago/src/builtin"
+	"pitago/src/pimark"
+	"pitago/src/pirpc"
 )
 
 // Set at build time: go build -ldflags "-X main.version=v0.0.1" ./src
@@ -30,7 +30,7 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("openpi " + version)
+		fmt.Println("pitago " + version)
 		return
 	}
 
@@ -44,7 +44,7 @@ func main() {
 
 	cwd, err := resolveDir(*dirFlag, flag.Args())
 	if err != nil {
-		fmt.Println("openpi:", err)
+		fmt.Println("pitago:", err)
 		os.Exit(1)
 	}
 	opts := pirpc.Options{
@@ -81,7 +81,7 @@ func main() {
 
 // resolveDir picks the session working directory: --cwd, else the first
 // positional argument, else the current directory. Relative paths resolve
-// against where openpi was launched; ~ expands to $HOME.
+// against where pitago was launched; ~ expands to $HOME.
 func resolveDir(flagDir string, args []string) (string, error) {
 	dir := flagDir
 	if dir == "" && len(args) > 0 {

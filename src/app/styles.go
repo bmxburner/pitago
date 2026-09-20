@@ -3,7 +3,7 @@ package app
 import (
 	"github.com/charmbracelet/lipgloss"
 
-	"openpi/src/components/recent"
+	"pitago/src/components/recent"
 )
 
 const sideW = 34 // sidebar width

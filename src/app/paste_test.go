@@ -31,7 +31,7 @@ func runPasteCmd(t *testing.T, m Model, secret bool) pasteDoneMsg {
 	return msg
 }
 
-// Ctrl+V must be owned by gotui (multi-backend + visible errors), not the
+// Ctrl+V must be owned by pitago (multi-backend + visible errors), not the
 // textarea's silent built-in paste.
 func TestCtrlVOwned(t *testing.T) {
 	m := pasteTestModel()

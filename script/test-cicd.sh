@@ -17,12 +17,12 @@ go test ./...
 step "local build"
 CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version=$VERSION" \
-  -o /tmp/gotui-cicd-check ./src
+  -o /tmp/pitago-cicd-check ./src
 
 step "release cross-compile check"
 for target in "linux amd64" "darwin amd64" "darwin arm64" "windows amd64"; do
   set -- $target
-  out="/tmp/gotui-cicd-check-$1-$2"
+  out="/tmp/pitago-cicd-check-$1-$2"
   [[ "$1" == windows ]] && out="$out.exe"
   GOOS="$1" GOARCH="$2" CGO_ENABLED=0 go build -trimpath \
     -ldflags "-s -w -X main.version=$VERSION" \

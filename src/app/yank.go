@@ -7,7 +7,7 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/yank"
+	"pitago/src/components/yank"
 )
 
 // YankLast copies the last assistant answer to the system clipboard.

@@ -10,7 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
-	"openpi/src/pirpc"
+	"pitago/src/pirpc"
 )
 
 // Sidebar panels mirroring pi-sidebar-tui (MCP Servers + Todos), fed over

@@ -24,7 +24,7 @@ jobs:
           mkdir -p dist
           for target in "linux amd64" "darwin amd64" "darwin arm64" "windows amd64"; do
             set -- $target
-            out="dist/openpi-$TAG-$1-$2"
+            out="dist/pitago-$TAG-$1-$2"
             [[ "$1" == windows ]] && out="$out.exe"
             GOOS="$1" GOARCH="$2" go build -trimpath \
               -ldflags "-s -w -X main.version=$TAG" \

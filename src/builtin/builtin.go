@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/app"
-	"openpi/src/pirpc"
+	"pitago/src/app"
+	"pitago/src/pirpc"
 )
 
 func openLogin(m *app.Model, arg string) tea.Cmd {
@@ -38,7 +38,7 @@ func openLogin(m *app.Model, arg string) tea.Cmd {
 func openLoginMethod(m *app.Model, provider, env string) {
 	d := &app.Dialog{
 		Kind: "loginMethod", Title: "Login " + provider,
-		Message:       "API key goes to openpi's private keystore (" + env + "), pi reconnects automatically. Do OAuth in stock pi.",
+		Message:       "API key goes to pitago's private keystore (" + env + "), pi reconnects automatically. Do OAuth in stock pi.",
 		Options:       []string{"Enter API key", "OAuth / subscription", "Logged in — reload"},
 		Descs:         []string{"save key + reconnect pi", "guide", "refresh model list"},
 		LoginProvider: provider, LoginEnv: env,
@@ -292,11 +292,11 @@ func treeLabel(e pirpc.TreeEntry) string {
 // Origin marks where a builtin feature comes from.
 const (
 	// OriginPi re-implements one of pi's TUI-level builtins over RPC.
-	// pi's own builtins never arrive via get_commands, so openpi intercepts
+	// pi's own builtins never arrive via get_commands, so pitago intercepts
 	// them locally instead of leaking "/..." text into the chat.
 	OriginPi = "pi"
-	// OriginOpenpi is openpi's own addition on top of pi.
-	OriginOpenpi = "openpi"
+	// OriginPitago is pitago's own addition on top of pi.
+	OriginPitago = "pitago"
 )
 
 // Builtin is one locally-executed slash command (implementation lives here,
@@ -304,7 +304,7 @@ const (
 type Builtin = app.Builtin
 
 // All lists every intercepted command: pi's BUILTIN_SLASH_COMMANDS plus
-// openpi's own /recent. Anything else (extension/prompt/skill commands,
+// pitago's own /recent. Anything else (extension/prompt/skill commands,
 // chat text) falls through to pi via Prompt.
 func All() []app.Builtin {
 	pi := func(name, desc, usage string, run func(m *app.Model, arg string) tea.Cmd) app.Builtin {
@@ -399,29 +399,29 @@ func All() []app.Builtin {
 			}
 		}),
 		{
-			Name: "recent", Desc: "Switch recent model (openpi)", Usage: "/recent",
-			Origin: OriginOpenpi,
+			Name: "recent", Desc: "Switch recent model (pitago)", Usage: "/recent",
+			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.OpenRecents()
 			},
 		},
 		{
 			Name: "yank", Desc: "Copy last assistant answer to clipboard (chat-only)", Usage: "/yank",
-			Origin: OriginOpenpi,
+			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.YankLast()
 			},
 		},
 		{
 			Name: "copy", Desc: "Copy last assistant answer to clipboard (chat-only)", Usage: "/copy",
-			Origin: OriginOpenpi,
+			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.YankLast()
 			},
 		},
 		{
 			Name: "sidebar", Desc: "Hide/show sidebar (hide for clean drag-select of chat)", Usage: "/sidebar",
-			Origin: OriginOpenpi,
+			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				m.ToggleSide()
 				return nil

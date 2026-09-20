@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 
-	"openpi/src/components/mention"
+	"pitago/src/components/mention"
 )
 
 func TestAtToken(t *testing.T) {

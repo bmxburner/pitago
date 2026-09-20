@@ -12,10 +12,10 @@ import (
 	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/image"
+	"pitago/src/components/image"
 )
 
-// Clipboard paste (Ctrl+V), owned by gotui instead of the textarea.
+// Clipboard paste (Ctrl+V), owned by pitago instead of the textarea.
 //
 // The textarea's built-in paste calls clipboard.ReadAll once and swallows
 // the error (ta.Err, never shown) — on Wayland/SSH/bare servers Ctrl+V
@@ -100,7 +100,7 @@ func readClipboardImage() (string, error) {
 		if _, err := exec.LookPath("pngpaste"); err != nil {
 			return "", errNoImage
 		}
-		f, err := os.CreateTemp("", "gotui-clip-*.png")
+		f, err := os.CreateTemp("", "pitago-clip-*.png")
 		if err != nil {
 			return "", err
 		}
@@ -189,7 +189,7 @@ func dumpImage(out string) (string, error) {
 	default:
 		return "", errNoImage
 	}
-	f, err := os.CreateTemp("", "gotui-clip-*"+ext)
+	f, err := os.CreateTemp("", "pitago-clip-*"+ext)
 	if err != nil {
 		return "", err
 	}

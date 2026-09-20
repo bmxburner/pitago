@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/pet"
+	"pitago/src/components/pet"
 )
 
 // Sidebar pet — state core lives in components/pet; this file keeps the

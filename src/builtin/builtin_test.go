@@ -3,10 +3,10 @@ package builtin
 import (
 	"testing"
 
-	"openpi/src/app"
+	"pitago/src/app"
 )
 
-// Pi's TUI has 23 BUILTIN_SLASH_COMMANDS; openpi adds /recent + /yank on top
+// Pi's TUI has 23 BUILTIN_SLASH_COMMANDS; pitago adds /recent + /yank on top
 // (/copy is re-implemented as yank: chat-only clipboard, no pi TUI needed).
 // The registry is the single source of truth (popup + Enter dispatch).
 func TestAllCoversPi(t *testing.T) {
@@ -25,8 +25,8 @@ func TestAllCoversPi(t *testing.T) {
 			t.Errorf("builtin /%s missing", want)
 		}
 	}
-	if got["recent"] != OriginOpenpi {
-		t.Error("/recent must be marked openpi origin")
+	if got["recent"] != OriginPitago {
+		t.Error("/recent must be marked pitago origin")
 	}
 	if got["model"] != OriginPi {
 		t.Error("/model must be marked pi origin")

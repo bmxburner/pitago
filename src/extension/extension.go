@@ -1,4 +1,4 @@
-// Package extension owns what openpi borrows from pi extensions at runtime.
+// Package extension owns what pitago borrows from pi extensions at runtime.
 //
 // Pi's own extensions provide: repo commands (source "extension"), prompt
 // templates ("prompt"), skills ("skill"), and interactive UI requests
@@ -9,14 +9,14 @@
 // builtin re-implementations in src/builtin.
 package extension
 
-import "openpi/src/pirpc"
+import "pitago/src/pirpc"
 
 // Sources an extension-provided command can come from.
 const (
 	SourceExtension = "extension"
 	SourcePrompt    = "prompt"
 	SourceSkill     = "skill"
-	SourceBuiltin   = "builtin" // openpi-local (see src/builtin), never from RPC
+	SourceBuiltin   = "builtin" // pitago-local (see src/builtin), never from RPC
 )
 
 // Summarize counts repo commands per source for the sidebar.
@@ -36,7 +36,7 @@ func Summarize(cmds []pirpc.RepoCommand) (ext, prompt, skill, builtin int) {
 	return ext, prompt, skill, builtin
 }
 
-// ShouldAutoCancel reports UI requests openpi answers without asking:
+// ShouldAutoCancel reports UI requests pitago answers without asking:
 // free-text input/editor fall back to agent defaults/timeout.
 func ShouldAutoCancel(method string) bool {
 	return method == "input" || method == "editor"

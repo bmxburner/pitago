@@ -13,7 +13,7 @@ package pet
 import (
 	"time"
 
-	"openpi/src/components/format"
+	"pitago/src/components/format"
 )
 
 // Status is the pet's display state.

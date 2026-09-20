@@ -9,8 +9,8 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/extension"
-	"openpi/src/pirpc"
+	"pitago/src/extension"
+	"pitago/src/pirpc"
 )
 
 // sideScrollKey maps Ctrl+scroll keys to their plain equivalent for the

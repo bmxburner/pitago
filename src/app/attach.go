@@ -8,8 +8,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/image"
-	"openpi/src/pirpc"
+	"pitago/src/components/image"
+	"pitago/src/pirpc"
 )
 
 // Input image tray: dropped/pasted/@-completed image paths collapse into

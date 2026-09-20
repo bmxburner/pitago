@@ -11,7 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/pimark"
+	"pitago/src/pimark"
 )
 
 func TestCodeLang(t *testing.T) {

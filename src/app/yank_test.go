@@ -3,7 +3,7 @@ package app
 import (
 	"testing"
 
-	"openpi/src/components/yank"
+	"pitago/src/components/yank"
 )
 
 func TestLastAssistantText(t *testing.T) {

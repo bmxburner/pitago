@@ -11,14 +11,14 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/app"
-	"openpi/src/components/chat"
-	"openpi/src/components/format"
-	"openpi/src/components/mention"
-	"openpi/src/components/palette"
-	"openpi/src/components/pet"
-	"openpi/src/components/recent"
-	"openpi/src/components/yank"
+	"pitago/src/app"
+	"pitago/src/components/chat"
+	"pitago/src/components/format"
+	"pitago/src/components/mention"
+	"pitago/src/components/palette"
+	"pitago/src/components/pet"
+	"pitago/src/components/recent"
+	"pitago/src/components/yank"
 )
 
 // The components must compose: @mention finds a file, palette matches a

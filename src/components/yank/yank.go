@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"strings"
 
-	"openpi/src/components/chat"
-	"openpi/src/components/format"
+	"pitago/src/components/chat"
+	"pitago/src/components/format"
 )
 
 // MaxYank lists how many recent messages the yank picker shows.

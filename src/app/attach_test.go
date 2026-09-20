@@ -9,7 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/mention"
+	"pitago/src/components/mention"
 )
 
 func attachModel(t *testing.T) (Model, string) {

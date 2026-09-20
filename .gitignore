@@ -1,9 +1,9 @@
 # Build artifacts
-openpi
+pitago
 /bin/
 
 # pi stderr log
-/tmp/openpi-pi-stderr.log
+/tmp/pitago-pi-stderr.log
 
 # IDE / editor
 .idea/

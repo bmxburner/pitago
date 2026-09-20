@@ -6,7 +6,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/components/recent"
+	"pitago/src/components/recent"
 )
 
 // recentContentRow is the sidebar content row of the first recent model:

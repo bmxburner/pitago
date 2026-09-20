@@ -7,7 +7,7 @@
 //   stdout: {"id":1,"lines":["..."]}
 //           {"id":2,"error":"..."}
 //
-// Started by openpi's src/pimark (persistent node process, one per app run).
+// Started by pitago's src/pimark (persistent node process, one per app run).
 // pi root + theme come from argv: --pi-root <pi dist dir> --theme dark|light.
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
@@ -40,7 +40,7 @@ function send(obj) {
 	process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
-// Matches pi's AssistantMessageComponent (paddingX=0 here: openpi draws its
+// Matches pi's AssistantMessageComponent (paddingX=0 here: pitago draws its
 // own gutter) and its thinking block (thinkingText + italic).
 function renderMd(text, width, kind) {
 	const style =

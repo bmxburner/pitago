@@ -5,9 +5,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 
-	"openpi/src/components/palette"
+	"pitago/src/components/palette"
 
-	"openpi/src/pirpc"
+	"pitago/src/pirpc"
 )
 
 // "/" must match everything (no 8-item cap); the popup window scrolls.

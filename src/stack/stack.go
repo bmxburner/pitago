@@ -50,7 +50,7 @@ func Style(s string) string {
 // RootCommand builds the Cobra CLI root.
 func RootCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "openpi",
+		Use:   "pitago",
 		Short: "TUI frontend",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return cmd.Help()

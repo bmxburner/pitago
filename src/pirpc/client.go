@@ -77,7 +77,7 @@ func Spawn(opt Options) (*Client, error) {
 	}
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
-	logF, _ := os.Create("/tmp/openpi-pi-stderr.log")
+	logF, _ := os.Create("/tmp/pitago-pi-stderr.log")
 	if logF != nil {
 		cmd.Stderr = logF
 	}

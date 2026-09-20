@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"openpi/src/app"
-	"openpi/src/pirpc"
+	"pitago/src/app"
+	"pitago/src/pirpc"
 )
 
 // Confirmers runs the Enter action of each picker dialog kind.
@@ -73,7 +73,7 @@ func confirmLoginMethod(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd
 	case 0: // enter API key
 		env := d.LoginEnv
 		m.Dialogs[0] = &app.Dialog{Kind: "secret", Title: "API key — " + prov,
-			Message:       "Save to " + env + " (openpi keystore, file 0600). Pi reconnects automatically.",
+			Message:       "Save to " + env + " (pitago keystore, file 0600). Pi reconnects automatically.",
 			LoginProvider: prov, LoginEnv: env}
 		m.Refresh()
 		return m, nil
