@@ -1,5 +1,15 @@
 # pitago
 
+<div align="center">
+<pre>
+████  ███ █████  ███   ███   ███
+█   █  █    █   █   █ █     █   █
+████   █    █   █████ █  ██ █   █
+█      █    █   █   █ █   █ █   █
+█     ███   █   █   █  ███   ███
+</pre>
+</div>
+
 ![pitago screenshot](resources/Screenshot.png)
 
 ![pitago demo](resources/demo.gif)
@@ -26,25 +36,34 @@ pitago wraps the `pi` agent in a beautiful terminal interface with:
 
 ## Install
 
-Two ways: install once into a `bin` on your PATH, or keep the binary
-local to the project. No Go toolchain needed for the release binaries —
-only for building from source.
-
-> Release assets are named `pitago-<tag>-<os>-<arch>`
-> (`pitago-v0.0.1-linux-amd64`, `pitago-v0.0.1-darwin-arm64`, …).
-> Windows gets a `.exe`. Get them from the
-> [Releases page](https://github.com/cavaldos/pitago/releases).
-
 ### Option 1 — install into bin (use anywhere)
 
-From a release binary:
+From a release binary (latest version, pick your OS):
 
 ```bash
-# Pick the asset matching your OS/arch, e.g. v0.0.1 on Linux
-curl -L -o pitago https://github.com/cavaldos/pitago/releases/download/v0.0.1/pitago-v0.0.1-linux-amd64
+# Resolve the latest version tag, e.g. v0.0.3
+TAG=$(curl -fsSL https://api.github.com/repos/cavaldos/pitago/releases/latest | grep '"tag_name"' | cut -d'"' -f4)
+
+# macOS (Apple Silicon)
+curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-darwin-arm64"
+
+# macOS (Intel)
+curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-darwin-amd64"
+
+# Linux
+curl -L -o pitago "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-linux-amd64"
+
 chmod +x pitago
 sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
 pitago --version
+```
+
+Windows (PowerShell):
+
+```powershell
+$TAG=(Invoke-RestMethod https://api.github.com/repos/cavaldos/pitago/releases/latest).tag_name
+Invoke-WebRequest "https://github.com/cavaldos/pitago/releases/download/$TAG/pitago-$TAG-windows-amd64.exe" -OutFile pitago.exe
+# move pitago.exe somewhere on your PATH, then: pitago --version
 ```
 
 From source:
@@ -59,9 +78,25 @@ pitago --version
 
 Uninstall (if installed into bin):
 
+macOS:
+
 ```bash
 sudo rm /usr/local/bin/pitago   # or wherever you put it: ~/go/bin, ~/.local/bin, …
 rm -rf ~/.config/pitago         # optional: remove saved API keys + recent models
+```
+
+Linux:
+
+```bash
+sudo rm /usr/local/bin/pitago   # or wherever you put it: ~/go/bin, ~/.local/bin, …
+rm -rf ~/.config/pitago         # optional: remove saved API keys + recent models
+```
+
+Windows (PowerShell):
+
+```powershell
+del C:\path\to\pitago.exe              # wherever you placed it (a folder on your PATH)
+Remove-Item -Recurse -Force $HOME\.config\pitago   # optional: remove saved API keys + recent models
 ```
 
 ### Option 2 — run local in the project (no install)

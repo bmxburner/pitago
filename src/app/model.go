@@ -71,6 +71,7 @@ type Model struct {
 	baseVpH      int
 	cwd          string
 	ModelLbl     string
+	AppVersion   string // pitago build version for the welcome header ("" = omit)
 	thinkLvl     string // thinking level from get_state
 	autoCompact  bool   // auto-compaction from get_state
 	ctxWindow    int    // model context window from get_state/stats

@@ -57,10 +57,8 @@ func (m Model) renderBlocks() string {
 		cw = 10
 	}
 	if len(m.blocks) == 0 && m.connErr == "" {
-		empty := lipgloss.NewStyle().Foreground(cMuted).Width(w).
-			Align(lipgloss.Center).
-			Render("\nNo messages yet — type below to start.\n")
-		b.WriteString(empty)
+		// fresh chat: pi-style startup header (logo + resources + ready)
+		b.WriteString(m.welcomeView(w))
 	}
 	if m.connErr != "" {
 		b.WriteString(gutter(errStyle.Render("×"), errStyle.Render("! "+m.connErr)+"\n"))

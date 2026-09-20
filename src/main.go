@@ -61,6 +61,7 @@ func main() {
 	pimark.Prewarm() // warm pi's render bridge so first message isn't slow
 
 	m := app.New(pi, cwd)
+	m.AppVersion = version
 	m.Configure(opts, keyPath)
 	m.Mouse = *mouse
 	m.UseBuiltins(builtin.All(), builtin.Confirmers())
