@@ -544,7 +544,9 @@ func (m *Model) CycleThinking() tea.Cmd {
 		if err := m.Pi.SetLevel(next); err != nil {
 			return SettingsRefreshMsg{Err: err}
 		}
-		return SettingsRefreshMsg{Notice: "thinking → " + next, Level: next}
+		// Silent: no chat notice (rapid Ctrl+T would spam one line per
+		// press) — the new level shows in the sidebar model row.
+		return SettingsRefreshMsg{Level: next}
 	}
 }
 
