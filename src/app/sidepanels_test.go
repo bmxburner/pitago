@@ -66,6 +66,59 @@ func TestReadMcpServers(t *testing.T) {
 	}
 }
 
+func TestReadPlugins(t *testing.T) {
+	dir := t.TempDir()
+	cfg := `{"packages":["npm:pi-lens","npm:@narumitw/pi-plan-mode","git:github.com/sting8k/pi-themes"]}`
+	if err := os.WriteFile(filepath.Join(dir, "settings.json"), []byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := readPlugins(dir)
+	if len(got) != 3 {
+		t.Fatalf("plugins = %+v", got)
+	}
+	// order follows settings.json, names strip the source prefix
+	if got[0].Name != "pi-lens" || got[0].Spec != "npm:pi-lens" {
+		t.Fatalf("first = %+v", got[0])
+	}
+	if got[1].Name != "@narumitw/pi-plan-mode" {
+		t.Fatalf("scoped = %+v", got[1])
+	}
+	if got[2].Name != "github.com/sting8k/pi-themes" {
+		t.Fatalf("git = %+v", got[2])
+	}
+	if n := readPlugins(t.TempDir()); len(n) != 0 {
+		t.Fatalf("empty dir must yield no plugins, got %+v", n)
+	}
+}
+
+func TestPluginsSectionToggle(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.Plugins = []Plugin{{Spec: "npm:pi-lens", Name: "pi-lens"}, {Spec: "npm:pi-foo", Name: "pi-foo"}}
+	if !m.showPlugins {
+		t.Fatal("PLUGINS must start expanded")
+	}
+	out := m.buildSidebarContent()
+	for _, want := range []string{"PLUGINS (2)", "pi-lens", "pi-foo"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expanded sidebar missing %q", want)
+		}
+	}
+	m.TogglePlugins()
+	out = m.buildSidebarContent()
+	if !strings.Contains(out, "PLUGINS (2)") {
+		t.Fatal("collapsed sidebar must keep the header")
+	}
+	for _, want := range []string{"pi-lens", "pi-foo"} {
+		if strings.Contains(out, want) {
+			t.Fatalf("collapsed sidebar must hide %q", want)
+		}
+	}
+	m.TogglePlugins()
+	if !strings.Contains(m.buildSidebarContent(), "pi-lens") {
+		t.Fatal("second toggle must expand again")
+	}
+}
+
 func TestSidebarHasMcpTodos(t *testing.T) {
 	m := New(nil, t.TempDir())
 	m.MCP = []McpServer{{Name: "alpha", Direct: 1, Total: 2, Tokens: 1234, Connected: true}}

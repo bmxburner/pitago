@@ -154,18 +154,33 @@ type ModelInfo struct {
 }
 
 // TreeEntry is one session entry; TreeNode forms the get_tree hierarchy.
+// Field names mirror pi's SessionEntry/SessionTreeNode JSON: message entries
+// carry Message, model_change carries Provider/ModelID, thinking_level_change
+// carries ThinkingLevel, compaction carries Summary/TokensBefore,
+// branch_summary carries Summary, custom/custom_message carry CustomType
+// (+Content), label entries carry Label, session_info carries Name.
 type TreeEntry struct {
-	Type     string       `json:"type"`
-	ID       string       `json:"id"`
-	Provider string       `json:"provider,omitempty"`
-	ModelID  string       `json:"modelId,omitempty"`
-	Level    string       `json:"level,omitempty"`
-	Message  AgentMessage `json:"message"`
+	Type          string          `json:"type"`
+	ID            string          `json:"id"`
+	ParentID      *string         `json:"parentId,omitempty"`
+	Timestamp     string          `json:"timestamp,omitempty"`
+	Provider      string          `json:"provider,omitempty"`
+	ModelID       string          `json:"modelId,omitempty"`
+	ThinkingLevel string          `json:"thinkingLevel,omitempty"`
+	Summary       string          `json:"summary,omitempty"`
+	TokensBefore  int             `json:"tokensBefore,omitempty"`
+	CustomType    string          `json:"customType,omitempty"`
+	Content       json.RawMessage `json:"content,omitempty"`
+	Label         string          `json:"label,omitempty"`
+	Name          string          `json:"name,omitempty"`
+	Message       AgentMessage    `json:"message"`
 }
 
 type TreeNode struct {
-	Entry    TreeEntry  `json:"entry"`
-	Children []TreeNode `json:"children"`
+	Entry          TreeEntry  `json:"entry"`
+	Children       []TreeNode `json:"children"`
+	Label          string     `json:"label,omitempty"`
+	LabelTimestamp string     `json:"labelTimestamp,omitempty"`
 }
 
 // Stats mirrors get_session_stats data (subset we display).

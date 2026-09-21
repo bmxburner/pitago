@@ -1,7 +1,9 @@
 package builtin
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -57,21 +59,23 @@ func openLogout(m *app.Model, arg string) tea.Cmd {
 		if _, ok := keys[p.Env]; !ok {
 			continue
 		}
-		if arg != "" && !strings.EqualFold(p.Provider, arg) {
-			continue
-		}
 		opts = append(opts, p.Provider)
 		descs = append(descs, p.Label+" · "+p.Env)
-	}
-	if arg != "" && len(opts) == 1 {
-		return doLogout(m, opts[0], descs[0])
 	}
 	if len(opts) == 0 {
 		m.AddBlock(app.Block{Kind: "notice", Text: "keystore is empty — no keys saved"})
 		m.Refresh()
 		return nil
 	}
+	for i, o := range opts {
+		if strings.EqualFold(o, arg) {
+			return doLogout(m, o, descs[i])
+		}
+	}
 	d := &app.Dialog{Kind: "logout", Title: "Remove API key", Message: "Pick a provider to delete its key from the keystore.", Options: opts, Descs: descs}
+	if arg != "" {
+		d.Filter = arg
+	}
 	d.Reindex()
 	m.Dialogs = append(m.Dialogs, d)
 	m.Refresh()
@@ -89,6 +93,11 @@ func doLogout(m *app.Model, provider, desc string) tea.Cmd {
 		m.AddBlock(app.Block{Kind: "notice", Text: "failed to delete key: " + err.Error(), Err: true})
 		m.Refresh()
 		return nil
+	}
+	// Drop it from our env too: the respawned pi inherits env, and would
+	// otherwise stay logged in until TUI restart.
+	if env != "" {
+		_ = os.Unsetenv(env)
 	}
 	m.AddBlock(app.Block{Kind: "notice", Text: "deleted key " + provider + " — reconnecting pi…"})
 	return m.RespawnPi()
@@ -230,9 +239,17 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// renderTree renders the session tree as text.
-
+// renderTree renders the session tree pi-style: branch connectors, a "• "
+// prefix on the active leaf path, "[label] " bookmarks, and one pi-formatted
+// row per entry (see treeRow). Usage entries are skipped like pi (their
+// children still render). Read-only: pi's RPC has no navigate_tree, so
+// branch switching stays in pi's own TUI.
 func renderTree(nodes []pirpc.TreeNode, leaf string) string {
+	if len(nodes) == 0 {
+		return "No entries in session"
+	}
+	tcm := buildToolCallMap(nodes)
+	active := activePathIDs(nodes, leaf)
 	var b strings.Builder
 	count := 0
 	var walk func(ns []pirpc.TreeNode, prefix string)
@@ -241,48 +258,276 @@ func renderTree(nodes []pirpc.TreeNode, leaf string) string {
 			if count >= 100 {
 				return
 			}
+			if n.Entry.Type == "usage" {
+				walk(n.Children, prefix)
+				continue
+			}
 			count++
 			last := i == len(ns)-1
 			branch, cont := "├── ", "│   "
 			if last {
 				branch, cont = "└── ", "    "
 			}
-			mark := ""
-			if n.Entry.ID == leaf {
-				mark = " • current"
-			}
-			b.WriteString(prefix + branch + treeLabel(n.Entry) + mark + "\n")
+			b.WriteString(prefix + branch + treeRow(n, tcm, active) + "\n")
 			walk(n.Children, prefix+cont)
 		}
 	}
 	walk(nodes, "")
+	if count == 0 {
+		return "No entries in session"
+	}
 	if count >= 100 {
 		b.WriteString("…(truncated)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
 }
 
-func treeLabel(e pirpc.TreeEntry) string {
+// buildToolCallMap indexes assistant toolCall blocks by id so toolResult
+// rows can show what ran (pi keeps the same map for its tree list).
+func buildToolCallMap(nodes []pirpc.TreeNode) map[string]pirpc.ContentBlock {
+	m := map[string]pirpc.ContentBlock{}
+	var walk func(ns []pirpc.TreeNode)
+	walk = func(ns []pirpc.TreeNode) {
+		for _, n := range ns {
+			if n.Entry.Type == "message" {
+				for _, bl := range pirpc.BlocksOf(n.Entry.Message.Content) {
+					if bl.Type == "toolCall" && bl.ID != "" {
+						m[bl.ID] = bl
+					}
+				}
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	return m
+}
+
+// activePathIDs marks the leaf and every ancestor up to the root (pi's
+// buildActivePath: the "• " trail of the current branch).
+func activePathIDs(nodes []pirpc.TreeNode, leaf string) map[string]bool {
+	if leaf == "" {
+		return nil
+	}
+	parent := map[string]string{}
+	var walk func(ns []pirpc.TreeNode)
+	walk = func(ns []pirpc.TreeNode) {
+		for _, n := range ns {
+			if n.Entry.ParentID != nil {
+				parent[n.Entry.ID] = *n.Entry.ParentID
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	out := map[string]bool{leaf: true}
+	for id := leaf; ; {
+		p, ok := parent[id]
+		if !ok || p == "" {
+			break
+		}
+		out[p] = true
+		id = p
+	}
+	return out
+}
+
+// treeRow is one pi tree-list row: "• " when on the active path,
+// "[label] " bookmarks, then the entry text (pi's getEntryDisplayText,
+// plain — colors stay in pi's TUI).
+func treeRow(n pirpc.TreeNode, tcm map[string]pirpc.ContentBlock, active map[string]bool) string {
+	e := n.Entry
+	var content string
 	switch e.Type {
 	case "message":
-		t := app.Short(pirpc.TextOf(e.Message.Content), 60)
-		extra := ""
-		for _, bl := range pirpc.BlocksOf(e.Message.Content) {
-			if bl.Type == "toolCall" {
-				extra += " [" + bl.Name + "]"
+		content = treeMessage(e, tcm)
+	case "custom_message":
+		content = "[" + e.CustomType + "]: " + treeNorm(pirpc.TextOf(e.Content))
+	case "compaction":
+		content = fmt.Sprintf("[compaction: %dk tokens]", (e.TokensBefore+500)/1000)
+	case "branch_summary":
+		content = "[branch summary]: " + treeNorm(e.Summary)
+	case "model_change":
+		content = "[model: " + app.OrDefault(e.ModelID, "?") + "]"
+	case "thinking_level_change":
+		content = "[thinking: " + app.OrDefault(e.ThinkingLevel, "?") + "]"
+	case "custom":
+		content = "[custom: " + e.CustomType + "]"
+	case "label":
+		lbl := e.Label
+		if lbl == "" {
+			lbl = "(cleared)"
+		}
+		content = "[label: " + lbl + "]"
+	case "session_info":
+		if e.Name != "" {
+			content = "[title: " + e.Name + "]"
+		} else {
+			content = "[title: empty]"
+		}
+	default:
+		content = e.Type + " " + app.ShortID(e.ID)
+	}
+	pre := ""
+	if active[e.ID] {
+		pre += "• "
+	}
+	if n.Label != "" {
+		pre += "[" + n.Label + "] "
+	}
+	return pre + content
+}
+
+// treeMessage formats message entries like pi: "user: …", "assistant: …"
+// (with (aborted)/error/(no content) fallbacks), toolResult as the tool
+// call ("[read: path]", "[bash: cmd]", …) via the toolCall map, and
+// bashExecution as "[bash]: command".
+func treeMessage(e pirpc.TreeEntry, tcm map[string]pirpc.ContentBlock) string {
+	msg := e.Message
+	switch msg.Role {
+	case "user":
+		return "user: " + treeNorm(pirpc.TextOf(msg.Content))
+	case "assistant":
+		if t := treeNorm(pirpc.TextOf(msg.Content)); t != "" {
+			return "assistant: " + t
+		}
+		if msg.StopReason == "aborted" {
+			return "assistant: (aborted)"
+		}
+		if strings.TrimSpace(msg.ErrorMessage) != "" {
+			err := treeNorm(msg.ErrorMessage)
+			if r := []rune(err); len(r) > 80 {
+				err = string(r[:80])
+			}
+			return "assistant: " + err
+		}
+		return "assistant: (no content)"
+	case "toolResult":
+		if msg.ToolCallID != "" {
+			if tc, ok := tcm[msg.ToolCallID]; ok {
+				return treeTool(tc.Name, tc.Arguments)
 			}
 		}
-		if t == "" && extra != "" {
-			return e.Message.Role + ":" + extra
+		return "[" + app.OrDefault(msg.ToolName, "tool") + "]"
+	case "bashExecution":
+		cmd := msg.Command
+		if cmd == "" {
+			cmd = pirpc.TextOf(msg.Content)
 		}
-		return e.Message.Role + ": " + t + extra
-	case "model_change":
-		return "model → " + app.OrDefault(e.ModelID, "?")
-	case "thinking_level_change":
-		return "thinking → " + app.OrDefault(e.Level, "?")
+		return "[bash]: " + treeNorm(cmd)
 	default:
-		return e.Type + " " + app.ShortID(e.ID)
+		if msg.Role == "" {
+			return "[message]"
+		}
+		return "[" + msg.Role + "]"
 	}
+}
+
+// treeTool formats one tool call like pi's tree list ("[read: path:1-3]",
+// "[bash: cmd]", "[grep: /pat/ in path]", …).
+func treeTool(name string, args json.RawMessage) string {
+	shortPath := func(keys ...string) string { return pirpc.Shorten(treeArg(args, keys...)) }
+	switch strings.ToLower(name) {
+	case "read":
+		p := shortPath("path", "file_path")
+		off, hasOff := treeArgNum(args, "offset")
+		lim, hasLim := treeArgNum(args, "limit")
+		if !hasOff && !hasLim {
+			return "[read: " + p + "]"
+		}
+		start := 1
+		if hasOff && off >= 1 {
+			start = int(off)
+		}
+		if hasLim && lim >= 1 {
+			return fmt.Sprintf("[read: %s:%d-%d]", p, start, start+int(lim)-1)
+		}
+		return fmt.Sprintf("[read: %s:%d]", p, start)
+	case "write":
+		return "[write: " + shortPath("path", "file_path") + "]"
+	case "edit":
+		return "[edit: " + shortPath("path", "file_path") + "]"
+	case "bash":
+		cmd := treeNorm(treeArg(args, "command"))
+		if r := []rune(cmd); len(r) > 50 {
+			cmd = string(r[:50]) + "..."
+		}
+		return "[bash: " + cmd + "]"
+	case "grep":
+		pat := treeNorm(treeArg(args, "pattern"))
+		if pat == "" {
+			pat = "..."
+		}
+		return "[grep: /" + pat + "/ in " + app.OrDefault(shortPath("path"), ".") + "]"
+	case "find":
+		pat := treeNorm(treeArg(args, "pattern"))
+		if pat == "" {
+			pat = "..."
+		}
+		return "[find: " + pat + " in " + app.OrDefault(shortPath("path"), ".") + "]"
+	case "ls":
+		return "[ls: " + app.OrDefault(shortPath("path"), ".") + "]"
+	default:
+		s := strings.Join(strings.Fields(string(args)), " ")
+		if s == "" || s == "null" {
+			return "[" + name + "]"
+		}
+		if r := []rune(s); len(r) > 40 {
+			return "[" + name + ": " + string(r[:40]) + "...]"
+		}
+		return "[" + name + ": " + s + "]"
+	}
+}
+
+// treeArg reads one string field from tool-call JSON args ("": absent).
+func treeArg(raw json.RawMessage, keys ...string) string {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return ""
+	}
+	for _, k := range keys {
+		v, ok := m[k]
+		if !ok || string(v) == "null" {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(v, &s); err != nil {
+			continue
+		}
+		if strings.TrimSpace(s) != "" {
+			return s
+		}
+	}
+	return ""
+}
+
+// treeArgNum reads one numeric field from tool-call JSON args.
+func treeArgNum(raw json.RawMessage, key string) (float64, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return 0, false
+	}
+	v, ok := m[key]
+	if !ok || string(v) == "null" {
+		return 0, false
+	}
+	var n float64
+	if err := json.Unmarshal(v, &n); err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// treeNorm matches pi's row text: newline/tab → space, trimmed, 200 chars.
+func treeNorm(s string) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	s = strings.ReplaceAll(s, "\t", " ")
+	s = strings.TrimSpace(s)
+	if r := []rune(s); len(r) > 200 {
+		return string(r[:200])
+	}
+	return s
 }
 
 // Origin marks where a builtin feature comes from.
@@ -343,15 +588,7 @@ func All() []app.Builtin {
 			}
 		}),
 		pi("thinking", "<level> — Set thinking level", "/thinking", func(m *app.Model, arg string) tea.Cmd {
-			m.Status = "loading thinking levels…"
-			m.Refresh()
-			return func() tea.Msg {
-				levels, err := m.Pi.GetLevels()
-				if err != nil {
-					return app.PickerMsg{Kind: "thinking", Err: err}
-				}
-				return app.PickerMsg{Kind: "thinking", Options: levels}
-			}
+			return m.OpenThinking()
 		}),
 		pi("reload", "Reload keybindings, extensions, skills, prompts, themes, and context files", "/reload", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "reloading commands…"
@@ -424,6 +661,30 @@ func All() []app.Builtin {
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				m.ToggleSide()
 				return nil
+			},
+		},
+		{
+			Name: "plugins", Desc: "Collapse/expand installed pi plugins in the sidebar", Usage: "/plugins",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				m.TogglePlugins()
+				return nil
+			},
+		},
+		{
+			Name: "mouse", Desc: "Toggle mouse (click sidebar, wheel scroll) — off for native text selection", Usage: "/mouse [on|off]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				return m.ToggleMouse(arg)
+			},
+		},
+		{
+			Name: "update", Desc: "Check + install pitago update (pitago)", Usage: "/update",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				m.Status = "checking for updates…"
+				m.Refresh()
+				return m.CheckUpdatesCmd(false)
 			},
 		},
 	}

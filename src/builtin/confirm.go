@@ -25,6 +25,7 @@ func Confirmers() map[string]app.ConfirmFunc {
 		"logout":      confirmLogout,
 		"secret":      confirmSecret,
 		"yank":        confirmYank,
+		"update":      confirmUpdate,
 	}
 }
 
@@ -63,7 +64,7 @@ func confirmThinking(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 		if err := m.Pi.SetLevel(level); err != nil {
 			return app.SettingsRefreshMsg{Err: err}
 		}
-		return app.SettingsRefreshMsg{Notice: "thinking → " + level}
+		return app.SettingsRefreshMsg{Notice: "thinking → " + level, Level: level}
 	}
 }
 
@@ -145,6 +146,19 @@ func confirmSecret(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		return app.LoginKeyMsg{Provider: prov, Env: env, Key: key}
 	}
+}
+
+// confirmUpdate installs the picked release (ri==0) or dismisses it.
+func confirmUpdate(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	target := d.UpdateTo
+	m.Dialogs = m.Dialogs[1:]
+	if ri != 0 || target == "" {
+		m.Refresh()
+		return m, nil
+	}
+	m.Status = "updating to " + target + "…"
+	m.Refresh()
+	return m, m.InstallUpdateCmd(target)
 }
 
 // confirmYank copies the picked message's full text (Payload parallel to

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,6 +25,7 @@ type Client struct {
 	OnEvent func(Event)
 	done    chan struct{}
 	once    sync.Once
+	closed  atomic.Bool // intentional Close: waiter skips pi_exited
 }
 
 // Options controls how pi is spawned.
@@ -124,7 +126,11 @@ func Spawn(opt Options) (*Client, error) {
 			logF.Close()
 		}
 		c.once.Do(func() { close(c.done) })
-		if c.OnEvent != nil {
+		// An intentional Close (login/logout/resume reconnect, TUI exit)
+		// must not look like a crash: the replacer respawnMsg owns the UI.
+		// Without this, the old pi's death notice can land after respawnMsg
+		// (respawning already false) and fake a "pi has exited".
+		if !c.closed.Load() && c.OnEvent != nil {
 			c.OnEvent(Event{Type: "pi_exited"})
 		}
 	}()
@@ -236,8 +242,10 @@ func (c *Client) Fire(cmd Command) error {
 	return err
 }
 
-// Close kills the pi process.
+// Close kills the pi process. The waiter suppresses pi_exited for an
+// intentional close, so reconnects never report a fake crash.
 func (c *Client) Close() {
+	c.closed.Store(true)
 	if c.cmd.Process != nil {
 		_ = c.cmd.Process.Kill()
 	}

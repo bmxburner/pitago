@@ -42,6 +42,11 @@ func tallModel(t *testing.T) Model {
 	m.ws = wsData{ok: true, branch: "main", files: []wsFile{
 		{"a.go", 1, 0}, {"b.go", 2, 1}, {"c.go", 3, 0}, {"d.go", 0, 4}, {"e.go", 5, 5},
 	}, more: 30, untracked: 2}
+	m.Plugins = []Plugin{
+		{Spec: "npm:pi-lens", Name: "pi-lens"},
+		{Spec: "npm:pi-foo", Name: "pi-foo"},
+		{Spec: "git:github.com/x/y", Name: "github.com/x/y"},
+	}
 	return m
 }
 
@@ -92,6 +97,79 @@ func TestSidebarCtrlScroll(t *testing.T) {
 	m = tm.(Model)
 	if m.sideVp.YOffset <= 0 {
 		t.Fatal("Alt+Down did not scroll the sidebar")
+	}
+}
+
+// Clicking the PLUGINS header collapses/expands the list; the row above
+// (COMMANDS counts) and below (separator) must not toggle. The mapping
+// stays correct when the sidebar is scrolled.
+func TestPluginHeaderToggleClick(t *testing.T) {
+	m := tallModel(t)
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m = tm.(Model)
+	sx := m.mainW() + 5
+	y := 2 + m.pluginHeaderRow()
+	if !m.pluginToggleAt(sx, y) {
+		t.Fatalf("header row %d not hit at y=%d", m.pluginHeaderRow(), y)
+	}
+	if m.pluginToggleAt(sx, y-1) {
+		t.Fatal("row above the header must not toggle")
+	}
+	if m.pluginToggleAt(sx, y+1) {
+		t.Fatal("row below the header must not toggle")
+	}
+	if m.pluginToggleAt(10, y) {
+		t.Fatal("chat column must not toggle")
+	}
+	// scrolled: same content row maps to a smaller screen y
+	m.sideVp.SetYOffset(2)
+	if !m.pluginToggleAt(sx, y-2) {
+		t.Fatal("header not hit after scrolling")
+	}
+	// end-to-end through the mouse handler. Real terminals report release
+	// with Button None (SGR `m` / X10 code 3 carry no button), so the
+	// handler must not require Left — that was the dead-click bug.
+	m2 := tallModel(t)
+	tm, _ = m2.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
+	m2 = tm.(Model)
+	rel := tea.MouseMsg{X: sx, Y: 2 + m2.pluginHeaderRow(), Action: tea.MouseActionRelease, Button: tea.MouseButtonNone}
+	tm, _ = m2.Update(rel)
+	m2 = tm.(Model)
+	if m2.showPlugins {
+		t.Fatal("clicking the header must collapse the list")
+	}
+	tm, _ = m2.Update(rel)
+	m2 = tm.(Model)
+	if !m2.showPlugins {
+		t.Fatal("clicking the header again must expand the list")
+	}
+	// press alone (no release) must not toggle
+	press := tea.MouseMsg{X: sx, Y: 2 + m2.pluginHeaderRow(), Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	tm, _ = m2.Update(press)
+	m2 = tm.(Model)
+	if !m2.showPlugins {
+		t.Fatal("press without release must not toggle the list")
+	}
+}
+
+// /mouse flips capture at runtime: the flag follows, and a notice block
+// explains the new mode (not ready here, so no tea command is returned).
+func TestToggleMouse(t *testing.T) {
+	m := New(nil, t.TempDir())
+	if m.Mouse {
+		t.Fatal("mouse must start off in tests (flag default is applied in main)")
+	}
+	if cmd := m.ToggleMouse(""); cmd != nil || !m.Mouse {
+		t.Fatal("bare /mouse must turn capture on")
+	}
+	if cmd := m.ToggleMouse("off"); cmd != nil || m.Mouse {
+		t.Fatal("/mouse off must turn capture off")
+	}
+	if cmd := m.ToggleMouse("on"); cmd != nil || !m.Mouse {
+		t.Fatal("/mouse on must turn capture on")
+	}
+	if len(m.blocks) != 3 {
+		t.Fatalf("each toggle must log a notice, got %d blocks", len(m.blocks))
 	}
 }
 

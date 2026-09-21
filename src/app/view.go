@@ -137,7 +137,7 @@ func (m Model) renderBlocks() string {
 			body = markdown.Highlight("bash", Short(bl.Text, 400)) + "\n\n"
 		case "tree":
 			icon = statusBarStyle.Render("●")
-			body = codeStyle.Render(Short(bl.Text, 3000)) + "\n\n"
+			body = codeStyle.Render(shortTree(bl.Text, 3000)) + "\n\n"
 		case "notice":
 			if bl.Err {
 				icon = errStyle.Render("×")
@@ -432,10 +432,11 @@ func (m Model) buildSidebarContent() string {
 	b.WriteString(statusBarStyle.Render(Short(sess, inner)) + "\n")
 	b.WriteString(sep() + "\n")
 
-	modelName := Short(m.ModelLbl, inner-8)
-	if m.thinkLvl != "" {
-		modelName = Short(m.ModelLbl+" - "+m.thinkLvl, inner-8)
+	lvl := m.thinkLvl
+	if lvl == "" {
+		lvl = "off"
 	}
+	modelName := Short(m.ModelLbl+" - "+lvl, inner-8)
 	b.WriteString(statusBarStyle.Render("model · ") + lipgloss.NewStyle().Foreground(cText).Render(modelName) + "\n")
 	barW := inner - len("ctx ") - len(" 100%")
 	if barW < 4 {
@@ -527,6 +528,7 @@ func (m Model) buildSidebarContent() string {
 		b.WriteString(statusBarStyle.Render(fmt.Sprintf("queue: %d steer · %d follow",
 			len(m.queue.Steering), len(m.queue.FollowUp))) + "\n")
 	}
+	b.WriteString(m.renderPluginsSection(inner))
 	b.WriteString(m.renderMcpSection(inner))
 	b.WriteString(m.renderTodosSection(inner))
 	if m.ws.ok {
@@ -556,7 +558,23 @@ func (m Model) buildSidebarContent() string {
 // lipgloss Height covers the content only (border adds 2), so size it by
 // sideContentH to keep the outer box exactly sideH tall.
 func (m Model) renderSidebar() string {
-	return sideStyle.Width(sideW).Height(m.sideContentH()).Render(m.sideVp.View())
+	h := m.sideContentH()
+	body := m.sideVp.View()
+	if !m.quitArmed() {
+		return sideStyle.Width(sideW).Height(h).Render(body)
+	}
+	// armed: viewport already shrunk by one line (syncSideH), so the
+	// warning pins to the bottom-right corner of the box.
+	return sideStyle.Width(sideW).Height(h).Render(body + "\n" + quitArmFooter())
+}
+
+// quitArmFooter is the 1-line bottom-right sidebar warning (yellow).
+func quitArmFooter() string {
+	s := "press Ctrl+C again to quit"
+	if w := lipgloss.Width(s); w < sideInnerW {
+		s = strings.Repeat(" ", sideInnerW-w) + s
+	}
+	return warnStyle.Render(s)
 }
 
 func sep() string {
@@ -660,6 +678,24 @@ func (m Model) inputStatus() string {
 	return m.Status
 }
 
+// quitArmed reports a live quit arm: one Ctrl+C landed within
+// quitArmWindow, so a second one quits.
+func (m Model) quitArmed() bool {
+	return !m.quitArm.IsZero() && time.Since(m.quitArm) < quitArmWindow
+}
+
+// syncSideH reserves one sidebar line for the quit-arm footer while armed.
+func (m *Model) syncSideH() {
+	if !m.ready {
+		return
+	}
+	h := m.sideContentH()
+	if m.quitArmed() && h > 1 {
+		h--
+	}
+	m.sideVp.Height = h
+}
+
 // inputBox draws a rounded box with an optional live-status title spliced
 // into the top border (pi embeds its working status there while running).
 // Content lines are wrapped/padded to innerW; only the frame carries the
@@ -692,12 +728,15 @@ func inputBox(title string, lines []string, innerW int, border lipgloss.Color) s
 
 func (m Model) renderDialog() string {
 	d := m.Dialogs[0]
+	if d.Kind == "model" && len(d.Provs) > 0 {
+		return m.renderModelDialog(d)
+	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
 	if d.Message != "" {
 		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
 	}
-	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
+	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
 		b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
 	}
 	if d.Kind == "secret" {
@@ -752,7 +791,7 @@ func (m Model) renderDialog() string {
 		}
 	}
 	foot := "↑↓ select · Enter confirm · Esc cancel"
-	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
+	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
 		foot = "type to filter · " + foot
 	}
 	if d.Kind == "sessions" {
@@ -763,6 +802,236 @@ func (m Model) renderDialog() string {
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))
 	box := dlgStyle.Width(62).Render(b.String())
+	hint := ""
+	if len(m.Dialogs) > 1 {
+		hint = statusBarStyle.Render(fmt.Sprintf("(%d more dialogs pending)", len(m.Dialogs)-1))
+	}
+	return lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.Place(m.winW, m.winH-2, lipgloss.Center, lipgloss.Center, box),
+		hint,
+	)
+}
+
+// fixedWin returns a scroll window of exactly win rows: data [start,end)
+// plus above/below markers that consume budget rows, so the dialog box
+// never resizes while scrolling or switching providers.
+func fixedWin(cursor, total, win int) (start, end int, above, below bool) {
+	start = cursor - 4
+	if start < 0 {
+		start = 0
+	}
+	if start+win > total {
+		start = total - win
+	}
+	if start < 0 {
+		start = 0
+	}
+	cap, above := win, start > 0
+	if above {
+		cap--
+	}
+	end = start + cap
+	if end > total {
+		end = total
+	}
+	below = end < total
+	if below {
+		cap--
+		// the below-marker eats the last data row: shift the window
+		// down so the cursor stays visible.
+		if start+cap <= cursor {
+			start = cursor - cap + 1
+		}
+		end = start + cap
+		if end > total {
+			end = total
+		}
+		above = start > 0
+	}
+	return start, end, above, below
+}
+
+// renderModelDialog draws the two-pane model picker: left = providers,
+// right = their models (oh-my-pi style). ↑↓ moves in the focused pane,
+// ←/→/Tab switches pane, typing filters, Enter selects.
+func (m Model) renderModelDialog(d *Dialog) string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
+	if d.Message != "" {
+		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
+	}
+	b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
+	b.WriteString("\n")
+
+	boxW := m.winW - 10
+	if boxW < 70 {
+		boxW = 70
+	}
+	if boxW > 150 {
+		boxW = 150
+	}
+	leftW := 30
+	if boxW < 100 {
+		leftW = 24
+	}
+	rightW := boxW - 8 - leftW - 3
+	if rightW < 30 {
+		rightW = 30
+	}
+	win := m.winH - 14
+	if win < 12 {
+		win = 12
+	}
+	if win > 24 {
+		win = 24
+	}
+
+	f := strings.ToLower(d.Filter)
+	matchText := func(i int) bool {
+		return f == "" || strings.Contains(strings.ToLower(d.Options[i]), f) ||
+			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) ||
+			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f)
+	}
+	provCount := func(prov string) int {
+		n := 0
+		for i := range d.Options {
+			if prov != "All" && normProv(providerAt(d.Providers, i)) != prov {
+				continue
+			}
+			if matchText(i) {
+				n++
+			}
+		}
+		return n
+	}
+
+	// left window (providers): always win rows — markers take budget rows
+	// so the box never resizes while scrolling.
+	ptotal := len(d.Provs)
+	pstart, pend, pAbove, pBelow := fixedWin(d.ProvCursor, ptotal, win)
+	var leftLines []string
+	if pAbove {
+		leftLines = append(leftLines, "  "+toolStyle.Width(leftW-2).Render(fmt.Sprintf("…(+%d above)", pstart)))
+	}
+	for pi := pstart; pi < pend; pi++ {
+		name := d.Provs[pi]
+		cntStr := fmt.Sprintf("%d", provCount(name))
+		cw := leftW - 2
+		dot := "  "
+		if name != "All" {
+			dot = statusBarStyle.Render("○ ")
+			if d.ProvConn[name] {
+				dot = okStyle.Render("● ")
+			}
+		}
+		nm := Short(name, cw-2-len(cntStr)-1)
+		pad := cw - 2 - lipgloss.Width(nm) - len(cntStr)
+		if pad < 1 {
+			pad = 1
+		}
+		content := dot + nm + strings.Repeat(" ", pad) + cntStr
+		mark := "  "
+		style := statusBarStyle
+		if provCount(name) == 0 {
+			style = toolStyle
+		}
+		if pi == d.ProvCursor {
+			mark = "▸ "
+			if d.ProvFocus {
+				style = rowHiStyle
+			} else {
+				style = lipgloss.NewStyle().Foreground(cText)
+			}
+		}
+		leftLines = append(leftLines, mark+style.Width(leftW-2).Render(content))
+	}
+	if pBelow {
+		leftLines = append(leftLines, "  "+toolStyle.Width(leftW-2).Render(fmt.Sprintf("…(+%d below)", ptotal-pend)))
+	}
+	for len(leftLines) < win {
+		leftLines = append(leftLines, "  "+statusBarStyle.Width(leftW-2).Render(""))
+	}
+
+	// right window (models): same fixed-win rule as the left pane.
+	total := len(d.FIdx)
+	start, end, rAbove, rBelow := fixedWin(d.Cursor, total, win)
+	var rightLines []string
+	if rAbove {
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(fmt.Sprintf("…(+%d above)", start)))
+	}
+	optW := 28
+	if rightW-10 < optW {
+		optW = rightW - 10
+	}
+	if optW < 10 {
+		optW = 10
+	}
+	for fi := start; fi < end; fi++ {
+		ri := d.FIdx[fi]
+		mark := "  "
+		style := statusBarStyle
+		if fi == d.Cursor {
+			mark = "▸ "
+			if d.ProvFocus {
+				style = lipgloss.NewStyle().Foreground(cText)
+			} else {
+				style = rowHiStyle
+			}
+		}
+		row := Short(d.Options[ri], optW)
+		if desc := DescOf(d, ri); desc != "" {
+			row += "  " + toolStyle.Render("— "+Short(desc, rightW-2-optW-3))
+		}
+		rightLines = append(rightLines, mark+style.Width(rightW-2).Render(row))
+	}
+	if rBelow {
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(fmt.Sprintf("…(+%d below)", total-end)))
+	}
+	if total == 0 {
+		msg := "— no match —"
+		if p := d.selProv(); p != "" && !d.ProvConn[p] {
+			msg = "not connected · ^L login"
+		}
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(msg))
+	}
+	for len(rightLines) < win {
+		rightLines = append(rightLines, "  "+statusBarStyle.Width(rightW-2).Render(""))
+	}
+
+	// headers (a non-empty filter searches globally, so show All)
+	sel := "All"
+	if p := d.selProv(); p != "" && d.Filter == "" {
+		sel = p
+	}
+	b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
+		"  " + sideTitleStyle.Width(rightW-2).Render(sel+" · "+fmt.Sprintf("%d", total)) + "\n")
+
+	n := len(leftLines)
+	if len(rightLines) > n {
+		n = len(rightLines)
+	}
+	sep := sepStyle.Render("│")
+	for i := 0; i < n; i++ {
+		l, r := "", ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		} else {
+			l = "  " + statusBarStyle.Width(leftW-2).Render("")
+		}
+		if i < len(rightLines) {
+			r = rightLines[i]
+		} else {
+			r = "  " + statusBarStyle.Width(rightW-2).Render("")
+		}
+		b.WriteString(l+" "+sep+" "+r + "\n")
+	}
+
+	foot := "↑↓ providers · → models · type to filter · Enter open · ^L login · Esc close"
+	if !d.ProvFocus {
+		foot = "↑↓ models · ← providers · Tab switch · Enter select · ^L login · Esc close"
+	}
+	b.WriteString("\n" + toolStyle.Render(foot))
+	box := dlgStyle.Width(boxW).Render(b.String())
 	hint := ""
 	if len(m.Dialogs) > 1 {
 		hint = statusBarStyle.Render(fmt.Sprintf("(%d more dialogs pending)", len(m.Dialogs)-1))
@@ -806,3 +1075,12 @@ func (m Model) View() string {
 }
 
 // utils ------------------------------------------------------------------------
+
+// shortTree caps a multi-line block at n runes without touching newlines:
+// Short would flatten the session-tree connectors into one ⏎ line.
+func shortTree(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
+}

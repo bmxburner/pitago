@@ -41,6 +41,14 @@ type McpServer struct {
 	Disabled  bool
 }
 
+// Plugin is one installed pi package (sidebar PLUGINS section). Pi calls
+// these "packages" (settings.json packages: npm:... / git:...), listed by
+// `pi list`; the sidebar shows the short name.
+type Plugin struct {
+	Spec string // full spec as in settings.json, e.g. "npm:pi-lens"
+	Name string // short display name, e.g. "pi-lens"
+}
+
 const todosShowMax = 10 // cap like pi-sidebar-tui's default todosMax
 
 func isTodoTool(name string) bool {
@@ -370,7 +378,81 @@ func getMcpServers() []McpServer {
 	return mcpCacheData
 }
 
+// pluginName strips the source prefix: "npm:pi-lens" → "pi-lens",
+// "git:github.com/sting8k/pi-themes" → "github.com/sting8k/pi-themes".
+func pluginName(spec string) string {
+	if i := strings.Index(spec, ":"); i >= 0 {
+		return spec[i+1:]
+	}
+	return spec
+}
+
+// readPlugins lists installed pi packages from <agentDir>/settings.json
+// (same source `pi list` reads). Order follows settings.json.
+func readPlugins(dir string) []Plugin {
+	if dir == "" {
+		return nil
+	}
+	cfg := readJSONFile(filepath.Join(dir, "settings.json"))
+	if cfg == nil {
+		return nil
+	}
+	raw, ok := cfg["packages"].([]any)
+	if !ok {
+		return nil
+	}
+	var out []Plugin
+	for _, p := range raw {
+		spec, ok := p.(string)
+		if !ok || strings.TrimSpace(spec) == "" {
+			continue
+		}
+		out = append(out, Plugin{Spec: spec, Name: pluginName(spec)})
+	}
+	return out
+}
+
+var (
+	pluginCacheData []Plugin
+	pluginCacheAt   time.Time
+)
+
+// getPlugins returns the cached plugin list (same 1.5s TTL as MCP).
+func getPlugins() []Plugin {
+	if time.Since(pluginCacheAt) < mcpCacheTTL {
+		return pluginCacheData
+	}
+	pluginCacheData = readPlugins(piAgentDir())
+	pluginCacheAt = time.Now()
+	return pluginCacheData
+}
+
 // rendering (same monochrome sidebar language as renderSidebar) -------------
+
+// renderPluginsSection draws the collapsible PLUGINS toggle: header only
+// when collapsed (▸), header + one row per plugin when expanded (▾).
+// It lives inside the sidebar viewport, so a long list scrolls with the
+// rest of the sidebar (Ctrl/Alt+↑↓ PgUp PgDn Home End, wheel over it).
+func (m Model) renderPluginsSection(inner int) string {
+	var b strings.Builder
+	mark := "▸"
+	if m.showPlugins {
+		mark = "▾"
+	}
+	b.WriteString(sideTitleStyle.Render(fmt.Sprintf("PLUGINS (%d) %s", len(m.Plugins), mark)) + "\n")
+	if m.showPlugins {
+		if len(m.Plugins) == 0 {
+			b.WriteString(toolStyle.Render("—") + "\n")
+		} else {
+			for _, p := range m.Plugins {
+				b.WriteString(statusBarStyle.Render(" • ") +
+					lipgloss.NewStyle().Foreground(cText).Render(Short(p.Name, inner-3)) + "\n")
+			}
+		}
+	}
+	b.WriteString(sep() + "\n")
+	return b.String()
+}
 
 func (m Model) renderMcpSection(inner int) string {
 	var b strings.Builder

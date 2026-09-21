@@ -30,6 +30,10 @@ type Dialog struct {
 	Options       []string
 	Descs         []string
 	Providers     []string // model picker: parallel provider per option
+	Provs         []string // model picker: left pane (unique providers, [0]="All")
+	ProvConn      map[string]bool // model picker: connected providers (green dot)
+	ProvCursor    int      // model picker: left-pane cursor
+	ProvFocus     bool     // model picker: true = providers focused
 	Paths         []string // sessions picker: parallel session file per option
 	Scope         string   // sessions picker: "current" | "all" (Tab toggles)
 	Payload       []string // yank picker: full message text per option
@@ -39,6 +43,7 @@ type Dialog struct {
 	Settings      SettingsState
 	LoginProvider string // login flow: provider id
 	LoginEnv      string // login flow: env var
+	UpdateTo      string // update flow: target tag (Kind "update")
 }
 
 // SettingsState snapshots tunable agent settings.
@@ -90,6 +95,8 @@ type Model struct {
 	queue        pirpc.Queue
 	Todos        []TodoItem  // tracked from todo-tool calls (sidebar)
 	MCP          []McpServer // pi agent-dir MCP snapshot (sidebar)
+	Plugins      []Plugin    // installed pi packages (sidebar PLUGINS toggle)
+	showPlugins  bool        // PLUGINS expanded (click header or /plugins)
 	Dialogs      []*Dialog
 	connErr      string
 	AutoRetry    bool          // no RPC getter; tracked locally (default on)
@@ -119,8 +126,13 @@ type Model struct {
 	recentPath   string // persisted recent models ("" = don't persist)
 	builtins     []Builtin
 	confirm      map[string]ConfirmFunc
-	expandTools  bool // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
+	expandTools  bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
+	quitArm      time.Time // first Ctrl+C timestamp (second press within window quits)
+	quitGen      int       // arm generation (stale disarm ticks ignored)
 }
+
+// quitArmWindow is the double-press window for Ctrl+C quit.
+const quitArmWindow = 3 * time.Second
 
 type connectedMsg struct {
 	state pirpc.State
@@ -149,6 +161,8 @@ type wsMsg struct {
 }
 
 type sentAckMsg struct{ err error }
+
+type quitDisarmMsg struct{ gen int } // quit-arm window elapsed
 
 type SessionResetMsg struct{ Err error }
 
@@ -185,6 +199,7 @@ type TreeMsg struct {
 
 type SettingsRefreshMsg struct {
 	Notice string
+	Level  string // thinking change: update sidebar immediately
 	Err    error
 }
 
@@ -225,11 +240,12 @@ func New(pi *pirpc.Client, cwd string) Model {
 		cwd:       cwd,
 		ModelLbl:  "…",
 		AutoRetry: true,
+		showPlugins: true, // PLUGINS starts expanded
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs())
+	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true))
 }
 
 // fetchAll loads state/messages/stats/commands after (re)connect.
@@ -448,6 +464,45 @@ func (m *Model) ToggleSide() {
 	m.Refresh()
 }
 
+// TogglePlugins collapses/expands the sidebar PLUGINS list (click its
+// header or /plugins). Content stays in the sidebar viewport, so a long
+// list scrolls instead of pushing the layout.
+func (m *Model) TogglePlugins() {
+	m.showPlugins = !m.showPlugins
+	if !m.ready {
+		return
+	}
+	m.Refresh()
+}
+
+// ToggleMouse flips mouse capture at runtime (/mouse): on = clickable
+// sidebar + wheel scroll (hold Option/Shift to select text), off = native
+// text selection (sidebar still scrolls with Ctrl/Alt+↑↓). Returns the tea
+// command that enables/disables terminal mouse reporting.
+func (m *Model) ToggleMouse(arg string) tea.Cmd {
+	on := !m.Mouse
+	switch strings.ToLower(strings.TrimSpace(arg)) {
+	case "on", "enable", "true", "1":
+		on = true
+	case "off", "disable", "false", "0":
+		on = false
+	}
+	m.Mouse = on
+	if on {
+		m.AddBlock(Block{Kind: "notice", Text: "mouse on — click sidebar · wheel scrolls · hold Option/Shift to select text"})
+	} else {
+		m.AddBlock(Block{Kind: "notice", Text: "mouse off — native text selection · sidebar scrolls with Ctrl+↑↓"})
+	}
+	if !m.ready {
+		return nil
+	}
+	m.Refresh()
+	if on {
+		return tea.EnableMouseCellMotion
+	}
+	return tea.DisableMouse
+}
+
 // refreshFollow rebuilds content and jumps to bottom (for new content worth seeing).
 
 func (m *Model) RefreshFollow() {
@@ -462,6 +517,50 @@ func (m *Model) RefreshFollow() {
 // Cwd is the pi session working directory (picker loaders live outside
 // this package and need it to find pi's session dir).
 func (m *Model) Cwd() string { return m.cwd }
+
+// ThinkLvl is the current thinking level for the /thinking picker.
+func (m *Model) ThinkLvl() string { return m.thinkLvl }
+
+// CycleThinking rotates to the next thinking level (Ctrl+T, no picker).
+func (m *Model) CycleThinking() tea.Cmd {
+	m.Status = "switching thinking…"
+	m.Refresh()
+	cur := m.ThinkLvl()
+	return func() tea.Msg {
+		levels, err := m.Pi.GetLevels()
+		if err != nil {
+			return SettingsRefreshMsg{Err: err}
+		}
+		if len(levels) == 0 {
+			return SettingsRefreshMsg{Err: fmt.Errorf("no thinking levels")}
+		}
+		next := levels[0]
+		for i, l := range levels {
+			if l == cur {
+				next = levels[(i+1)%len(levels)]
+				break
+			}
+		}
+		if err := m.Pi.SetLevel(next); err != nil {
+			return SettingsRefreshMsg{Err: err}
+		}
+		return SettingsRefreshMsg{Notice: "thinking → " + next, Level: next}
+	}
+}
+
+// OpenThinking shows the thinking-level picker (/thinking).
+func (m *Model) OpenThinking() tea.Cmd {
+	m.Status = "loading thinking levels…"
+	m.Refresh()
+	cur := m.ThinkLvl()
+	return func() tea.Msg {
+		levels, err := m.Pi.GetLevels()
+		if err != nil {
+			return PickerMsg{Kind: "thinking", Err: err}
+		}
+		return PickerMsg{Kind: "thinking", Options: levels, Current: cur}
+	}
+}
 
 // SessionFile is the current pi session file ("": ephemeral/unknown).
 func (m *Model) SessionFile() string { return m.sessionFile }

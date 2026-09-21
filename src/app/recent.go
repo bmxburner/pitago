@@ -110,6 +110,34 @@ func (m Model) recentAt(x, y int) (int, bool) {
 	return idx, true
 }
 
+// pluginHeaderRow is the sidebar content row of the PLUGINS toggle header:
+// first model row + recent rows + hint + sep + COMMANDS header + command
+// rows. Everything after it (MCP/Todos/WORKSPACE) doesn't affect the row.
+func (m Model) pluginHeaderRow() int {
+	r := len(m.recentModels)
+	if r == 0 {
+		r = 1 // empty state renders one "—" row
+	}
+	c := 1 // COMMANDS counts (or "—")
+	if len(m.queue.Steering)+len(m.queue.FollowUp) > 0 {
+		c++ // queue line
+	}
+	return recentContentRow + r + 3 + c
+}
+
+// pluginToggleAt reports a click on the PLUGINS header (collapses/expands
+// the list). Same screen→content mapping as recentAt (header 1 + box
+// border 1, plus YOffset when scrolled).
+func (m Model) pluginToggleAt(x, y int) bool {
+	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 {
+		return false
+	}
+	if x < m.mainW()+1 || x > m.winW {
+		return false
+	}
+	return y-2+m.sideVp.YOffset == m.pluginHeaderRow()
+}
+
 // recentHint advertises click-switch only when the terminal reports mouse
 // events (--mouse); otherwise clicks never reach the app, so show keys.
 // Sidebar scrolls with Ctrl+↑↓ (Alt+↑↓ also works, wheel with --mouse).

@@ -49,3 +49,40 @@ func TestRPCNoLLM(t *testing.T) {
 	}
 	t.Logf("stats session=%s tools=%d", stats.SessionID, stats.ToolCalls)
 }
+
+// Intentional Close must not emit pi_exited (reconnects would fake a
+// "pi has exited" if the old pi's death notice lands after respawnMsg);
+// an un-closed death still reports it.
+func TestPiExitedSuppressedOnClose(t *testing.T) {
+	fake := t.TempDir() + "/slowexit.sh"
+	if err := os.WriteFile(fake, []byte("#!/bin/sh\nsleep 0.5\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan string, 4)
+	// control: unexpected death reports pi_exited
+	c, err := Spawn(Options{Bin: fake})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	c.OnEvent = func(e Event) { got <- e.Type }
+	select {
+	case typ := <-got:
+		if typ != "pi_exited" {
+			t.Fatalf("unexpected event %q", typ)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("expected pi_exited for unexpected death")
+	}
+	// intentional close: no event
+	c2, err := Spawn(Options{Bin: fake})
+	if err != nil {
+		t.Fatalf("spawn: %v", err)
+	}
+	c2.OnEvent = func(e Event) { got <- e.Type }
+	c2.Close()
+	select {
+	case typ := <-got:
+		t.Fatalf("closed client must stay silent, got %q", typ)
+	case <-time.After(2 * time.Second):
+	}
+}

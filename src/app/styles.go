@@ -21,6 +21,7 @@ const (
 	cCode     = lipgloss.Color("250") // code / output
 	cGreen    = lipgloss.Color("114") // success dot
 	cRed      = lipgloss.Color("203") // error
+	cYellow   = lipgloss.Color("11")  // warning (quit arm)
 	cCyan     = lipgloss.Color("6")   // command names in the / popup
 	cSide     = lipgloss.Color("240") // unused now, kept subtle
 	cInput    = lipgloss.Color("252") // input focus: white, not cyan
@@ -74,7 +75,7 @@ var (
 			Padding(1, 3)
 	errStyle  = lipgloss.NewStyle().Foreground(cRed)
 	okStyle   = lipgloss.NewStyle().Foreground(cGreen)
-	warnStyle = lipgloss.NewStyle().Foreground(cMuted)
+	warnStyle = lipgloss.NewStyle().Foreground(cYellow)
 )
 
 // messages ---------------------------------------------------------------

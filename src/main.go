@@ -2,11 +2,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -14,6 +17,7 @@ import (
 	"pitago/src/builtin"
 	"pitago/src/pimark"
 	"pitago/src/pirpc"
+	"pitago/src/update"
 )
 
 // Set at build time: go build -ldflags "-X main.version=v0.0.1" ./src
@@ -25,12 +29,18 @@ func main() {
 	provider := flag.String("provider", "", "pi provider (default from ~/.pi)")
 	modelFlag := flag.String("model", "", "pi model (default from ~/.pi)")
 	noSession := flag.Bool("no-session", false, "don't persist session")
-	mouse := flag.Bool("mouse", false, "enable mouse (click sidebar, wheel scroll; disables native text selection)")
+	mouse := flag.Bool("mouse", true, "mouse support (click sidebar, wheel scroll); --mouse=false keeps native text selection")
 	showVersion := flag.Bool("version", false, "print version and exit")
+	doUpdate := flag.Bool("update", false, "self-update to the latest GitHub release and exit")
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println("pitago " + version)
+		return
+	}
+
+	if *doUpdate {
+		runUpdate(version)
 		return
 	}
 
@@ -65,8 +75,8 @@ func main() {
 	m.Configure(opts, keyPath)
 	m.Mouse = *mouse
 	m.UseBuiltins(builtin.All(), builtin.Confirmers())
-	// Mouse capture off by default so native highlight-to-copy works.
-	// Opt-in with --mouse for sidebar click + wheel scroll.
+	// Mouse capture on by default so the sidebar is clickable + scrollable.
+	// Opt out with --mouse=false for plain highlight-to-copy.
 	progOpts := []tea.ProgramOption{tea.WithAltScreen()}
 	if *mouse {
 		progOpts = append(progOpts, tea.WithMouseCellMotion())
@@ -78,6 +88,37 @@ func main() {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
+}
+
+// runUpdate checks the latest GitHub release and replaces this binary.
+// Failures print a copy-paste fallback instead of a stack trace.
+func runUpdate(current string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	latest, err := update.FetchLatest(ctx)
+	if err != nil {
+		fmt.Println("pitago: update check failed:", err)
+		os.Exit(1)
+	}
+	if !update.NeedsUpdate(current, latest) {
+		fmt.Println("pitago: already on latest (" + current + ")")
+		return
+	}
+	fmt.Printf("pitago: updating %s → %s…\n", current, latest)
+	asset := update.CurrentAsset()
+	dctx, dcancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer dcancel()
+	if err := update.Install(dctx, update.LatestURL(asset)); err != nil {
+		if errors.Is(err, update.ErrNeedSudo) {
+			fmt.Println("pitago: binary dir needs sudo — run this instead:")
+			fmt.Println("  " + update.Manual(asset))
+			os.Exit(1)
+		}
+		fmt.Println("pitago: update failed:", err)
+		fmt.Println("fallback: " + update.Manual(asset))
+		os.Exit(1)
+	}
+	fmt.Println("pitago: updated to " + latest + " — restart to use it")
 }
 
 // resolveDir picks the session working directory: --cwd, else the first

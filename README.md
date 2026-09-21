@@ -152,6 +152,9 @@ go run ./src --provider anthropic --model claude-sonnet-4-20250514
 # Don't persist a session
 go run ./src --no-session
 
+# Self-update to the latest GitHub release
+go run ./src --update   # or /update inside the app
+
 # Mouse (sidebar click + wheel scroll) is on by default;
 # opt out with --mouse=false for plain highlight-to-copy
 go run ./src --mouse=false
@@ -186,10 +189,11 @@ script/release.sh v0.0.1
 | -------------- | ------------------------------------------------------------------------------------------------ |
 | `Enter`        | Send (idle) / steer (while running)                                                              |
 | `Esc`          | Cancel running turn (clear queue + abort)                                                        |
-| `Ctrl+C`       | Quit                                                                                             |
+| `Ctrl+C`       | Quit (press twice within 3s — warning pins to the sidebar corner)                  |
 | `Ctrl+N`       | New session                                                                                      |
 | `Ctrl+P`       | Cycle model                                                                                      |
 | `Ctrl+R`       | Recent-models picker                                                                             |
+| `Ctrl+T`       | Cycle thinking level (no picker)                                                             |
 | `Ctrl+B`       | Hide/show sidebar (hide for clean drag-select of chat only)                                      |
 | `Ctrl+Y`       | Yank last assistant answer to clipboard (chat-only, no sidebar)                                  |
 | `Ctrl+V`       | Paste text — or screenshot data (pngpaste/wl-paste/xclip); errors shown, terminal Cmd+V still works |
@@ -207,7 +211,7 @@ script/release.sh v0.0.1
 ### Copying text
 
 - With mouse on (default): hold `Option`/`Shift` (terminal-dependent) to select
-- Or run with `--mouse=false` for plain highlight-to-copy
+- Or toggle it at runtime with `/mouse` (`/mouse off` for plain highlight-to-copy), or start with `--mouse=false`
 - To copy only chat content (without sidebar): hide the sidebar with `/sidebar` or `Ctrl+B`, then select
 - Or use `Ctrl+Y` / `/yank` (`/copy`) to copy the last assistant answer directly to clipboard
 - Or press `Ctrl+O` to pick any message to copy — sidebar stays visible
@@ -225,8 +229,11 @@ Type `/` to open the command popup. Two kinds:
 - `/recent` — recent models picker
 - `/yank` / `/copy` — copy last answer to clipboard
 - `/sidebar` — hide/show sidebar
+- `/plugins` — collapse/expand installed pi plugins in the sidebar
+- `/mouse` — toggle mouse (click sidebar, wheel scroll) at runtime, `[on|off]`; off for native text selection
+- `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
 - `/thinking` — toggle thinking level
-- `/tree` — show file tree
+- `/tree` — session tree, pi-style rows (read-only over RPC)
 - `/settings` — open settings
 - `/login` / `/logout` — manage API keys
 - `/reload` — reload extensions
@@ -248,10 +255,12 @@ The right column (pi session-panel style) shows:
 - Context bar (`used/total tkns`)
 - **Stats | Tokens** — `time`, `last`, `speed`, `turns`, context left, `in/out/total/cache/cost`
 - Clickable **RECENT MODELS** and **COMMANDS** counts
+- Collapsible **PLUGINS** — installed pi packages (`pi list`), click the header or `/plugins` to collapse/expand
 - **WORKSPACE** — git status (branch + per-file `+add -del`, refreshed every 10s and after each turn)
 - Current working directory
 
 Hidden on terminals narrower than 80 columns.
+Long content scrolls inside the sidebar (`Ctrl`/`Alt`+`↑↓ PgUp PgDn Home End`, or mouse wheel over it).
 
 ## Layout
 
@@ -280,4 +289,5 @@ tests/            # integration tests (black-box, public API only).
 
 - `~/.config/pitago/keys.json` (0600) — saved API keys (`/login`, `/logout`)
 - `~/.config/pitago/recent_models.json` — recent models (max 5)
+- `~/.config/pitago/update.json` — last update-check timestamp + tag (24h TTL)
 - `/tmp/pitago-pi-stderr.log` — pi child stderr

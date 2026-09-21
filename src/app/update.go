@@ -3,6 +3,8 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"sort"
 	"strings"
 	"time"
 
@@ -41,9 +43,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDialog(km)
 		}
 		// Async results stay swallowed while a dialog is open — except
-		// paste (Ctrl+V into the /login key field must land).
+		// paste (Ctrl+V into the /login key field must land) and the
+		// quit disarm (an arm must always expire, even behind a dialog).
 		switch msg.(type) {
-		case tea.WindowSizeMsg, pasteDoneMsg:
+		case tea.WindowSizeMsg, pasteDoneMsg, quitDisarmMsg:
 		default:
 			return m, nil
 		}
@@ -68,7 +71,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.Width = mainW
 			m.vp.Height = vpH
 			m.sideVp.Width = sideInnerW
-			m.sideVp.Height = m.sideContentH()
+			m.syncSideH() // reserves the quit-arm footer line while armed
 		}
 		m.ta.SetWidth(mainW - 6)
 		m.Refresh()
@@ -98,6 +101,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Cmds = append(BuiltinRepo(m.builtins), msg.cmds...)
 		m.Todos = restoreTodos(msg.msgs)
 		m.MCP = getMcpServers()
+		m.Plugins = getPlugins()
 		m.sessionFile = msg.state.SessionFile
 		m.blocks = nil
 		m.tools = make(map[string]int)
@@ -158,6 +162,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case wsMsg:
 		m.ws = msg.data
 		m.MCP = getMcpServers()
+		m.Plugins = getPlugins()
 		m.Refresh()
 		return m, nil
 
@@ -174,6 +179,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPaste(msg)
 		return m, nil
 
+	case quitDisarmMsg:
+		if msg.gen == m.quitGen {
+			m.quitArm = time.Time{}
+			m.syncSideH()
+			m.Refresh()
+		}
+		return m, nil
 	case petTickMsg:
 		// 500ms loop while busy/flashing: face animation + elapsed counter.
 		if m.pet.status.Busy() || m.pet.status.Flashing() {
@@ -218,6 +230,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Err != nil {
 			m.Status = "ready"
 			m.AddBlock(Block{Kind: "notice", Text: "model switch failed: " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
 		} else {
 			m.ModelLbl = msg.Label
 			id := msg.ID
@@ -227,9 +241,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.pushRecent(msg.Provider, id, msg.Label)
 			m.Status = "ready"
 			m.AddBlock(Block{Kind: "notice", Text: "model switched → " + msg.Label})
+			m.Refresh()
+			return m, m.fetchStateOnce()
 		}
-		m.Refresh()
-		return m, nil
 
 	case PickerMsg:
 		m.Status = "ready"
@@ -266,6 +280,36 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Paths: msg.Paths, Filter: msg.Filter, Scope: msg.Scope}
+		if msg.Kind == "model" {
+			// two-pane picker: left = providers, right = their models
+			d.Provs = buildProvs(msg.Providers)
+			d.ProvConn = provConn(m.KeyPath, msg.Providers)
+			sortProvsConn(d.Provs, d.ProvConn)
+			d.ProvCursor, d.ProvFocus = 0, true
+			for i, o := range d.Options {
+				if o == msg.Current {
+					if p := normProv(providerAt(msg.Providers, i)); p != "" {
+						for pi, pv := range d.Provs {
+							if pv == p {
+								d.ProvCursor = pi
+								break
+							}
+						}
+					}
+					break
+				}
+			}
+			d.Reindex()
+			for i, ri := range d.FIdx {
+				if d.Options[ri] == msg.Current {
+					d.Cursor = i
+					break
+				}
+			}
+			m.Dialogs = append(m.Dialogs, d)
+			m.Refresh()
+			return m, nil
+		}
 		// preselect the current value
 		for i, o := range d.Options {
 			if o == msg.Current {
@@ -318,8 +362,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case SettingsRefreshMsg:
 		if msg.Err != nil {
 			m.AddBlock(Block{Kind: "notice", Text: msg.Err.Error(), Err: true})
-		} else if msg.Notice != "" {
-			m.AddBlock(Block{Kind: "notice", Text: msg.Notice})
+		} else {
+			if msg.Level != "" {
+				m.thinkLvl = msg.Level
+			}
+			if msg.Notice != "" {
+				m.AddBlock(Block{Kind: "notice", Text: msg.Notice})
+			}
 		}
 		m.Status = "ready"
 		m.Refresh()
@@ -332,7 +381,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.AddBlock(Block{Kind: "notice", Text: "saved key " + msg.Provider + " — reconnecting pi…"})
+		// The respawned pi inherits our env (not the keystore file), so
+		// export the fresh key or it only takes effect after TUI restart.
+		if msg.Env != "" {
+			_ = os.Setenv(msg.Env, msg.Key)
+		}
 		return m, m.RespawnPi()
+
+	case UpdateCheckMsg:
+		m.handleUpdateCheck(msg)
+		return m, nil
+
+	case UpdateDoneMsg:
+		m.handleUpdateDone(msg)
+		return m, nil
 
 	case respawnMsg:
 		m.respawning = false
@@ -387,8 +449,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.pollCmds()
 
 	case tea.MouseMsg:
-		// Left-click a sidebar recent model to switch to it.
-		if msg.Action == tea.MouseActionRelease && msg.Button == tea.MouseButtonLeft {
+		// Click (release) on the sidebar: PLUGINS header collapses/expands,
+		// a recent model switches to it. Terminals report release with
+		// Button None (SGR `m` / X10 code 3 carry no button), so match any
+		// Release — requiring Left never fires on a real terminal.
+		if msg.Action == tea.MouseActionRelease {
+			if m.pluginToggleAt(msg.X, msg.Y) {
+				m.TogglePlugins()
+				return m, nil
+			}
 			if idx, ok := m.recentAt(msg.X, msg.Y); ok {
 				r := m.recentModels[idx]
 				if r.ID == m.ModelLbl || r.DispLabel() == m.ModelLbl {
@@ -445,7 +514,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		switch msg.Type {
 		case tea.KeyCtrlC:
-			return m, tea.Quit
+			// Double-press to quit within 3s: a stray Ctrl+C only arms
+			// (warning pinned to the sidebar corner) and auto-disarms.
+			// Esc stays the mid-turn cancel key.
+			if m.quitArmed() {
+				return m, tea.Quit
+			}
+			m.quitArm = time.Now()
+			m.quitGen++
+			m.syncSideH()
+			m.Refresh()
+			return m, quitDisarmCmd(m.quitGen)
 		case tea.KeyCtrlB:
 			m.ToggleSide()
 			return m, nil
@@ -477,6 +556,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		case tea.KeyCtrlR:
 			return m, m.OpenRecents()
+		case tea.KeyCtrlT:
+			return m, m.CycleThinking()
 		case tea.KeyCtrlN:
 			m.Status = "opening new session…"
 			m.Refresh()
@@ -543,8 +624,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
-	var pcmd tea.Cmd
+// quitDisarmCmd expires the arm after the window (gen guards stale ticks).
+func quitDisarmCmd(gen int) tea.Cmd {
+	return tea.Tick(quitArmWindow, func(time.Time) tea.Msg {
+		return quitDisarmMsg{gen: gen}
+	})
+}
+
+func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {	var pcmd tea.Cmd
 	switch ev.Type {
 	case "agent_start":
 		m.thinking = true
@@ -614,6 +701,7 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 		m.Status = "ready"
 		m.pendSpeed = true
 		m.MCP = getMcpServers()
+		m.Plugins = getPlugins()
 		m.Refresh()
 		return m, tea.Batch(m.queryStats(), m.fetchCmdsOnce(), m.fetchStateOnce(), m.wsRefresh(), m.petSettled())
 	case "agent_end":
@@ -650,7 +738,11 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 			break // intentional reconnect, respawnMsg will follow
 		}
 		m.Status = "pi has exited"
-		m.AddBlock(Block{Kind: "notice", Text: "pi has exited — Ctrl+C to close the TUI", Err: true})
+		text := "pi has exited — Ctrl+C to close the TUI"
+		if reason := pirpc.StderrTail(); reason != "" {
+			text = "pi has exited (" + reason + ") — Ctrl+C to close the TUI"
+		}
+		m.AddBlock(Block{Kind: "notice", Text: text, Err: true})
 	}
 	m.Refresh()
 	return m, pcmd
@@ -924,6 +1016,9 @@ func (m Model) handleUIRequest(raw []byte) Model {
 
 func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := m.Dialogs[0]
+	if d.Kind == "model" && len(d.Provs) > 0 {
+		return m.updateModelDialog(km, d)
+	}
 	n := len(d.FIdx)
 	switch km.Type {
 	case tea.KeyUp:
@@ -945,7 +1040,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
-		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret") && d.Filter != "" {
+		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret" || d.Kind == "login" || d.Kind == "logout") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
 		}
@@ -972,7 +1067,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeyRunes {
-		if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
+		if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
 			// type to filter the picker
 			d.Filter += km.String()
 			d.Reindex()
@@ -991,6 +1086,94 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.answerDialog(d, len(d.Options)-1)
 			return m, nil
 		}
+	}
+	return m, nil
+}
+
+// updateModelDialog navigates the two-pane model picker: left = providers,
+// right = their models. ↑↓ moves in the focused pane, ←/→/Tab switches
+// pane, typing filters, Enter on the left opens the right, Enter confirms.
+func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) {
+	n := len(d.FIdx)
+	switch km.Type {
+	case tea.KeyUp:
+		if d.ProvFocus {
+			if len(d.Provs) > 0 {
+				if d.ProvCursor > 0 {
+					d.ProvCursor--
+				} else {
+					d.ProvCursor = len(d.Provs) - 1
+				}
+				d.Reindex()
+				d.Cursor = 0
+			}
+		} else if n > 0 {
+			if d.Cursor > 0 {
+				d.Cursor--
+			} else {
+				d.Cursor = n - 1
+			}
+		}
+		return m, nil
+	case tea.KeyDown:
+		if d.ProvFocus {
+			if len(d.Provs) > 0 {
+				if d.ProvCursor < len(d.Provs)-1 {
+					d.ProvCursor++
+				} else {
+					d.ProvCursor = 0
+				}
+				d.Reindex()
+				d.Cursor = 0
+			}
+		} else if n > 0 {
+			if d.Cursor < n-1 {
+				d.Cursor++
+			} else {
+				d.Cursor = 0
+			}
+		}
+		return m, nil
+	case tea.KeyLeft:
+		d.ProvFocus = true
+		return m, nil
+	case tea.KeyRight:
+		d.ProvFocus = false
+		return m, nil
+	case tea.KeyBackspace:
+		if d.Filter != "" {
+			d.Filter = d.Filter[:len(d.Filter)-1]
+			d.Reindex()
+		}
+		return m, nil
+	case tea.KeyCtrlV:
+		return m, nil
+	case tea.KeyEsc:
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, nil
+	case tea.KeyTab:
+		d.ProvFocus = !d.ProvFocus
+		return m, nil
+	case tea.KeyCtrlL:
+		// jump straight to provider login
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, m.RunBuiltin("login", "")
+	case tea.KeyEnter:
+		if d.ProvFocus {
+			d.ProvFocus = false
+			return m, nil
+		}
+		return m.confirmDialog(d)
+	}
+	if km.Type == tea.KeyRunes {
+		d.Filter += km.String()
+		d.Reindex()
+		// global search: jump to the models pane so ↑↓/Enter acts on results
+		d.ProvFocus = false
+		d.Cursor = 0
+		return m, nil
 	}
 	return m, nil
 }
@@ -1030,14 +1213,112 @@ func (m *Model) answerDialog(d *Dialog, choice int) {
 	m.Refresh()
 }
 
-// reindex recomputes the visible list from Filter.
+// normProv labels an empty provider for the left pane.
+func normProv(p string) string {
+	if strings.TrimSpace(p) == "" {
+		return "other"
+	}
+	return p
+}
 
+// providerAt safely reads the parallel provider per model option.
+func providerAt(provs []string, i int) string {
+	if i < 0 || i >= len(provs) {
+		return ""
+	}
+	return provs[i]
+}
+
+// buildProvs collects the left pane: "All" + unique sorted providers from
+// the model list plus every loginable provider (even with no models yet).
+func buildProvs(providers []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(p string) {
+		p = normProv(p)
+		if !seen[p] {
+			seen[p] = true
+			out = append(out, p)
+		}
+	}
+	for _, p := range providers {
+		add(p)
+	}
+	for _, p := range pirpc.ProviderEnvs {
+		add(p.Provider)
+	}
+	sort.Strings(out)
+	return append([]string{"All"}, out...)
+}
+
+// sortProvsConn floats connected providers above the rest (after "All"),
+// keeping alphabetical order inside each group.
+func sortProvsConn(provs []string, conn map[string]bool) {
+	if len(provs) < 2 {
+		return
+	}
+	sort.SliceStable(provs[1:], func(i, j int) bool {
+		return conn[provs[1+i]] && !conn[provs[1+j]]
+	})
+}
+
+// provConn marks connected providers: listed models, a saved keystore key,
+// or a preset env var. Unknown ids (no env mapping) prove via models only.
+func provConn(keyPath string, providers []string) map[string]bool {
+	inModels := map[string]bool{}
+	for _, p := range providers {
+		inModels[normProv(p)] = true
+	}
+	keys := pirpc.LoadKeys(keyPath)
+	out := map[string]bool{}
+	for _, prov := range buildProvs(providers) {
+		if prov == "All" {
+			continue
+		}
+		if inModels[prov] {
+			out[prov] = true
+			continue
+		}
+		if env := pirpc.LookupEnv(prov); env != "" {
+			_, hasKey := keys[env]
+			out[prov] = hasKey || os.Getenv(env) != ""
+		}
+	}
+	return out
+}
+
+// selProv is the provider filter for the right pane ("" = All).
+func (d *Dialog) selProv() string {
+	if d.Kind != "model" || len(d.Provs) == 0 {
+		return ""
+	}
+	if d.ProvCursor < 0 || d.ProvCursor >= len(d.Provs) {
+		return ""
+	}
+	if d.Provs[d.ProvCursor] == "All" {
+		return ""
+	}
+	return d.Provs[d.ProvCursor]
+}
+
+// reindex recomputes the visible list from Filter.
+// A non-empty Filter searches globally across all providers (the left
+// pane scope only applies when Filter is empty); the provider id itself
+// is also matchable so typing "anthropic" finds its models.
 func (d *Dialog) Reindex() {
 	d.FIdx = d.FIdx[:0]
 	f := strings.ToLower(d.Filter)
+	prov := d.selProv()
+	if f != "" {
+		prov = ""
+	}
 	for i := range d.Options {
+		if prov != "" && normProv(providerAt(d.Providers, i)) != prov {
+			continue
+		}
 		if f == "" || strings.Contains(strings.ToLower(d.Options[i]), f) ||
-			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) {
+			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) ||
+			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) {
 			d.FIdx = append(d.FIdx, i)
 		}
 	}
