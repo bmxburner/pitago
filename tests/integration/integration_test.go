@@ -102,7 +102,8 @@ func TestComponentsCompose(t *testing.T) {
 	}
 
 	// format sanity used across sidebar + palette rows
-	if format.Short("abcdef", 3) != "abc…" || format.FmtNum(1500) != "1.5k" {
+	// (Short reserves one cell for "…", so width 3 fits 2 chars + ellipsis)
+	if format.Short("abcdef", 3) != "ab…" || format.FmtNum(1500) != "1.5k" {
 		t.Fatal("format helpers wrong")
 	}
 }

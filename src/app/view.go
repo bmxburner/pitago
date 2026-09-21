@@ -1011,9 +1011,10 @@ func (m Model) renderModelDialog(d *Dialog) string {
 		rightLines = append(rightLines, "  "+statusBarStyle.Width(rightW-2).Render(""))
 	}
 
-	// headers (a non-empty filter searches globally, so show All)
+	// headers (providers pane = global search, so show All; models pane
+	// stays scoped to the selected provider)
 	sel := "All"
-	if p := d.selProv(); p != "" && d.Filter == "" {
+	if p := d.selProv(); p != "" && (d.Filter == "" || !d.ProvFocus) {
 		sel = p
 	}
 	b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
@@ -1039,9 +1040,9 @@ func (m Model) renderModelDialog(d *Dialog) string {
 		b.WriteString(l+" "+sep+" "+r + "\n")
 	}
 
-	foot := "↑↓ providers · → models · type to filter · Enter open · ^L login · Esc close"
+	foot := "↑↓ providers · → models · type to search all · Enter open · ^L login · Esc close"
 	if !d.ProvFocus {
-		foot = "↑↓ models · ← providers · Tab switch · Enter select · ^L login · Esc close"
+		foot = "↑↓ models · ← providers · Tab switch · type filters here · Enter select · ^L login · Esc close"
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))
 	box := dlgStyle.Width(boxW).Render(b.String())

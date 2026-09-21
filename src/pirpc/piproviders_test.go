@@ -63,10 +63,12 @@ func TestDiscoverFallbackWithoutPi(t *testing.T) {
 
 func TestLiveCatalogCoversDocs(t *testing.T) {
 	t.Setenv("PI_BIN", "") // use real PATH pi when present
-	live := discoverPiProviders()
-	if len(live) == 0 {
-		t.Skip("pi not installed")
+	// discoverPiProviders always returns the special-auth providers even
+	// without pi, so gate on the bundle itself (CI has no pi installed).
+	if len(piBundleChunks()) == 0 {
+		t.Skip("pi bundle not found (pi not installed)")
 	}
+	live := discoverPiProviders()
 	for _, id := range []string{"openai", "anthropic", "google", "meta", "baseten", "ant-ling", "moonshotai", "qwen-token-plan-cn", "xiaomi-token-plan-sgp"} {
 		if id == "anthropic" {
 			continue // special-cased in pi, covered by static list

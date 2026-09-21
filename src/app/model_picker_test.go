@@ -55,7 +55,8 @@ func TestModelPickerProvFilter(t *testing.T) {
 	if len(d.FIdx) != 2 || d.FIdx[0] != 0 || d.FIdx[1] != 2 {
 		t.Fatalf("ollama FIdx = %v", d.FIdx)
 	}
-	// text filter searches globally across providers (ignores left scope)
+	// text filter on the providers pane searches globally (ignores scope)
+	d.ProvFocus = true
 	d.Filter = "m2"
 	d.Reindex()
 	if len(d.FIdx) != 1 || d.FIdx[0] != 1 {
@@ -66,6 +67,13 @@ func TestModelPickerProvFilter(t *testing.T) {
 	d.Reindex()
 	if len(d.FIdx) != 1 || d.FIdx[0] != 1 {
 		t.Fatalf("provider filtered FIdx = %v", d.FIdx)
+	}
+	// same filter on the models pane stays scoped to the provider
+	d.ProvFocus = false
+	d.Filter = "m2"
+	d.Reindex()
+	if len(d.FIdx) != 0 {
+		t.Fatalf("scoped filtered FIdx = %v, want []", d.FIdx)
 	}
 	d.Filter = "m3"
 	d.Reindex()
@@ -116,7 +124,8 @@ func TestProvConnSources(t *testing.T) {
 	}
 }
 
-// Typing a filter jumps to the models pane with global results.
+// Typing on the providers pane searches globally and stays there;
+// moving to the models pane scopes the same filter to the provider.
 func TestModelPickerTypingSearchesAll(t *testing.T) {
 	m := New(nil, t.TempDir())
 	m.Dialogs = []*Dialog{{
@@ -129,19 +138,39 @@ func TestModelPickerTypingSearchesAll(t *testing.T) {
 	}}
 	d := m.Dialogs[0]
 	d.Reindex()
-	if len(d.FIdx) != 2 { // scoped to ollama while filter empty
+	if len(d.FIdx) != 2 { // empty filter previews the cursor scope
 		t.Fatalf("scoped FIdx = %v", d.FIdx)
 	}
-	um, _ := m.updateDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}, Alt: false})
+	um, _ := m.updateDialog(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	m = um.(Model)
 	d = m.Dialogs[0]
-	if d.ProvFocus {
-		t.Fatal("typing must jump to the models pane")
+	if !d.ProvFocus {
+		t.Fatal("typing on the providers pane must stay there")
 	}
 	if d.Filter != "m" {
 		t.Fatalf("Filter = %q", d.Filter)
 	}
-	if len(d.FIdx) != 3 { // global across providers
+	if len(d.FIdx) != 3 { // providers pane: global across providers
+		t.Fatalf("global FIdx = %v", d.FIdx)
+	}
+	// → models pane: the same filter scopes to ollama
+	um, _ = m.updateDialog(tea.KeyMsg{Type: tea.KeyRight})
+	m = um.(Model)
+	d = m.Dialogs[0]
+	if d.ProvFocus {
+		t.Fatal("→ must move to the models pane")
+	}
+	if len(d.FIdx) != 2 || d.FIdx[0] != 0 || d.FIdx[1] != 2 {
+		t.Fatalf("scoped FIdx = %v", d.FIdx)
+	}
+	// ← back: global again
+	um, _ = m.updateDialog(tea.KeyMsg{Type: tea.KeyLeft})
+	m = um.(Model)
+	d = m.Dialogs[0]
+	if !d.ProvFocus {
+		t.Fatal("← must move back to the providers pane")
+	}
+	if len(d.FIdx) != 3 {
 		t.Fatalf("global FIdx = %v", d.FIdx)
 	}
 }

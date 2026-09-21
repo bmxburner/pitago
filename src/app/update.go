@@ -1169,10 +1169,18 @@ func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 		}
 		return m, nil
 	case tea.KeyLeft:
-		d.ProvFocus = true
+		if !d.ProvFocus {
+			d.ProvFocus = true
+			d.Reindex()
+			d.Cursor = 0
+		}
 		return m, nil
 	case tea.KeyRight:
-		d.ProvFocus = false
+		if d.ProvFocus {
+			d.ProvFocus = false
+			d.Reindex()
+			d.Cursor = 0
+		}
 		return m, nil
 	case tea.KeyBackspace:
 		if d.Filter != "" {
@@ -1188,6 +1196,8 @@ func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 		return m, nil
 	case tea.KeyTab:
 		d.ProvFocus = !d.ProvFocus
+		d.Reindex()
+		d.Cursor = 0
 		return m, nil
 	case tea.KeyCtrlL:
 		// jump straight to provider login
@@ -1197,6 +1207,8 @@ func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 	case tea.KeyEnter:
 		if d.ProvFocus {
 			d.ProvFocus = false
+			d.Reindex()
+			d.Cursor = 0
 			return m, nil
 		}
 		return m.confirmDialog(d)
@@ -1204,8 +1216,8 @@ func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 	if km.Type == tea.KeyRunes {
 		d.Filter += km.String()
 		d.Reindex()
-		// global search: jump to the models pane so ↑↓/Enter acts on results
-		d.ProvFocus = false
+		// filter scope follows the focused pane (providers = global,
+		// models = scoped), so typing stays where the user is.
 		d.Cursor = 0
 		return m, nil
 	}
@@ -1356,9 +1368,11 @@ func (d *Dialog) selProv() string {
 }
 
 // reindex recomputes the visible list from Filter.
-// A non-empty Filter searches globally across all providers (the left
-// pane scope only applies when Filter is empty); the provider id itself
-// is also matchable so typing "anthropic" finds its models.
+// Scope follows the focused pane: on the providers pane a non-empty
+// Filter searches globally across all providers (the provider id itself
+// is also matchable so typing "anthropic" finds its models); on the
+// models pane the filter stays scoped to the selected provider. With an
+// empty Filter the right pane previews the cursor provider's models.
 // Login dialogs filter providers into PIdx (right pane is keys, unfiltered).
 func (d *Dialog) Reindex() {
 	if d.Kind == "login" {
@@ -1384,7 +1398,7 @@ func (d *Dialog) Reindex() {
 	d.FIdx = d.FIdx[:0]
 	f := strings.ToLower(d.Filter)
 	prov := d.selProv()
-	if f != "" {
+	if f != "" && d.ProvFocus {
 		prov = ""
 	}
 	for i := range d.Options {

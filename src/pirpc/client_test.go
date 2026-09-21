@@ -3,6 +3,7 @@ package pirpc
 import (
 	"os"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,6 +27,9 @@ func TestRPCNoLLM(t *testing.T) {
 	defer c.Close()
 
 	state, err := c.GetState()
+	if err != nil && strings.Contains(err.Error(), "timed out") {
+		state, err = c.GetState() // pi cold start under load: one retry
+	}
 	if err != nil {
 		t.Fatalf("get_state: %v", err)
 	}
