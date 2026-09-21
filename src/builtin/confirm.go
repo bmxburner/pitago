@@ -16,6 +16,7 @@ func Confirmers() map[string]app.ConfirmFunc {
 	return map[string]app.ConfirmFunc{
 		"model":       confirmModel,
 		"recent":      confirmRecent,
+		"sessions":    confirmSessions,
 		"thinking":    confirmThinking,
 		"settings":    confirmSettings,
 		"login":       confirmLogin,
@@ -41,6 +42,16 @@ func confirmModel(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 func confirmRecent(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	m.Dialogs = m.Dialogs[1:]
 	return m, m.SwitchToRecent(ri)
+}
+
+// confirmSessions resumes the picked session file (Paths parallels Options).
+func confirmSessions(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if ri < 0 || ri >= len(d.Paths) {
+		return m, nil
+	}
+	path := d.Paths[ri]
+	m.Dialogs = m.Dialogs[1:]
+	return m, m.SwitchSession(path)
 }
 
 func confirmThinking(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {

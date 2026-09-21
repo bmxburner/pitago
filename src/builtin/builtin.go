@@ -285,10 +285,6 @@ func treeLabel(e pirpc.TreeEntry) string {
 	}
 }
 
-// recent models ------------------------------------------------------------
-
-// loadRecents reads the persisted list (missing/corrupt → empty, no error).
-
 // Origin marks where a builtin feature comes from.
 const (
 	// OriginPi re-implements one of pi's TUI-level builtins over RPC.
@@ -398,6 +394,9 @@ func All() []app.Builtin {
 					sess, m.ModelLbl, st.MessageCount, stats.ToolCalls, app.FmtNum(stats.TokensTotal), stats.Cost)}
 			}
 		}),
+		pi("resume", "Resume a session (like pi)", "/resume [path]", func(m *app.Model, arg string) tea.Cmd {
+			return m.OpenResume(arg)
+		}),
 		{
 			Name: "recent", Desc: "Switch recent model (pitago)", Usage: "/recent",
 			Origin: OriginPitago,
@@ -432,7 +431,7 @@ func All() []app.Builtin {
 	// instead of leaking into the chat (old runBuiltin default branch).
 	for _, name := range []string{
 		"scoped-models", "export", "import", "share", "name",
-		"changelog", "hotkeys", "fork", "clone", "trust", "compact", "resume",
+		"changelog", "hotkeys", "fork", "clone", "trust", "compact",
 	} {
 		name := name
 		all = append(all, app.Builtin{

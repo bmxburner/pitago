@@ -24,7 +24,9 @@ func (m *Model) refreshCmds() {
 	if p, ok := m.cmdPrefix(); ok {
 		names := make([]string, len(m.Cmds))
 		for i := range m.Cmds {
-			names[i] = m.Cmds[i].Name
+			// name + extension tag + description, so "/pi-subagents"
+			// also matches that extension's commands (like pi)
+			names[i] = m.Cmds[i].Name + " " + m.Cmds[i].SourceTag() + " " + m.Cmds[i].Description
 		}
 		m.cmdItems = append(m.cmdItems, palette.Match(p, names)...)
 	}
@@ -159,16 +161,30 @@ func (m Model) renderCmdPopup() string {
 	}
 	for i := m.cmdOffset; i < end; i++ {
 		c := m.Cmds[m.cmdItems[i]]
-		row := "/" + c.Name
-		if c.Description != "" {
-			row += " — " + c.Description
-		}
-		row += " [" + c.Source + "]"
-		row = Short(row, mainW-8)
-		if i == m.cmdCursor {
-			b.WriteString("▸ " + cmdHiStyle.Render(row) + "\n")
+		name := "/" + c.Name
+		rest := ""
+		if tag := c.SourceTag(); tag != "" {
+			// extension command: "[u:npm:pi-subagents] desc", like pi
+			rest = " — [" + tag + "]"
+			if c.Description != "" {
+				rest += " " + c.Description
+			}
 		} else {
-			b.WriteString("  " + statusBarStyle.Render(row) + "\n")
+			if c.Description != "" {
+				rest = " — " + c.Description
+			}
+			rest += " [" + c.Source + "]"
+		}
+		row := Short(name+rest, mainW-8)
+		// command name cyan, annotation keeps the row color
+		nl := len(name)
+		if nl > len(row) {
+			nl = len(row)
+		}
+		if i == m.cmdCursor {
+			b.WriteString("▸ " + cmdNameHiStyle.Render(row[:nl]) + cmdHiStyle.Render(row[nl:]) + "\n")
+		} else {
+			b.WriteString("  " + cmdNameStyle.Render(row[:nl]) + statusBarStyle.Render(row[nl:]) + "\n")
 		}
 	}
 	if end < len(m.cmdItems) {

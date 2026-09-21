@@ -231,6 +231,7 @@ Type `/` to open the command popup. Two kinds:
 - `/login` / `/logout` — manage API keys
 - `/reload` — reload extensions
 - `/new` — new session
+- `/resume` — resume picker (like pi: current project, Tab for all)
 - `/quit` — exit
 - `/session` — session management
 

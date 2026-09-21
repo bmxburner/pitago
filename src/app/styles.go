@@ -21,6 +21,7 @@ const (
 	cCode     = lipgloss.Color("250") // code / output
 	cGreen    = lipgloss.Color("114") // success dot
 	cRed      = lipgloss.Color("203") // error
+	cCyan     = lipgloss.Color("6")   // command names in the / popup
 	cSide     = lipgloss.Color("240") // unused now, kept subtle
 	cInput    = lipgloss.Color("252") // input focus: white, not cyan
 	cInputDim = lipgloss.Color("240") // input idle: subtle gray
@@ -59,6 +60,11 @@ var (
 	cmdHiStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("15"))
+	cmdNameStyle = lipgloss.NewStyle().
+			Foreground(cCyan)
+	cmdNameHiStyle = lipgloss.NewStyle().
+			Background(lipgloss.Color("238")).
+			Foreground(cCyan)
 	rowHiStyle = lipgloss.NewStyle().
 			Background(lipgloss.Color("238")).
 			Foreground(lipgloss.Color("15"))

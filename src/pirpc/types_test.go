@@ -56,3 +56,35 @@ func TestImageCount(t *testing.T) {
 		t.Fatalf("plain count = %d", n)
 	}
 }
+
+// SourceTag must mirror pi's getAutocompleteSourceTag.
+func TestSourceTag(t *testing.T) {
+	tag := func(scope, source string) string {
+		return RepoCommand{Source: "extension",
+			SourceInfo: &SourceInfo{Scope: scope, Source: source}}.SourceTag()
+	}
+	cases := map[string]string{
+		"user|npm:pi-subagents":          "u:npm:pi-subagents",
+		"project|npm:pi-subagents":       "p:npm:pi-subagents",
+		"team|npm:x":                     "t:npm:x",
+		"user|auto":                      "u",
+		"project|local":                  "p",
+		"team|cli":                       "t",
+		"user|git:github.com/a/b.git#v1": "u:git:github.com/a/b@v1",
+		"user|https://github.com/a/b":    "u:git:github.com/a/b",
+		"user|plain-name":                "u",
+		"user|":                          "u",
+	}
+	for in, want := range cases {
+		parts := strings.SplitN(in, "|", 2)
+		if got := tag(parts[0], parts[1]); got != want {
+			t.Errorf("tag(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if got := (RepoCommand{Source: "skill"}).SourceTag(); got != "" {
+		t.Errorf("skill without sourceInfo = %q, want empty", got)
+	}
+	if got := (RepoCommand{Source: "builtin"}).SourceTag(); got != "" {
+		t.Errorf("builtin = %q, want empty", got)
+	}
+}

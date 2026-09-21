@@ -1,6 +1,9 @@
 package pirpc
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // ImageContent is one vision attachment for prompt/steer/follow_up.
 // Matches pi's RPC type: {type:"image", data:<base64>, mimeType}.
@@ -277,13 +280,98 @@ type Queue struct {
 	FollowUp []string `json:"followUp"`
 }
 
+// SourceInfo tells which extension a command comes from (get_commands
+// sourceInfo; absent for prompt/skill entries and builtins).
+type SourceInfo struct {
+	Source  string `json:"source"`
+	Scope   string `json:"scope"` // user | project | ...
+	Path    string `json:"path,omitempty"`
+	BaseDir string `json:"baseDir,omitempty"`
+	Origin  string `json:"origin,omitempty"`
+}
+
 // RepoCommand is one runnable /command: extension, prompt template or skill.
 type RepoCommand struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
-	Source      string `json:"source"` // extension | prompt | skill
+	Source      string `json:"source"` // builtin | extension | prompt | skill
 	Location    string `json:"location,omitempty"`
 	Path        string `json:"path,omitempty"`
+	SourceInfo  *SourceInfo `json:"sourceInfo,omitempty"`
+}
+
+// SourceTag mirrors pi's getAutocompleteSourceTag: "u:npm:pi-subagents",
+// "u", "p", "t". "" when there is no source info — pi then leaves the
+// description untagged (prompt/skill entries, builtins).
+func (c RepoCommand) SourceTag() string {
+	if c.SourceInfo == nil {
+		return ""
+	}
+	var prefix string
+	switch c.SourceInfo.Scope {
+	case "user":
+		prefix = "u"
+	case "project":
+		prefix = "p"
+	default:
+		prefix = "t"
+	}
+	src := strings.TrimSpace(c.SourceInfo.Source)
+	switch src {
+	case "auto", "local", "cli":
+		return prefix
+	}
+	if strings.HasPrefix(src, "npm:") {
+		return prefix + ":" + src
+	}
+	if g := gitTag(src); g != "" {
+		return prefix + ":" + g
+	}
+	return prefix
+}
+
+// gitTag compacts a git extension source to pi's "git:<host>/<path>[@ref]"
+// (best-effort port of parseGitUrl; "" → caller falls back to scope only).
+func gitTag(src string) string {
+	u := strings.TrimSpace(src)
+	hasPrefix := len(u) >= 4 && strings.EqualFold(u[:4], "git:")
+	if hasPrefix {
+		u = strings.TrimSpace(u[4:])
+	}
+	lower := strings.ToLower(u)
+	explicit := strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "ssh://") ||
+		strings.HasPrefix(lower, "git://") ||
+		strings.HasPrefix(lower, "git@")
+	if !hasPrefix && !explicit {
+		return "" // pi: without git: prefix, only explicit protocol URLs
+	}
+	for _, p := range []string{"https://", "http://", "ssh://", "git://"} {
+		if len(u) >= len(p) && strings.EqualFold(u[:len(p)], p) {
+			u = u[len(p):]
+			break
+		}
+	}
+	if len(u) >= 4 && strings.EqualFold(u[:4], "git@") {
+		u = u[4:]
+		if i := strings.Index(u, ":"); i >= 0 {
+			u = u[:i] + "/" + u[i+1:]
+		}
+	}
+	ref := ""
+	if i := strings.LastIndex(u, "#"); i >= 0 {
+		ref, u = u[i+1:], u[:i]
+	}
+	u = strings.Trim(strings.TrimSuffix(u, ".git"), "/")
+	host, _, ok := strings.Cut(u, "/")
+	if !ok || (host != "localhost" && !strings.Contains(host, ".")) {
+		return ""
+	}
+	if ref != "" {
+		return "git:" + u + "@" + ref
+	}
+	return "git:" + u
 }
 
 // ParseQueue extracts queue_update payloads (arrays may be absent → nil).

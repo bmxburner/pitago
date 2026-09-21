@@ -37,6 +37,25 @@ type Options struct {
 	Dir       string // working directory for the pi child (default: ours)
 }
 
+// piStderrLog captures the pi child's stderr (fresh per spawn; read it
+// right after a startup failure for pi's own reason).
+const piStderrLog = "/tmp/pitago-pi-stderr.log"
+
+// StderrTail returns the pi child's stderr collapsed to one short line
+// ("" when empty) — the actual reason when pi dies at startup.
+func StderrTail() string {
+	raw, err := os.ReadFile(piStderrLog)
+	if err != nil {
+		return ""
+	}
+	s := strings.Join(strings.Fields(strings.TrimSpace(string(raw))), " ")
+	const maxStderrTail = 240
+	if len(s) > maxStderrTail {
+		s = s[:maxStderrTail] + "…"
+	}
+	return s
+}
+
 // Spawn starts pi --mode rpc.
 func Spawn(opt Options) (*Client, error) {
 	bin := opt.Bin
@@ -77,7 +96,7 @@ func Spawn(opt Options) (*Client, error) {
 	}
 	cmd.Stdin = stdinR
 	cmd.Stdout = stdoutW
-	logF, _ := os.Create("/tmp/pitago-pi-stderr.log")
+	logF, _ := os.Create(piStderrLog)
 	if logF != nil {
 		cmd.Stderr = logF
 	}

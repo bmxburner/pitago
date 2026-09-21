@@ -697,7 +697,7 @@ func (m Model) renderDialog() string {
 	if d.Message != "" {
 		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
 	}
-	if d.Kind == "model" || d.Kind == "thinking" {
+	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
 		b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
 	}
 	if d.Kind == "secret" {
@@ -752,9 +752,13 @@ func (m Model) renderDialog() string {
 		}
 	}
 	foot := "↑↓ select · Enter confirm · Esc cancel"
-	if d.Kind == "model" || d.Kind == "thinking" {
+	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
 		foot = "type to filter · " + foot
-	} else if d.Kind == "settings" {
+	}
+	if d.Kind == "sessions" {
+		foot += " · Tab scope"
+	}
+	if d.Kind == "settings" {
 		foot = "↑↓ select · Enter change · Esc close"
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))

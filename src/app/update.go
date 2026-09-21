@@ -242,7 +242,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Kind == "thinking" {
 			title = "Thinking level"
 		}
-		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers}
+		if msg.Kind == "sessions" {
+			title = "Resume session (current)"
+			if msg.Scope == "all" {
+				title = "Resume session (all)"
+			}
+		}
+		if msg.Replace && len(m.Dialogs) > 0 && m.Dialogs[0].Kind == msg.Kind {
+			// Tab scope swap: keep the typed filter, reload rows in place.
+			d := m.Dialogs[0]
+			d.Title = title
+			d.Scope = msg.Scope
+			d.Options, d.Descs, d.Paths = msg.Options, msg.Descs, msg.Paths
+			d.Reindex()
+			for i, ri := range d.FIdx {
+				if ri < len(d.Paths) && d.Paths[ri] == msg.Current {
+					d.Cursor = i
+					break
+				}
+			}
+			m.Status = "ready"
+			m.Refresh()
+			return m, nil
+		}
+		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Paths: msg.Paths, Filter: msg.Filter, Scope: msg.Scope}
 		// preselect the current value
 		for i, o := range d.Options {
 			if o == msg.Current {
@@ -251,9 +274,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		d.Reindex()
-		// keep cursor after reindex
+		// keep cursor after reindex (sessions match by file path)
 		for i, ri := range d.FIdx {
-			if d.Options[ri] == msg.Current {
+			if d.Options[ri] == msg.Current || (ri < len(d.Paths) && d.Paths[ri] == msg.Current) {
 				d.Cursor = i
 				break
 			}
@@ -922,7 +945,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
-		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "secret") && d.Filter != "" {
+		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
 		}
@@ -940,11 +963,16 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.Refresh()
 		}
 		return m, nil
+	case tea.KeyTab:
+		if d.Kind == "sessions" {
+			return m, m.ReloadResumeScope(d) // pi: Tab toggles Current/All
+		}
+		return m, nil
 	case tea.KeyEnter:
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeyRunes {
-		if d.Kind == "model" || d.Kind == "thinking" {
+		if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" {
 			// type to filter the picker
 			d.Filter += km.String()
 			d.Reindex()

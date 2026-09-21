@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -23,12 +24,14 @@ type Block = chat.Block
 type Dialog struct {
 	ID            string
 	Method        string // select | confirm (extension UI)
-	Kind          string // "ui" | "model" | "thinking" | "settings" | "login" | "loginDone" | "secret"
+	Kind          string // "ui" | "model" | "thinking" | "settings" | "login" | "loginDone" | "secret" | "sessions" | ...
 	Title         string
 	Message       string
 	Options       []string
 	Descs         []string
 	Providers     []string // model picker: parallel provider per option
+	Paths         []string // sessions picker: parallel session file per option
+	Scope         string   // sessions picker: "current" | "all" (Tab toggles)
 	Payload       []string // yank picker: full message text per option
 	Cursor        int
 	Filter        string // picker filter / secret buffer
@@ -159,6 +162,10 @@ type ModelCycleMsg struct {
 type PickerMsg struct {
 	Kind                      string
 	Options, Descs, Providers []string
+	Paths                     []string // sessions picker: parallel session file per option
+	Filter                    string   // sessions picker: pre-typed filter (/resume <arg>)
+	Scope                     string   // sessions picker: "current" | "all"
+	Replace                   bool     // sessions picker: Tab scope swap into the open dialog
 	Current                   string
 	Err                       error
 }
@@ -373,6 +380,47 @@ func (m *Model) RespawnPi() tea.Cmd {
 	}
 }
 
+// SwitchSession respawns pi onto another session file (the /resume picker).
+// Same reconnect path as RespawnPi; fetchAll repopulates the chat. A
+// startup ping turns a silently-dying pi into pi's own reason (e.g. the
+// session's folder was deleted after listing) instead of "pi has exited".
+func (m *Model) SwitchSession(path string) tea.Cmd {
+	if path == "" || path == m.sessionFile {
+		m.AddBlock(Block{Kind: "notice", Text: "already on this session"})
+		m.Refresh()
+		return nil
+	}
+	m.respawning = true
+	m.Status = "switching session…"
+	m.Refresh()
+	opts := m.spawnOpts
+	opts.Session = path
+	old := m.Pi
+	return func() tea.Msg {
+		old.Close()
+		c, err := pirpc.Spawn(opts)
+		if err != nil {
+			return respawnMsg{err: err}
+		}
+		if _, err := c.GetState(); err != nil {
+			select {
+			case <-c.Done():
+				// pi died at startup: report its reason, not "pi has exited"
+				c.Close()
+				if reason := pirpc.StderrTail(); reason != "" {
+					err = fmt.Errorf("resume failed: %s", reason)
+				} else {
+					err = fmt.Errorf("resume failed: %w", err)
+				}
+				return respawnMsg{err: err}
+			default:
+				// slow starter; fetchAll will confirm
+			}
+		}
+		return respawnMsg{client: c}
+	}
+}
+
 func (m *Model) Refresh() {
 	if !m.ready {
 		return
@@ -410,6 +458,16 @@ func (m *Model) RefreshFollow() {
 	m.vp.GotoBottom()
 	m.sideVp.SetContent(m.buildSidebarContent())
 }
+
+// Cwd is the pi session working directory (picker loaders live outside
+// this package and need it to find pi's session dir).
+func (m *Model) Cwd() string { return m.cwd }
+
+// SessionFile is the current pi session file ("": ephemeral/unknown).
+func (m *Model) SessionFile() string { return m.sessionFile }
+
+// NoSession reports whether this TUI runs without persisting sessions.
+func (m *Model) NoSession() bool { return m.spawnOpts.NoSession }
 
 // Builtin is one locally-executed slash command.
 //
