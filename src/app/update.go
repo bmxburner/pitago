@@ -661,7 +661,8 @@ func quitDisarmCmd(gen int) tea.Cmd {
 	})
 }
 
-func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {	var pcmd tea.Cmd
+func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
+	var pcmd tea.Cmd
 	switch ev.Type {
 	case "agent_start":
 		m.thinking = true
@@ -1288,7 +1289,7 @@ func buildProvs(providers []string) []string {
 	for _, p := range providers {
 		add(p)
 	}
-	for _, p := range pirpc.ProviderEnvs {
+	for _, p := range pirpc.ProviderEnvsAll() {
 		add(p.Provider)
 	}
 	sort.Strings(out)

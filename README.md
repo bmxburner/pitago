@@ -14,6 +14,10 @@
 
 ![pitago demo](resources/demo.gif)
 
+![provider management](resources/provider_management.png)
+
+![model management](resources/model_management.png)
+
 A polished Terminal User Interface (TUI) frontend for the `pi` agent, built with Bubble Tea. `pi --mode rpc` serves as the backend (multi-provider, tools, sessions, compaction), while pitago provides a rich terminal interface communicating over JSONL.
 
 ## Overview

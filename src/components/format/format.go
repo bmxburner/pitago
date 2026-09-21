@@ -62,10 +62,45 @@ func ShortID(id string) string {
 
 func Short(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ⏎ ")
-	if len(s) > n {
-		return s[:n] + "…"
+	if lipgloss.Width(s) <= n {
+		return s
 	}
-	return s
+	return truncWidth(s, n)
+}
+
+// truncWidth cuts s to at most n display cells, reserving one cell for "…".
+// Width-aware (no split multi-byte runes, no n+1 overflow like byte slicing).
+func truncWidth(s string, n int) string {
+	if n <= 1 {
+		return "…"
+	}
+	var b strings.Builder
+	cells := 0
+	for _, r := range s {
+		if c := lipgloss.Width(string(r)); cells+c > n-1 {
+			break
+		} else {
+			cells += c
+		}
+		b.WriteRune(r)
+	}
+	return b.String() + "…"
+}
+
+// Fit clamps s to exactly w display cells: truncates with "…" when too wide,
+// pads with spaces when narrow. s must be unstyled (style after fitting) so
+// no ANSI sequence can be cut in half. Guarantees rows never wrap and break
+// the dialog layout.
+func Fit(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if sw := lipgloss.Width(s); sw == w {
+		return s
+	} else if sw < w {
+		return s + strings.Repeat(" ", w-sw)
+	}
+	return truncWidth(s, w)
 }
 
 func OrDefault(s, d string) string {

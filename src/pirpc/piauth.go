@@ -260,7 +260,7 @@ func SyncFromPi(keyPath string) int {
 	store := LoadStore(keyPath)
 	n := 0
 	dirty := false
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		raw, ok := m[p.Provider]
 		if !ok {
 			continue
@@ -318,7 +318,7 @@ func EnsurePiHasActive(keyPath string) {
 	m := loadPiRaw(path)
 	store := LoadStore(keyPath)
 	dirty := false
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		if _, ok := m[p.Provider]; ok {
 			continue
 		}

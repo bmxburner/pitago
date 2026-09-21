@@ -878,9 +878,12 @@ func (m Model) renderModelDialog(d *Dialog) string {
 	if boxW > 150 {
 		boxW = 150
 	}
-	leftW := 30
+	leftW := 42
+	if boxW < 120 {
+		leftW = 36
+	}
 	if boxW < 100 {
-		leftW = 24
+		leftW = 28
 	}
 	rightW := boxW - 8 - leftW - 3
 	if rightW < 30 {
@@ -937,7 +940,9 @@ func (m Model) renderModelDialog(d *Dialog) string {
 		if pad < 1 {
 			pad = 1
 		}
-		content := dot + nm + strings.Repeat(" ", pad) + cntStr
+		// Fit clamps the unstyled tail so a long name can never wrap
+		// the row and break the two-pane layout (dot stays styled).
+		content := dot + Fit(nm+strings.Repeat(" ", pad)+cntStr, cw-2)
 		mark := "  "
 		style := statusBarStyle
 		if provCount(name) == 0 {
@@ -1077,9 +1082,12 @@ func (m Model) renderLoginDialog(d *Dialog) string {
 	if boxW > 150 {
 		boxW = 150
 	}
-	leftW := 30
+	leftW := 42
+	if boxW < 120 {
+		leftW = 36
+	}
 	if boxW < 100 {
-		leftW = 24
+		leftW = 28
 	}
 	rightW := boxW - 8 - leftW - 3
 	if rightW < 30 {
@@ -1135,7 +1143,9 @@ func (m Model) renderLoginDialog(d *Dialog) string {
 		if pad < 1 {
 			pad = 1
 		}
-		content := dot + nm + strings.Repeat(" ", pad) + cntStr
+		// Fit clamps the unstyled tail so a long name can never wrap
+		// the row and break the two-pane layout (dot stays styled).
+		content := dot + Fit(nm+strings.Repeat(" ", pad)+cntStr, cw-2)
 		mark := "  "
 		style := statusBarStyle
 		if pi == d.ProvCursor {

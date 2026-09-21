@@ -15,6 +15,7 @@ var (
 	ShortID   = format.ShortID
 	OrDefault = format.OrDefault
 	FmtNum    = format.FmtNum
+	Fit       = format.Fit
 )
 
 func (m Model) firstUser() string {

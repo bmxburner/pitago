@@ -1,6 +1,10 @@
 package format
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 func TestPrettyArgs(t *testing.T) {
 	cases := []struct {
@@ -155,4 +159,51 @@ func TestEditDiffFallback(t *testing.T) {
 	if got := CollapsedBudget("write"); got != 10 {
 		t.Errorf("budget write = %d", got)
 	}
+}
+
+func TestShortNeverExceedsWidth(t *testing.T) {
+	cases := []struct {
+		s string
+		n int
+	}{
+		{"Xiaomi Token Plan (Singapore)", 20},
+		{"ZAI Coding Plan (China)", 10},
+		{"short", 20},
+		{"exact-twenty-chars!!", 20},
+		{"héllo wörld ünïcodé", 10}, // multi-byte: no split rune, no overflow
+		{"abc", 1},
+		{"abc", 0},
+	}
+	for _, c := range cases {
+		got := Short(c.s, c.n)
+		if w := lipgloss.Width(got); c.n >= 1 && w > c.n {
+			t.Fatalf("Short(%q, %d) = %q (width %d)", c.s, c.n, got, w)
+		}
+		if c.n >= 1 && lipgloss.Width(c.s) > c.n && !containsEllipsis(got) {
+			t.Fatalf("Short(%q, %d) = %q, want …", c.s, c.n, got)
+		}
+	}
+}
+
+func TestFitExactWidth(t *testing.T) {
+	for _, w := range []int{5, 20, 40} {
+		for _, s := range []string{"", "ab", "Xiaomi Token Plan (Singapore) no key", "héllo wörld"} {
+			got := Fit(s, w)
+			if gw := lipgloss.Width(got); gw != w {
+				t.Fatalf("Fit(%q, %d) width = %d", s, w, gw)
+			}
+		}
+	}
+	if Fit("abc", 0) != "" {
+		t.Fatal("Fit w=0 must be empty")
+	}
+}
+
+func containsEllipsis(s string) bool {
+	for _, r := range s {
+		if r == '…' {
+			return true
+		}
+	}
+	return false
 }

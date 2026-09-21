@@ -41,7 +41,10 @@ type ProviderEnv struct {
 	Env      string // env var holding the API key
 }
 
-// ProviderEnvs covers single-env-var API-key providers.
+// ProviderEnvs is the STATIC fallback catalog of single-env-var API-key
+// providers. At runtime ProviderEnvsAll() prefers pi's live catalog parsed
+// from its installed bundle (see piproviders.go), so pi updates flow through
+// with no pitago change; this list only matters when pi can't be found.
 var ProviderEnvs = []ProviderEnv{
 	{"anthropic", "Anthropic", "ANTHROPIC_API_KEY"},
 	{"openai", "OpenAI", "OPENAI_API_KEY"},
@@ -61,7 +64,8 @@ var ProviderEnvs = []ProviderEnv{
 	{"huggingface", "Hugging Face", "HF_TOKEN"},
 	{"nvidia", "NVIDIA NIM", "NVIDIA_API_KEY"},
 	{"vercel-ai-gateway", "Vercel AI Gateway", "AI_GATEWAY_API_KEY"},
-	{"moonshot", "Moonshot", "MOONSHOT_API_KEY"},
+	{"moonshotai", "Moonshot AI", "MOONSHOT_API_KEY"},
+	{"moonshotai-cn", "Moonshot AI (China)", "MOONSHOT_API_KEY"},
 	{"qwen-token-plan", "Qwen Token Plan", "QWEN_TOKEN_PLAN_API_KEY"},
 }
 
@@ -82,7 +86,7 @@ var OAuthProviders = []OAuthProvider{
 
 // ProviderLabel returns the human label for any known provider id.
 func ProviderLabel(provider string) string {
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		if p.Provider == provider {
 			return p.Label
 		}
@@ -100,7 +104,7 @@ func ProviderLabel(provider string) string {
 func AllLoginProviders() []string {
 	seen := map[string]bool{}
 	var out []string
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		if !seen[p.Provider] {
 			seen[p.Provider] = true
 			out = append(out, p.Provider)
@@ -117,7 +121,7 @@ func AllLoginProviders() []string {
 
 // LookupEnv returns the env var for a provider id, or "".
 func LookupEnv(provider string) string {
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		if p.Provider == provider {
 			return p.Env
 		}
@@ -127,7 +131,7 @@ func LookupEnv(provider string) string {
 
 // LookupProvider returns the provider id + label for an env var.
 func LookupProvider(env string) (provider, label string) {
-	for _, p := range ProviderEnvs {
+	for _, p := range ProviderEnvsAll() {
 		if p.Env == env {
 			return p.Provider, p.Label
 		}
