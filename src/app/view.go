@@ -10,6 +10,7 @@ import (
 	"pitago/src/components/format"
 	"pitago/src/components/markdown"
 	"pitago/src/extension"
+	"pitago/src/pirpc"
 )
 
 func (m Model) showSide() bool { return !m.hideSide && m.winW >= 80 }
@@ -731,6 +732,9 @@ func (m Model) renderDialog() string {
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.renderModelDialog(d)
 	}
+	if d.Kind == "login" && len(d.Provs) > 0 {
+		return m.renderLoginDialog(d)
+	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
 	if d.Message != "" {
@@ -743,6 +747,10 @@ func (m Model) renderDialog() string {
 		b.WriteString("\n")
 		b.WriteString(cmdHiStyle.Render(strings.Repeat("•", len(d.Filter))+"▌") + "\n")
 		b.WriteString("\n" + toolStyle.Render("Enter save · Esc cancel"))
+	} else if d.Kind == "rename" {
+		b.WriteString("\n")
+		b.WriteString(cmdHiStyle.Render(d.Filter+"▌") + "\n")
+		b.WriteString("\n" + toolStyle.Render("Enter rename · empty clears · Esc back to /login"))
 	} else {
 		b.WriteString("\n")
 		// 12-row scroll window following the cursor
@@ -1047,6 +1055,206 @@ func DescOf(d *Dialog, ri int) string {
 		return d.Descs[ri]
 	}
 	return ""
+}
+
+// renderLoginDialog draws the two-pane /login picker: left = providers,
+// right = saved keys for the selected provider + actions (add / OAuth /
+// reload). ↑↓ moves in the focused pane, ←/→/Tab switches pane, typing
+// filters providers, Enter uses/adds, ⌫ deletes the selected key.
+func (m Model) renderLoginDialog(d *Dialog) string {
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
+	if d.Message != "" {
+		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
+	}
+	b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
+	b.WriteString("\n")
+
+	boxW := m.winW - 10
+	if boxW < 70 {
+		boxW = 70
+	}
+	if boxW > 150 {
+		boxW = 150
+	}
+	leftW := 30
+	if boxW < 100 {
+		leftW = 24
+	}
+	rightW := boxW - 8 - leftW - 3
+	if rightW < 30 {
+		rightW = 30
+	}
+	win := m.winH - 14
+	if win < 12 {
+		win = 12
+	}
+	if win > 24 {
+		win = 24
+	}
+
+	loginLabel := func(prov string) (label, env string) {
+		return pirpc.ProviderLabel(prov), pirpc.LookupEnv(prov)
+	}
+
+	// left window (providers, filtered via PIdx)
+	ptotal := len(d.PIdx)
+	pstart, pend, pAbove, pBelow := fixedWin(d.ProvCursor, ptotal, win)
+	var leftLines []string
+	if pAbove {
+		leftLines = append(leftLines, "  "+toolStyle.Width(leftW-2).Render(fmt.Sprintf("…(+%d above)", pstart)))
+	}
+	for pi := pstart; pi < pend; pi++ {
+		raw := d.PIdx[pi]
+		prov := ""
+		if raw >= 0 && raw < len(d.Provs) {
+			prov = d.Provs[raw]
+		}
+		label, _ := loginLabel(prov)
+		cnt := d.LoginCounts[prov]
+		cntStr := "no key"
+		if cnt == 1 {
+			cntStr = "1 key"
+		} else if cnt > 1 {
+			cntStr = fmt.Sprintf("%d keys", cnt)
+		}
+		if d.OAuthConn[prov] {
+			if cntStr == "no key" {
+				cntStr = "OAuth"
+			} else {
+				cntStr += "+OAuth"
+			}
+		}
+		cw := leftW - 2
+		dot := statusBarStyle.Render("○ ")
+		if d.ProvConn[prov] {
+			dot = okStyle.Render("● ")
+		}
+		nm := Short(label, cw-2-len(cntStr)-1)
+		pad := cw - 2 - lipgloss.Width(nm) - len(cntStr)
+		if pad < 1 {
+			pad = 1
+		}
+		content := dot + nm + strings.Repeat(" ", pad) + cntStr
+		mark := "  "
+		style := statusBarStyle
+		if pi == d.ProvCursor {
+			mark = "▸ "
+			if d.ProvFocus {
+				style = rowHiStyle
+			} else {
+				style = lipgloss.NewStyle().Foreground(cText)
+			}
+		}
+		leftLines = append(leftLines, mark+style.Width(leftW-2).Render(content))
+	}
+	if pBelow {
+		leftLines = append(leftLines, "  "+toolStyle.Width(leftW-2).Render(fmt.Sprintf("…(+%d below)", ptotal-pend)))
+	}
+	if ptotal == 0 {
+		leftLines = append(leftLines, "  "+toolStyle.Width(leftW-2).Render("— no match —"))
+	}
+	for len(leftLines) < win {
+		leftLines = append(leftLines, "  "+statusBarStyle.Width(leftW-2).Render(""))
+	}
+
+	// right window (keys + actions, unfiltered)
+	total := len(d.Options)
+	start, end, rAbove, rBelow := fixedWin(d.KeyCursor, total, win)
+	var rightLines []string
+	if rAbove {
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(fmt.Sprintf("…(+%d above)", start)))
+	}
+	for fi := start; fi < end; fi++ {
+		mark := "  "
+		style := statusBarStyle
+		if fi == d.KeyCursor {
+			mark = "▸ "
+			if d.ProvFocus {
+				style = lipgloss.NewStyle().Foreground(cText)
+			} else {
+				style = rowHiStyle
+			}
+		}
+		row := Short(d.Options[fi], rightW-2)
+		if fi < len(d.Descs) && d.Descs[fi] != "" {
+			// keep the row + dim desc on one line within rightW
+			desc := Short(d.Descs[fi], rightW-4)
+			room := rightW - 2 - lipgloss.Width(row) - lipgloss.Width(desc) - 3
+			if room >= 1 && lipgloss.Width(row)+3+lipgloss.Width(desc) <= rightW-2 {
+				row += "  " + toolStyle.Render("— "+desc)
+			} else {
+				row = Short(d.Options[fi], rightW-2-len(desc)-4) + "  " + toolStyle.Render("— "+desc)
+			}
+		}
+		rightLines = append(rightLines, mark+style.Width(rightW-2).Render(row))
+	}
+	if rBelow {
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(fmt.Sprintf("…(+%d below)", total-end)))
+	}
+	if total == 0 {
+		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render("— no keys —"))
+	}
+	for len(rightLines) < win {
+		rightLines = append(rightLines, "  "+statusBarStyle.Width(rightW-2).Render(""))
+	}
+
+	// headers: right shows the selected provider + key count
+	sel, selLabel, selCount := "", "", 0
+	if prov := d.SelLoginProv(); prov != "" {
+		sel = prov
+		selLabel, _ = loginLabel(prov)
+		selCount = d.LoginCounts[prov]
+	}
+	rightHead := selLabel
+	if rightHead == "" {
+		rightHead = "KEYS"
+	} else if selCount == 1 {
+		rightHead += " · 1 key"
+	} else {
+		rightHead += fmt.Sprintf(" · %d keys", selCount)
+	}
+	if d.LoginOAuth {
+		rightHead += " · OAuth ✓"
+	}
+	_ = sel
+	b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
+		"  " + sideTitleStyle.Width(rightW-2).Render(rightHead) + "\n")
+
+	n := len(leftLines)
+	if len(rightLines) > n {
+		n = len(rightLines)
+	}
+	sep := sepStyle.Render("│")
+	for i := 0; i < n; i++ {
+		l, r := "", ""
+		if i < len(leftLines) {
+			l = leftLines[i]
+		} else {
+			l = "  " + statusBarStyle.Width(leftW-2).Render("")
+		}
+		if i < len(rightLines) {
+			r = rightLines[i]
+		} else {
+			r = "  " + statusBarStyle.Width(rightW-2).Render("")
+		}
+		b.WriteString(l+" "+sep+" "+r + "\n")
+	}
+
+	foot := "↑↓ move · ←→/Tab switch · Enter use/add · ⌫ del · s show · r rename · ^P models · Esc close"
+	if d.ProvFocus {
+		foot = "↑↓ providers · → keys · type to filter · Enter open · Esc close"
+	}
+	b.WriteString("\n" + toolStyle.Render(foot))
+	box := dlgStyle.Width(boxW).Render(b.String())
+	hint := ""
+	if len(m.Dialogs) > 1 {
+		hint = statusBarStyle.Render(fmt.Sprintf("(%d more dialogs pending)", len(m.Dialogs)-1))
+	}
+	return lipgloss.JoinVertical(lipgloss.Center,
+		lipgloss.Place(m.winW, m.winH-2, lipgloss.Center, lipgloss.Center, box),
+		hint,
+	)
 }
 
 func (m Model) View() string {

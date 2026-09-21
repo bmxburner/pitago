@@ -73,6 +73,13 @@ func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 }
 
 func confirmLogin(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if len(d.Provs) > 0 {
+		// two-pane fallback (normally handled in updateLoginDialog):
+		// focus the keys pane.
+		d.ProvFocus = false
+		m.Refresh()
+		return m, nil
+	}
 	prov := d.Options[ri]
 	m.Dialogs = m.Dialogs[1:]
 	openLoginMethod(m, prov, pirpc.LookupEnv(prov))
@@ -112,8 +119,21 @@ func confirmLoginMethod(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd
 }
 
 func confirmLoginOAuth(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	// Pop OAuth revealing /login underneath (stays on /login, not main).
 	m.Dialogs = m.Dialogs[1:]
 	if ri == 0 {
+		// User just ran /login in stock pi: import keys (union) + mirror
+		// pi logins (OAuth included) into pitago, refresh the picker.
+		pirpc.SyncFromPi(m.KeyPath)
+		authPath := m.AuthPath
+		if authPath == "" {
+			authPath = pirpc.AuthStatePath()
+		}
+		pirpc.SyncAuthStateFromPi(authPath)
+		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
+			m.Dialogs[0].ProvFocus = false
+			m.RefreshLoginKeys(m.Dialogs[0])
+		}
 		m.Status = "reloading models…"
 		m.Refresh()
 		return m, func() tea.Msg {

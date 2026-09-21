@@ -24,7 +24,7 @@ type Block = chat.Block
 type Dialog struct {
 	ID            string
 	Method        string // select | confirm (extension UI)
-	Kind          string // "ui" | "model" | "thinking" | "settings" | "login" | "loginDone" | "secret" | "sessions" | ...
+	Kind          string // "ui" | "model" | "thinking" | "settings" | "login" | "loginDone" | "secret" | "rename" | "sessions" | ...
 	Title         string
 	Message       string
 	Options       []string
@@ -36,10 +36,21 @@ type Dialog struct {
 	ProvFocus     bool     // model picker: true = providers focused
 	Paths         []string // sessions picker: parallel session file per option
 	Scope         string   // sessions picker: "current" | "all" (Tab toggles)
-	Payload       []string // yank picker: full message text per option
+	Payload       []string // yank picker: full text per option; login: raw keys ("" for action rows)
 	Cursor        int
-	Filter        string // picker filter / secret buffer
+	Filter        string // picker filter / secret buffer / rename buffer
 	FIdx          []int
+	PIdx          []int // login: filtered provider indices into Provs
+	KeyCursor     int   // login: cursor in the right (keys) pane
+	KeyActive     int   // login: active key index within keys (-1 = none)
+	ShowKeys      bool   // login: reveal full keys (s toggles, never persisted)
+	RenameIdx     int    // rename flow: key index being renamed (-1 = none)
+	LoginActions  []string // login: action kinds parallel to trailing rows ("add","guide","disconnect","reload")
+	LoginOAuth    bool   // login: selected provider has OAuth in pi
+	LoginOAuthExp int64  // login: oauth expiry ms epoch (0 = unknown)
+	LoginOAuthAcct string // login: oauth account id ("" = unknown)
+	OAuthConn     map[string]bool // login: provider -> oauth connected in pi
+	LoginCounts   map[string]int // login: provider -> saved key count
 	Settings      SettingsState
 	LoginProvider string // login flow: provider id
 	LoginEnv      string // login flow: env var
@@ -103,6 +114,7 @@ type Model struct {
 	respawning   bool          // reconnecting pi: skip pi_exited notice
 	spawnOpts    pirpc.Options // for respawning pi (login)
 	KeyPath      string        // keystore API keys
+	AuthPath     string        // mirrored pi logins (oauth state pitago saves)
 	sessionFile  string        // respawn keeps the same session
 	Cmds         []pirpc.RepoCommand
 	cmdOpen      bool
@@ -205,6 +217,12 @@ type SettingsRefreshMsg struct {
 
 type LoginKeyMsg struct {
 	Provider, Env, Key string
+}
+
+type RenameKeyMsg struct {
+	Provider, Env string
+	Idx           int
+	Name          string
 }
 
 type respawnMsg struct {
@@ -595,6 +613,7 @@ func (m *Model) UseBuiltins(b []Builtin, c map[string]ConfirmFunc) {
 func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.spawnOpts = opts
 	m.KeyPath = keyPath
+	m.AuthPath = pirpc.AuthStatePath()
 	m.recentPath = pirpc.RecentPath()
 	m.recentModels = recent.Load(m.recentPath)
 }

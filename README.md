@@ -235,7 +235,7 @@ Type `/` to open the command popup. Two kinds:
 - `/thinking` — toggle thinking level
 - `/tree` — session tree, pi-style rows (read-only over RPC)
 - `/settings` — open settings
-- `/login` / `/logout` — manage API keys
+- `/login` / `/logout` — manage logins: API keys + pi OAuth/subscriptions (`/login`: left providers, right keys + auth — `Enter` use/add, `⌫` delete/disconnect, `s` show/hide key, `r` rename, `Ctrl+P` model picker, `Esc` close; stays open, pi reconnects behind)
 - `/reload` — reload extensions
 - `/new` — new session
 - `/resume` — resume picker (like pi: current project, Tab for all)
@@ -287,7 +287,8 @@ tests/            # integration tests (black-box, public API only).
 
 ## Configuration Files
 
-- `~/.config/pitago/keys.json` (0600) — saved API keys (`/login`, `/logout`)
+- `~/.config/pitago/keys.json` (0600) — saved API keys, several per provider with one active + optional name/added-date (`/login`, `/logout`; active key is also written to pi's `auth.json` so pi sees models)
+- `~/.config/pitago/pi_auth.json` (0600) — mirrored pi logins (OAuth account/expiry, no secrets) so `/login` lists + disconnects subscriptions done in stock pi
 - `~/.config/pitago/recent_models.json` — recent models (max 5)
 - `~/.config/pitago/update.json` — last update-check timestamp + tag (24h TTL)
 - `/tmp/pitago-pi-stderr.log` — pi child stderr

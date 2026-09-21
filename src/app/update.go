@@ -43,10 +43,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateDialog(km)
 		}
 		// Async results stay swallowed while a dialog is open — except
-		// paste (Ctrl+V into the /login key field must land) and the
-		// quit disarm (an arm must always expire, even behind a dialog).
+		// paste (Ctrl+V into the /login key field must land), the
+		// quit disarm (an arm must always expire, even behind a dialog),
+		// and the /login stay-open pipeline (save/rename → respawn →
+		// reconnect must complete without closing the picker).
 		switch msg.(type) {
-		case tea.WindowSizeMsg, pasteDoneMsg, quitDisarmMsg:
+		case tea.WindowSizeMsg, pasteDoneMsg, quitDisarmMsg,
+			LoginKeyMsg, RenameKeyMsg, respawnMsg, connectedMsg, CmdsRefreshMsg:
 		default:
 			return m, nil
 		}
@@ -380,13 +383,40 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Refresh()
 			return m, nil
 		}
-		m.AddBlock(Block{Kind: "notice", Text: "saved key " + msg.Provider + " — reconnecting pi…"})
-		// The respawned pi inherits our env (not the keystore file), so
-		// export the fresh key or it only takes effect after TUI restart.
-		if msg.Env != "" {
-			_ = os.Setenv(msg.Env, msg.Key)
+		// Critical: pi's auth.json wins over env, so export alone is not
+		// enough — write the active key to pi too or pi never sees models.
+		pirpc.PushActiveToPi(m.KeyPath, msg.Env)
+		m.AddBlock(Block{Kind: "notice", Text: "saved key " + msg.Provider + " → pi — reconnecting…"})
+		// Stay on /login: refresh the picker in place, reconnect behind it.
+		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
+			d := m.Dialogs[0]
+			m.RefreshLoginKeys(d)
+			// cursor follows the new active key
+			if nk := loginKeysLen(d); nk > 0 {
+				d.KeyCursor = d.KeyActive
+				if d.KeyCursor < 0 || d.KeyCursor >= nk {
+					d.KeyCursor = nk - 1
+				}
+			}
+			d.ProvFocus = false
+			m.Refresh()
+			return m, m.RespawnPi()
 		}
 		return m, m.RespawnPi()
+
+	case RenameKeyMsg:
+		if err := pirpc.RenameKey(m.KeyPath, msg.Env, msg.Idx, msg.Name); err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "rename failed: " + err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
+			m.RefreshLoginKeys(m.Dialogs[0])
+			m.Refresh()
+		} else {
+			m.Refresh()
+		}
+		return m, nil
 
 	case UpdateCheckMsg:
 		m.handleUpdateCheck(msg)
@@ -1019,6 +1049,9 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.updateModelDialog(km, d)
 	}
+	if d.Kind == "login" && len(d.Provs) > 0 {
+		return m.updateLoginDialog(km, d)
+	}
 	n := len(d.FIdx)
 	switch km.Type {
 	case tea.KeyUp:
@@ -1040,7 +1073,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
-		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret" || d.Kind == "login" || d.Kind == "logout") && d.Filter != "" {
+		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret" || d.Kind == "rename" || d.Kind == "login" || d.Kind == "logout") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
 		}
@@ -1073,7 +1106,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			d.Reindex()
 			return m, nil
 		}
-		if d.Kind == "secret" {
+		if d.Kind == "secret" || d.Kind == "rename" {
 			d.Filter += km.String()
 			return m, nil
 		}
@@ -1195,6 +1228,17 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if d.Kind == "rename" {
+		// rename pops itself (login stays underneath) and saves via msg
+		// so the pipeline works even with the picker open.
+		name := strings.TrimSpace(d.Filter)
+		prov, env, idx := d.LoginProvider, d.LoginEnv, d.RenameIdx
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, func() tea.Msg {
+			return RenameKeyMsg{Provider: prov, Env: env, Idx: idx, Name: name}
+		}
+	}
 	if len(d.FIdx) == 0 {
 		return m, nil
 	}
@@ -1263,19 +1307,28 @@ func sortProvsConn(provs []string, conn map[string]bool) {
 }
 
 // provConn marks connected providers: listed models, a saved keystore key,
-// or a preset env var. Unknown ids (no env mapping) prove via models only.
+// a preset env var, or a pi auth entry (api_key or OAuth). Unknown ids
+// (no env mapping) prove via models or pi auth.
 func provConn(keyPath string, providers []string) map[string]bool {
 	inModels := map[string]bool{}
 	for _, p := range providers {
 		inModels[normProv(p)] = true
 	}
 	keys := pirpc.LoadKeys(keyPath)
+	piAuth := map[string]bool{}
+	for _, e := range pirpc.ListPiAuth() {
+		piAuth[e.Provider] = true
+	}
 	out := map[string]bool{}
 	for _, prov := range buildProvs(providers) {
 		if prov == "All" {
 			continue
 		}
 		if inModels[prov] {
+			out[prov] = true
+			continue
+		}
+		if piAuth[prov] {
 			out[prov] = true
 			continue
 		}
@@ -1305,7 +1358,28 @@ func (d *Dialog) selProv() string {
 // A non-empty Filter searches globally across all providers (the left
 // pane scope only applies when Filter is empty); the provider id itself
 // is also matchable so typing "anthropic" finds its models.
+// Login dialogs filter providers into PIdx (right pane is keys, unfiltered).
 func (d *Dialog) Reindex() {
+	if d.Kind == "login" {
+		d.PIdx = d.PIdx[:0]
+		f := strings.ToLower(strings.TrimSpace(d.Filter))
+		for i, prov := range d.Provs {
+			if f == "" {
+				d.PIdx = append(d.PIdx, i)
+				continue
+			}
+			label, env := pirpc.ProviderLabel(prov), pirpc.LookupEnv(prov)
+			if strings.Contains(strings.ToLower(prov), f) ||
+				strings.Contains(strings.ToLower(label), f) ||
+				strings.Contains(strings.ToLower(env), f) {
+				d.PIdx = append(d.PIdx, i)
+			}
+		}
+		if d.ProvCursor >= len(d.PIdx) {
+			d.ProvCursor = 0
+		}
+		return
+	}
 	d.FIdx = d.FIdx[:0]
 	f := strings.ToLower(d.Filter)
 	prov := d.selProv()
@@ -1325,6 +1399,481 @@ func (d *Dialog) Reindex() {
 	if d.Cursor >= len(d.FIdx) {
 		d.Cursor = 0
 	}
+}
+
+// SelLoginProv is the selected provider in the two-pane login dialog
+// ("" = none). ProvCursor indexes the filtered PIdx, not raw Provs.
+func (d *Dialog) SelLoginProv() string {
+	if d.Kind != "login" || len(d.Provs) == 0 || len(d.PIdx) == 0 {
+		return ""
+	}
+	if d.ProvCursor < 0 || d.ProvCursor >= len(d.PIdx) {
+		return ""
+	}
+	i := d.PIdx[d.ProvCursor]
+	if i < 0 || i >= len(d.Provs) {
+		return ""
+	}
+	return d.Provs[i]
+}
+
+// loginKeysLen is the number of key rows: Payload holds raw keys for key
+// rows and "" for action rows, so it stays correct with dynamic actions.
+func loginKeysLen(d *Dialog) int {
+	n := 0
+	for _, p := range d.Payload {
+		if p != "" {
+			n++
+		}
+	}
+	return n
+}
+
+// oauthDesc renders an OAuth state for display ("OAuth · acct · exp").
+func oauthDesc(exp int64, acct string) string {
+	s := "OAuth"
+	if acct != "" {
+		if r := []rune(acct); len(r) > 12 {
+			acct = string(r[:12]) + "…"
+		}
+		s += " · " + acct
+	}
+	if exp > 0 {
+		s += " · exp " + pirpc.FormatAdded(exp/1000)
+	}
+	return s
+}
+
+// RefreshLoginKeys rebuilds the right pane for the selected provider:
+// key rows (name + masked/full key + date) + dynamic actions (add when the
+// provider takes API keys, OAuth guide or disconnect, reload), plus
+// per-provider key counts and OAuth state. ShowKeys reveals full secrets.
+func (m *Model) RefreshLoginKeys(d *Dialog) {
+	if d.Kind != "login" {
+		return
+	}
+	store := pirpc.LoadStore(m.KeyPath)
+	piOAuth := map[string]bool{}
+	piOAuthExp := map[string]int64{}
+	piOAuthAcct := map[string]string{}
+	for _, e := range pirpc.ListPiAuth() {
+		if e.Type == "oauth" {
+			piOAuth[e.Provider] = true
+			piOAuthExp[e.Provider] = e.Expires
+			piOAuthAcct[e.Provider] = e.Account
+		}
+	}
+	if d.LoginCounts == nil {
+		d.LoginCounts = map[string]int{}
+	}
+	for k := range d.LoginCounts {
+		delete(d.LoginCounts, k)
+	}
+	for _, prov := range d.Provs {
+		env := pirpc.LookupEnv(prov)
+		if env == "" {
+			continue
+		}
+		if e, ok := store[env]; ok && e != nil {
+			d.LoginCounts[prov] = len(e.Keys)
+		}
+	}
+	if d.OAuthConn == nil {
+		d.OAuthConn = map[string]bool{}
+	}
+	for k := range d.OAuthConn {
+		delete(d.OAuthConn, k)
+	}
+	for _, prov := range d.Provs {
+		d.OAuthConn[prov] = piOAuth[prov]
+	}
+	// dots: providers with keys first is done at open; here just mark conn
+	if d.ProvConn == nil {
+		d.ProvConn = map[string]bool{}
+	}
+	for _, prov := range d.Provs {
+		d.ProvConn[prov] = d.LoginCounts[prov] > 0 || piOAuth[prov]
+	}
+	prov := d.SelLoginProv()
+	env := pirpc.LookupEnv(prov)
+	d.LoginProvider, d.LoginEnv = prov, env
+	d.LoginOAuth = piOAuth[prov]
+	d.LoginOAuthExp, d.LoginOAuthAcct = piOAuthExp[prov], piOAuthAcct[prov]
+	var items []pirpc.KeyItem
+	active := -1
+	if env != "" {
+		if e, ok := store[env]; ok && e != nil && len(e.Keys) > 0 {
+			items = e.Keys
+			active = e.Active
+			if active < 0 || active >= len(items) {
+				active = 0
+			}
+		}
+	}
+	d.KeyActive = active
+	d.Options = d.Options[:0]
+	d.Payload = d.Payload[:0]
+	d.Descs = d.Descs[:0]
+	d.LoginActions = d.LoginActions[:0]
+	for i, it := range items {
+		mark := "○ "
+		desc := "Enter to use"
+		if i == active {
+			mark = "● "
+			desc = "active"
+		}
+		secret := pirpc.MaskKey(it.Key)
+		if d.ShowKeys {
+			secret = it.Key
+		}
+		label := mark + secret
+		if strings.TrimSpace(it.Name) != "" {
+			label = mark + strings.TrimSpace(it.Name) + " · " + secret
+		}
+		if date := pirpc.FormatAdded(it.AddedAt); date != "—" {
+			desc += " · " + date
+		}
+		d.Options = append(d.Options, label)
+		d.Payload = append(d.Payload, it.Key)
+		d.Descs = append(d.Descs, desc)
+	}
+	if env != "" {
+		d.Options = append(d.Options, "＋ Add new key")
+		d.Payload = append(d.Payload, "")
+		d.Descs = append(d.Descs, "Enter to add")
+		d.LoginActions = append(d.LoginActions, "add")
+	}
+	if d.LoginOAuth {
+		d.Options = append(d.Options, "⊗ Disconnect ("+oauthDesc(d.LoginOAuthExp, d.LoginOAuthAcct)+")")
+		d.Payload = append(d.Payload, "")
+		d.Descs = append(d.Descs, "logout "+prov+" in pi too")
+		d.LoginActions = append(d.LoginActions, "disconnect")
+	} else {
+		d.Options = append(d.Options, "OAuth / subscription")
+		d.Payload = append(d.Payload, "")
+		d.Descs = append(d.Descs, "guide in stock pi")
+		d.LoginActions = append(d.LoginActions, "guide")
+	}
+	d.Options = append(d.Options, "↻ Reload models")
+	d.Payload = append(d.Payload, "")
+	d.Descs = append(d.Descs, "refresh model list")
+	d.LoginActions = append(d.LoginActions, "reload")
+	if d.KeyCursor >= len(d.Options) {
+		d.KeyCursor = 0
+	}
+	if d.KeyCursor < 0 {
+		d.KeyCursor = 0
+	}
+}
+
+// updateLoginDialog navigates the two-pane /login picker: left = providers,
+// right = saved keys + actions. ↑↓ moves in the focused pane, ←/→/Tab
+// switches pane, typing filters providers (left pane), Enter uses/adds,
+// ⌫ deletes a key, s shows/hides secrets, r renames. Everything stays on
+// /login: mutations reconnect pi behind the open picker.
+func (m Model) updateLoginDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) {
+	switch km.Type {
+	case tea.KeyUp:
+		if d.ProvFocus {
+			if len(d.PIdx) > 0 {
+				if d.ProvCursor > 0 {
+					d.ProvCursor--
+				} else {
+					d.ProvCursor = len(d.PIdx) - 1
+				}
+				m.RefreshLoginKeys(d)
+				d.KeyCursor = 0
+			}
+		} else if len(d.Options) > 0 {
+			if d.KeyCursor > 0 {
+				d.KeyCursor--
+			} else {
+				d.KeyCursor = len(d.Options) - 1
+			}
+		}
+		return m, nil
+	case tea.KeyDown:
+		if d.ProvFocus {
+			if len(d.PIdx) > 0 {
+				if d.ProvCursor < len(d.PIdx)-1 {
+					d.ProvCursor++
+				} else {
+					d.ProvCursor = 0
+				}
+				m.RefreshLoginKeys(d)
+				d.KeyCursor = 0
+			}
+		} else if len(d.Options) > 0 {
+			if d.KeyCursor < len(d.Options)-1 {
+				d.KeyCursor++
+			} else {
+				d.KeyCursor = 0
+			}
+		}
+		return m, nil
+	case tea.KeyLeft:
+		d.ProvFocus = true
+		return m, nil
+	case tea.KeyRight:
+		d.ProvFocus = false
+		return m, nil
+	case tea.KeyTab:
+		d.ProvFocus = !d.ProvFocus
+		return m, nil
+	case tea.KeyBackspace:
+		if d.Filter != "" {
+			d.Filter = d.Filter[:len(d.Filter)-1]
+			d.Reindex()
+			d.ProvCursor = 0
+			d.ProvFocus = true
+			m.RefreshLoginKeys(d)
+			d.KeyCursor = 0
+			return m, nil
+		}
+		if d.ProvFocus {
+			return m, nil
+		}
+		return m.deleteLoginKey(d)
+	case tea.KeyDelete:
+		if !d.ProvFocus {
+			return m.deleteLoginKey(d)
+		}
+		return m, nil
+	case tea.KeyEsc:
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, nil
+	case tea.KeyCtrlL:
+		return m, nil
+	case tea.KeyCtrlP:
+		// jump straight to the model picker (mirror of ^L in /model;
+		// ^M is Enter's keycode so it can't be used — ^P already means
+		// model outside dialogs)
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, m.RunBuiltin("model", "")
+	case tea.KeyCtrlS:
+		// show/hide shortcut works from either pane
+		d.ShowKeys = !d.ShowKeys
+		m.RefreshLoginKeys(d)
+		m.Refresh()
+		return m, nil
+	case tea.KeyEnter:
+		if d.ProvFocus {
+			d.ProvFocus = false
+			return m, nil
+		}
+		return m.confirmLoginKey(d)
+	}
+	if km.Type == tea.KeyRunes {
+		// Right-pane shortcuts (filter only on the left pane so s/r don't
+		// get eaten by search while managing keys).
+		if !d.ProvFocus {
+			s := km.String()
+			nk := loginKeysLen(d)
+			onKey := d.KeyCursor >= 0 && d.KeyCursor < nk
+			switch strings.ToLower(s) {
+			case "s", " ":
+				d.ShowKeys = !d.ShowKeys
+				m.RefreshLoginKeys(d)
+				m.Refresh()
+				return m, nil
+			case "r":
+				if onKey {
+					return m.openRenameDialog(d)
+				}
+			}
+			// other runes fall through to provider filtering below
+		}
+		d.Filter += km.String()
+		d.Reindex()
+		d.ProvCursor = 0
+		d.ProvFocus = true
+		m.RefreshLoginKeys(d)
+		d.KeyCursor = 0
+		return m, nil
+	}
+	return m, nil
+}
+
+// openRenameDialog pushes a name prompt on top of /login (login stays at
+// [1] so Enter/Esc returns to it, never to the main screen).
+func (m Model) openRenameDialog(d *Dialog) (tea.Model, tea.Cmd) {
+	nk := loginKeysLen(d)
+	if d.KeyCursor < 0 || d.KeyCursor >= nk {
+		return m, nil
+	}
+	items, _ := pirpc.ListKeyItems(m.KeyPath, d.LoginEnv)
+	pre := ""
+	if d.KeyCursor < len(items) {
+		pre = items[d.KeyCursor].Name
+	}
+	r := &Dialog{Kind: "rename", Title: "Rename key — " + d.LoginProvider,
+		Message:       "Name is display-only (pitago keystore). Empty clears it. Enter saves, Esc back to /login.",
+		Filter:        pre,
+		LoginProvider: d.LoginProvider, LoginEnv: d.LoginEnv,
+		RenameIdx: d.KeyCursor}
+	m.Dialogs = append([]*Dialog{r}, m.Dialogs...)
+	m.Refresh()
+	return m, nil
+}
+
+// confirmLoginKey runs Enter on the right pane: use a key, add one, guide
+// OAuth, or reload models. Everything stays on /login: the picker refreshes
+// in place while pi reconnects behind it.
+func (m Model) confirmLoginKey(d *Dialog) (tea.Model, tea.Cmd) {
+	nk := loginKeysLen(d)
+	if d.KeyCursor < nk {
+		prov, env := d.LoginProvider, d.LoginEnv
+		idx := d.KeyCursor
+		keys, _ := pirpc.ListKeys(m.KeyPath, env)
+		masked := ""
+		if idx >= 0 && idx < len(keys) {
+			masked = pirpc.MaskKey(keys[idx])
+		}
+		_ = pirpc.SetActive(m.KeyPath, env, idx)
+		// Selecting a key pushes it to pi (auth.json wins over env).
+		pirpc.PushActiveToPi(m.KeyPath, env)
+		m.RefreshLoginKeys(d)
+		m.AddBlock(Block{Kind: "notice", Text: "switched " + prov + " to key " + masked + " → pi — reconnecting…"})
+		m.Refresh()
+		return m, m.RespawnPi()
+	}
+	ai := d.KeyCursor - nk
+	if ai < 0 || ai >= len(d.LoginActions) {
+		return m, nil
+	}
+	if d.LoginActions[ai] == "add" { // secret on top, login stays underneath
+		prov, env := d.LoginProvider, d.LoginEnv
+		if prov == "" || env == "" {
+			return m, nil
+		}
+		s := &Dialog{Kind: "secret", Title: "API key — " + prov,
+			Message:       "Save to " + env + " (pitago keystore 0600 + pi auth.json). New key becomes active; pi reconnects, picker stays open.",
+			LoginProvider: prov, LoginEnv: env}
+		m.Dialogs = append([]*Dialog{s}, m.Dialogs...)
+		m.Refresh()
+		return m, nil
+	}
+	return m.loginAction(d, ai)
+}
+
+// loginAction runs one trailing action row by kind (see RefreshLoginKeys).
+// Everything stays on /login.
+func (m Model) loginAction(d *Dialog, ai int) (tea.Model, tea.Cmd) {
+	if ai < 0 || ai >= len(d.LoginActions) {
+		return m, nil
+	}
+	switch d.LoginActions[ai] {
+	case "add":
+		return m.openOAuthGuide(d) // unreachable (add handled above); safe fallback
+	case "guide":
+		return m.openOAuthGuide(d)
+	case "disconnect":
+		return m.disconnectOAuth(d)
+	default: // reload models — stay open, re-import pi first
+		pirpc.SyncFromPi(m.KeyPath)
+		pirpc.SyncAuthStateFromPi(m.authPath())
+		m.RefreshLoginKeys(d)
+		m.Status = "reloading models…"
+		m.Refresh()
+		return m, func() tea.Msg {
+			models, err := m.Pi.GetModels()
+			if err != nil {
+				return SettingsRefreshMsg{Err: err}
+			}
+			return SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+		}
+	}
+}
+
+// openOAuthGuide pushes the stock-pi OAuth guide on top of /login.
+func (m Model) openOAuthGuide(d *Dialog) (tea.Model, tea.Cmd) {
+	prov := d.LoginProvider
+	o := &Dialog{Kind: "loginOAuth", Title: "OAuth — " + prov,
+		Message:       "1. Open another terminal\n2. Run: pi\n3. Type: /login " + prov + " then follow the steps\n4. Come back here and reload",
+		Options:       []string{"Done — reload", "Close"},
+		LoginProvider: prov}
+	o.Reindex()
+	m.Dialogs = append([]*Dialog{o}, m.Dialogs...)
+	m.Refresh()
+	return m, nil
+}
+
+// disconnectOAuth logs a provider out of its pi subscription: drops pi's
+// OAuth entry + pitago's mirror, stays on /login, reconnects behind it.
+func (m Model) disconnectOAuth(d *Dialog) (tea.Model, tea.Cmd) {
+	prov := d.LoginProvider
+	if prov == "" || !d.LoginOAuth {
+		return m, nil
+	}
+	_ = pirpc.DeletePiAuth(prov)
+	pirpc.ForgetAuthState(m.authPath(), prov)
+	pirpc.SyncAuthStateFromPi(m.authPath())
+	m.RefreshLoginKeys(d)
+	d.KeyCursor = loginKeysLen(d) // land on the guide row
+	m.AddBlock(Block{Kind: "notice", Text: "disconnected OAuth " + prov + " (pi + pitago) — reconnecting…"})
+	m.Refresh()
+	return m, m.RespawnPi()
+}
+
+// authPath returns pitago's pi-login mirror path ("" when unconfigured).
+func (m Model) authPath() string {
+	if m.AuthPath != "" {
+		return m.AuthPath
+	}
+	return pirpc.AuthStatePath()
+}
+
+// deleteLoginKey removes the selected key (⌫ with empty filter). Both
+// active and inactive deletes stay on /login; deleting the active one
+// reconnects pi behind the picker so the credential drops immediately.
+// ⌫ on the Disconnect action logs the OAuth subscription out too.
+func (m Model) deleteLoginKey(d *Dialog) (tea.Model, tea.Cmd) {
+	nk := loginKeysLen(d)
+	if d.KeyCursor < 0 {
+		return m, nil
+	}
+	if d.KeyCursor >= nk {
+		if ai := d.KeyCursor - nk; ai >= 0 && ai < len(d.LoginActions) && d.LoginActions[ai] == "disconnect" {
+			return m.disconnectOAuth(d)
+		}
+		return m, nil
+	}
+	prov, env := d.LoginProvider, d.LoginEnv
+	idx := d.KeyCursor
+	isActive := idx == d.KeyActive
+	if !isActive {
+		_ = pirpc.DeleteKeyAt(m.KeyPath, env, idx)
+		m.RefreshLoginKeys(d)
+		if d.KeyCursor >= len(d.Options) {
+			d.KeyCursor = 0
+		}
+		m.Refresh()
+		return m, nil
+	}
+	keysBefore, _ := pirpc.ListKeys(m.KeyPath, env)
+	masked := ""
+	if idx >= 0 && idx < len(keysBefore) {
+		masked = pirpc.MaskKey(keysBefore[idx])
+	}
+	_ = pirpc.DeleteKeyAt(m.KeyPath, env, idx)
+	// Keep pi in sync: last key removes pi's entry, otherwise pi follows
+	// the new active key.
+	pirpc.PushActiveToPi(m.KeyPath, env)
+	m.RefreshLoginKeys(d)
+	if d.KeyCursor >= len(d.Options) {
+		d.KeyCursor = 0
+	}
+	keys, _ := pirpc.ListKeys(m.KeyPath, env)
+	if len(keys) == 0 {
+		m.AddBlock(Block{Kind: "notice", Text: "deleted key " + prov + " " + masked + " (last key) → pi — reconnecting…"})
+	} else {
+		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("deleted key %s %s — switched to %s (%d left) → pi, reconnecting…",
+			prov, masked, pirpc.MaskKey(keys[0]), len(keys))})
+	}
+	m.Refresh()
+	return m, m.RespawnPi()
 }
 
 // pollCmds periodically reloads pi commands (auto-detects new ones).

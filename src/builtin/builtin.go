@@ -3,7 +3,7 @@ package builtin
 import (
 	"encoding/json"
 	"fmt"
-	"os"
+	"sort"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -13,23 +13,92 @@ import (
 )
 
 func openLogin(m *app.Model, arg string) tea.Cmd {
-	for _, p := range pirpc.ProviderEnvs {
-		if strings.EqualFold(p.Provider, arg) || strings.EqualFold(p.Label, arg) {
-			openLoginMethod(m, p.Provider, p.Env)
-			return nil
+	// Import pi → pitago first so logins added via stock `pi` (API keys
+	// and OAuth) appear here (union, never overwrite). Opening /login is
+	// the re-sync point; pitago also mirrors pi logins to pi_auth.json.
+	pirpc.SyncFromPi(m.KeyPath)
+	authPath := m.AuthPath
+	if authPath == "" {
+		authPath = pirpc.AuthStatePath()
+	}
+	pirpc.SyncAuthStateFromPi(authPath)
+	// Two-pane picker: left = providers (API-key + OAuth-only + anything
+	// pi knows), right = saved keys + auth actions.
+	seen := map[string]bool{}
+	var provs []string
+	for _, p := range pirpc.AllLoginProviders() {
+		if !seen[p] {
+			seen[p] = true
+			provs = append(provs, p)
 		}
 	}
-	opts := make([]string, 0, len(pirpc.ProviderEnvs))
-	descs := make([]string, 0, len(pirpc.ProviderEnvs))
-	for _, p := range pirpc.ProviderEnvs {
-		opts = append(opts, p.Provider)
-		descs = append(descs, p.Label+" · "+p.Env)
+	for _, e := range pirpc.ListPiAuth() {
+		if !seen[e.Provider] {
+			seen[e.Provider] = true
+			provs = append(provs, e.Provider)
+		}
 	}
-	d := &app.Dialog{Kind: "login", Title: "Provider login", Options: opts, Descs: descs}
-	if arg != "" {
-		d.Filter = arg
+	store := pirpc.LoadStore(m.KeyPath)
+	oauth := map[string]bool{}
+	for _, e := range pirpc.ListPiAuth() {
+		if e.Type == "oauth" {
+			oauth[e.Provider] = true
+		}
+	}
+	conn := map[string]bool{}
+	counts := map[string]int{}
+	for _, prov := range provs {
+		if e, ok := store[pirpc.LookupEnv(prov)]; ok && e != nil && len(e.Keys) > 0 {
+			conn[prov] = true
+			counts[prov] = len(e.Keys)
+		}
+		if oauth[prov] {
+			conn[prov] = true
+		}
+	}
+	// Connected providers float above the rest (model-picker rule).
+	sorted := append([]string(nil), provs...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return conn[sorted[i]] && !conn[sorted[j]]
+	})
+	d := &app.Dialog{
+		Kind: "login", Title: "Provider login",
+		Message: "Left: providers · right: keys + auth. Enter uses/adds, ⌫ deletes, s shows/hides, r renames, ^P models. Stays open; pi syncs behind.",
+		Provs:   sorted, ProvConn: conn, LoginCounts: counts, OAuthConn: oauth,
+		ProvFocus: true,
 	}
 	d.Reindex()
+	// Exact /login <provider> focuses that provider; otherwise filter.
+	want := strings.TrimSpace(arg)
+	if want != "" {
+		for i, idx := range d.PIdx {
+			if strings.EqualFold(sorted[idx], want) {
+				d.ProvCursor = i
+				break
+			}
+			// label/env match (e.g. /login openrouter, /login codex)
+			if lbl := pirpc.ProviderLabel(sorted[idx]); strings.EqualFold(lbl, want) || strings.EqualFold(pirpc.LookupEnv(sorted[idx]), want) {
+				d.ProvCursor = i
+				break
+			}
+		}
+		// no exact hit → filter text
+		if d.SelLoginProv() == "" || !strings.EqualFold(d.SelLoginProv(), want) {
+			matched := false
+			for _, idx := range d.PIdx {
+				if strings.EqualFold(sorted[idx], want) {
+					matched = true
+					break
+				}
+			}
+			if !matched {
+				d.Filter = want
+				d.Reindex()
+			}
+		}
+	}
+	m.RefreshLoginKeys(d)
+	d.KeyCursor = 0
 	m.Dialogs = append(m.Dialogs, d)
 	m.Refresh()
 	return nil
@@ -50,20 +119,64 @@ func openLoginMethod(m *app.Model, provider, env string) {
 	m.Refresh()
 }
 
-// openLogout opens the provider picker to delete a saved key.
+// openLogout opens the provider picker to delete the ACTIVE saved key or
+// disconnect an OAuth subscription. Providers with several keys keep the
+// rest (use /login to switch).
 
 func openLogout(m *app.Model, arg string) tea.Cmd {
 	keys := pirpc.LoadKeys(m.KeyPath)
+	oauth := map[string]bool{}
+	for _, e := range pirpc.ListPiAuth() {
+		if e.Type == "oauth" {
+			oauth[e.Provider] = true
+		}
+	}
 	var opts, descs []string
-	for _, p := range pirpc.ProviderEnvs {
-		if _, ok := keys[p.Env]; !ok {
+	for _, p := range pirpc.AllLoginProviders() {
+		env := pirpc.LookupEnv(p)
+		_, hasKey := keys[env]
+		if env == "" {
+			hasKey = false
+		}
+		if !hasKey && !oauth[p] {
 			continue
 		}
-		opts = append(opts, p.Provider)
-		descs = append(descs, p.Label+" · "+p.Env)
+		opts = append(opts, p)
+		desc := pirpc.ProviderLabel(p)
+		if env != "" {
+			desc += " · " + env
+		}
+		if ks, active := pirpc.ListKeys(m.KeyPath, env); env != "" && len(ks) > 0 {
+			desc += fmt.Sprintf(" · %d key", len(ks))
+			if len(ks) > 1 {
+				desc += "s"
+			}
+			if active >= 0 && active < len(ks) {
+				desc += " · active " + pirpc.MaskKey(ks[active])
+			}
+		}
+		if oauth[p] {
+			desc += " · OAuth"
+		}
+		descs = append(descs, desc)
+	}
+	// providers pi knows but pitago doesn't (custom oauth) still logout-able
+	for _, e := range pirpc.ListPiAuth() {
+		found := false
+		for _, o := range opts {
+			if o == e.Provider {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		opts = append(opts, e.Provider)
+		descs = append(descs, e.Provider+" · "+e.Type+" (pi only)")
 	}
 	if len(opts) == 0 {
-		m.AddBlock(app.Block{Kind: "notice", Text: "keystore is empty — no keys saved"})
+		m.AddBlock(app.Block{Kind: "notice", Text: "nothing to remove — no keys or pi logins"})
 		m.Refresh()
 		return nil
 	}
@@ -72,7 +185,7 @@ func openLogout(m *app.Model, arg string) tea.Cmd {
 			return doLogout(m, o, descs[i])
 		}
 	}
-	d := &app.Dialog{Kind: "logout", Title: "Remove API key", Message: "Pick a provider to delete its key from the keystore.", Options: opts, Descs: descs}
+	d := &app.Dialog{Kind: "logout", Title: "Remove login", Message: "Pick a provider: deletes its ACTIVE key, or disconnects OAuth (pi too).", Options: opts, Descs: descs}
 	if arg != "" {
 		d.Filter = arg
 	}
@@ -82,24 +195,63 @@ func openLogout(m *app.Model, arg string) tea.Cmd {
 	return nil
 }
 
-// doLogout deletes the key then reconnects pi to drop the credential.
+// doLogout deletes the ACTIVE key then reconnects pi. With several keys
+// left it switches to the next one and stays logged in. Providers with no
+// saved keys but a pi OAuth entry get disconnected instead.
 
 func doLogout(m *app.Model, provider, desc string) tea.Cmd {
 	env := pirpc.LookupEnv(provider)
-	if env == "" {
-		env = desc // fallback
+	authPath := m.AuthPath
+	if authPath == "" {
+		authPath = pirpc.AuthStatePath()
 	}
-	if err := pirpc.DeleteKey(m.KeyPath, env); err != nil {
+	if env == "" {
+		return doOAuthLogout(m, provider, authPath)
+	}
+	keysBefore, active := pirpc.ListKeys(m.KeyPath, env)
+	if active < 0 {
+		// No saved keys: maybe an OAuth login in pi — disconnect it.
+		if _, _, ok := pirpc.PiOAuth(provider); ok {
+			return doOAuthLogout(m, provider, authPath)
+		}
+		m.AddBlock(app.Block{Kind: "notice", Text: "no saved keys for " + provider})
+		m.Refresh()
+		return nil
+	}
+	masked := ""
+	if active >= 0 && active < len(keysBefore) {
+		masked = pirpc.MaskKey(keysBefore[active])
+	}
+	if err := pirpc.DeleteKeyAt(m.KeyPath, env, active); err != nil {
 		m.AddBlock(app.Block{Kind: "notice", Text: "failed to delete key: " + err.Error(), Err: true})
 		m.Refresh()
 		return nil
 	}
-	// Drop it from our env too: the respawned pi inherits env, and would
-	// otherwise stay logged in until TUI restart.
-	if env != "" {
-		_ = os.Unsetenv(env)
+	// Keep pi in sync (auth.json wins over env): last key removes pi's
+	// entry, otherwise pi follows the new active key.
+	pirpc.PushActiveToPi(m.KeyPath, env)
+	keys, _ := pirpc.ListKeys(m.KeyPath, env)
+	if len(keys) == 0 {
+		m.AddBlock(app.Block{Kind: "notice", Text: "deleted key " + provider + " " + masked + " (last key) → pi — reconnecting…"})
+	} else {
+		m.AddBlock(app.Block{Kind: "notice", Text: fmt.Sprintf("deleted active key %s %s — switched to %s (%d left) → pi, reconnecting…",
+			provider, masked, pirpc.MaskKey(keys[0]), len(keys))})
 	}
-	m.AddBlock(app.Block{Kind: "notice", Text: "deleted key " + provider + " — reconnecting pi…"})
+	return m.RespawnPi()
+}
+
+// doOAuthLogout disconnects a pi subscription login: drops pi's OAuth
+// entry + pitago's mirror, then reconnects.
+func doOAuthLogout(m *app.Model, provider, authPath string) tea.Cmd {
+	if err := pirpc.DeletePiAuth(provider); err != nil {
+		m.AddBlock(app.Block{Kind: "notice", Text: "failed to disconnect " + provider + ": " + err.Error(), Err: true})
+		m.Refresh()
+		return nil
+	}
+	pirpc.ForgetAuthState(authPath, provider)
+	pirpc.SyncAuthStateFromPi(authPath)
+	m.AddBlock(app.Block{Kind: "notice", Text: "disconnected OAuth " + provider + " (pi + pitago) — reconnecting…"})
+	m.Refresh()
 	return m.RespawnPi()
 }
 
