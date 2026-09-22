@@ -46,7 +46,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// popups, or the textarea can insert the noise as text; wheel reports
 	// still scroll the chat.
 	if km, ok := msg.(tea.KeyMsg); ok && !km.Paste && km.Type == tea.KeyRunes {
+		// A split ESC[ arrives as a lone Alt+[ — mouse-report shrapnel,
+		// not text (no binding uses it; the textarea would insert the "["
+		// and picker filters would insert "alt+[").
+		if len(km.Runes) == 1 && km.Runes[0] == '[' && km.Alt {
+			m.mouseLeakAt = time.Now()
+			return m, nil
+		}
 		if events, cleaned, isLeak := cleanMouseLeak(km.Runes); isLeak {
+			m.mouseLeakAt = time.Now()
 			if len(cleaned) == 0 {
 				if len(m.Dialogs) > 0 {
 					return m, nil // dialogs swallow mouse, like MouseMsg
@@ -56,11 +64,28 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			km.Runes = cleaned
 			km.Alt = false // the Alt bit is the eaten ESC, not the user
 			msg = km
+		} else if m.mouseBurst() {
+			// Burst-armed: a lone continuation ("65;99;18M", ";50;31M")
+			// whose head died in the prior read. Swallow it so it never
+			// lands in the input.
+			if events, frag := cleanMouseFrag(string(km.Runes)); frag {
+				m.mouseLeakAt = time.Now()
+				if len(m.Dialogs) > 0 {
+					return m, nil
+				}
+				return m, m.scrollLeak(events)
+			}
 		}
 	}
 	// dialog captures all keys while open
 	if len(m.Dialogs) > 0 {
 		if km, ok := msg.(tea.KeyMsg); ok {
+			// Alt+M toggles mouse even with a dialog open (filter boxes
+			// would otherwise swallow it as the letter "m").
+			if km.Alt && km.Type == tea.KeyRunes && len(km.Runes) == 1 &&
+				(km.Runes[0] == 'm' || km.Runes[0] == 'M') {
+				return m, m.ToggleMouse("")
+			}
 			return m.updateDialog(km)
 		}
 		// Async results stay swallowed while a dialog is open — except
@@ -97,7 +122,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.Height = vpH
 			m.sideVp.Width = sideInnerW
 			m.syncSideH() // reserves the quit-arm footer line while armed
-			if m.cmdOpen || m.atOpen {
+			if m.cmdOpen || m.atOpen || m.isInlineUI() {
 				// Resizing with a popup open must keep the winH budget:
 				// shrink the chat like a keystroke would (and clamp the
 				// popup scroll offset to its new window).
@@ -141,6 +166,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.tools = make(map[string]int)
 		m.restore(msg.msgs)
 		m.Status = "ready"
+		m.planOn = false // fresh connect: plan latch is live-only
 		m.RefreshFollow()
 		return m, nil
 
@@ -256,6 +282,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.thinking = false
 		m.pet = petState{}
 		m.Status = "ready"
+		m.planOn = false // new session: plan latch is live-only
 		m.Todos = nil
 		m.imgAtts = nil // pending chips belong to the old session
 		m.trayFocus = false
@@ -552,6 +579,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// else: fall through so viewport/textarea get wheel-scroll etc.
 
 	case tea.KeyMsg:
+		// Alt+M: toggle mouse capture (mnemonic; Ctrl+M == Enter in terminals).
+		if msg.Alt && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 &&
+			(msg.Runes[0] == 'm' || msg.Runes[0] == 'M') {
+			return m, m.ToggleMouse("")
+		}
 		// Alt+1..5: jump straight to a recent model (best-effort per terminal).
 		if msg.Alt && len(msg.Runes) == 1 {
 			if n := int(msg.Runes[0] - '1'); n >= 0 && n < len(m.recentModels) && n < maxRecent {
@@ -1088,6 +1120,7 @@ func (m Model) handleUIRequest(raw []byte) Model {
 		}
 		d.Reindex()
 		m.Dialogs = append(m.Dialogs, d)
+		m.applyPopupH()
 	case req.Method == "notify":
 		m.AddBlock(Block{Kind: "notice", Text: req.Message, Err: req.NotifyType == "error"})
 	case req.Method == "setStatus":
@@ -1174,6 +1207,11 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
+		if d.Kind == "shortcuts" { // help page: Enter closes like Esc
+			m.Dialogs = m.Dialogs[1:]
+			m.Refresh()
+			return m, nil
+		}
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeyRunes {
@@ -1356,8 +1394,23 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 // answerDialog replies to an extension permission dialog
 // (response shape built by src/extension).
 func (m *Model) answerDialog(d *Dialog, choice int) {
+	// ponytail: plan latch is a text heuristic (no plan flag in get_state);
+	// Start choice latches on, Stop/Exit/Leave/End/Disable latches off.
+	if d.Kind == "ui" && choice >= 0 && choice < len(d.Options) {
+		sel := strings.ToLower(d.Options[choice])
+		if strings.Contains(sel, "plan") {
+			switch {
+			case strings.Contains(sel, "start") || strings.Contains(sel, "enable") || strings.Contains(sel, "enter"):
+				m.planOn = true
+			case strings.Contains(sel, "stop") || strings.Contains(sel, "exit") || strings.Contains(sel, "leave") ||
+				strings.Contains(sel, "end") || strings.Contains(sel, "disable") || strings.Contains(sel, "off"):
+				m.planOn = false
+			}
+		}
+	}
 	m.Dialogs = m.Dialogs[1:]
 	_ = m.Pi.Fire(extension.Response(d.ID, d.Method, choice, d.Options))
+	m.applyPopupH()
 	m.Refresh()
 }
 

@@ -696,11 +696,20 @@ func (m Model) renderInput() string {
 	}
 	border, title := cInput, ""
 	left := "○ ready · ↵ send · / commands · @ files · ^P model · ^R recents · ^C quit"
+	plan := m.isPlanMode()
 	if m.thinking {
-		border = cGreen
-		title = spinFrame(m.pet.tick) + " " + m.inputStatus()
+		if plan {
+			border = cPlan
+			title = "PLAN · " + spinFrame(m.pet.tick) + " " + m.inputStatus()
+		} else {
+			border = cGreen
+			title = spinFrame(m.pet.tick) + " " + m.inputStatus()
+		}
 		left = "↵ steer · Esc cancel"
-	} else if len(m.Dialogs) > 0 {
+	} else if plan {
+		border = cPlan
+		title = "PLAN"
+	} else if len(m.Dialogs) > 0 && !m.isInlineUI() {
 		border = cInputDim
 	}
 	right := m.statsLine()
@@ -808,6 +817,9 @@ func (m Model) renderDialog() string {
 	}
 	if d.Kind == "login" && len(d.Provs) > 0 {
 		return m.renderLoginDialog(d)
+	}
+	if d.Kind == "shortcuts" {
+		return m.renderShortcutsDialog(d)
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
@@ -1374,17 +1386,24 @@ func (m Model) View() string {
 	if !m.ready {
 		return "starting…"
 	}
-	if len(m.Dialogs) > 0 {
+	if len(m.Dialogs) > 0 && !m.isInlineUI() {
 		return m.renderDialog()
 	}
+	inlineUI := m.isInlineUI()
 	body := lipgloss.JoinVertical(lipgloss.Left, m.vp.View(), m.renderInput())
-	if m.cmdOpen || m.atOpen {
+	if m.cmdOpen || m.atOpen || inlineUI {
 		parts := []string{m.vp.View()}
-		if m.cmdOpen {
-			parts = append(parts, m.renderCmdPopup())
-		}
-		if m.atOpen {
-			parts = append(parts, m.renderAtPopup())
+		if inlineUI {
+			// extension menu (plan-mode) floats above chat like /commands;
+			// cmd/@ popups stay hidden underneath until it closes.
+			parts = append(parts, m.renderUIDialogPopup())
+		} else {
+			if m.cmdOpen {
+				parts = append(parts, m.renderCmdPopup())
+			}
+			if m.atOpen {
+				parts = append(parts, m.renderAtPopup())
+			}
 		}
 		parts = append(parts, m.renderInput())
 		body = lipgloss.JoinVertical(lipgloss.Left, parts...)

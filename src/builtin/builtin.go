@@ -1100,7 +1100,7 @@ func All() []app.Builtin {
 			},
 		},
 		{
-			Name: "mouse", Desc: "Toggle mouse (click sidebar, wheel scroll) — off for native text selection", Usage: "/mouse [on|off]",
+			Name: "mouse", Desc: "Toggle mouse — Alt+M · off for native text selection", Usage: "/mouse [on|off]",
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.ToggleMouse(arg)
@@ -1124,6 +1124,13 @@ func All() []app.Builtin {
 				m.Status = "checking for updates…"
 				m.Refresh()
 				return m.CheckUpdatesCmd(false)
+			},
+		},
+		{
+			Name: "shortcuts", Desc: "Show keyboard shortcuts (/? or Ctrl+Shift+/)", Usage: "/shortcuts",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				return m.OpenShortcuts()
 			},
 		},
 	}

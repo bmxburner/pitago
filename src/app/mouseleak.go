@@ -3,6 +3,7 @@ package app
 import (
 	"regexp"
 	"strconv"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -14,9 +15,27 @@ var (
 	// dozens of reports into one input read, bubbletea can split the ESC
 	// off as an Alt modifier and the remainder arrives as plain KeyRunes —
 	// which the textarea would otherwise insert as literal garbage.
-	sgrReport = regexp.MustCompile(`\[<(\d+);(\d+);(\d+)([Mm])`)
-	// A report cut off mid-burst ("[<", "[<65", "[<65;50", …).
+	//
+	// The "[" itself often arrives separately (a lone Alt+[ message, or
+	// eaten as the tail of the prior read), so the bracket is optional:
+	// "<Cb;Cx;CyM" with coordinates is still a report, never typed text.
+	sgrReport = regexp.MustCompile(`\[?<(\d+);(\d+);(\d+)([Mm])`)
+	// A bare-coordinate report with the "[<" head lost in a prior split
+	// read ("65;99;18M"). Burst context only (see below) — never matched
+	// against ordinary typing on its own.
+	sgrBare = regexp.MustCompile(`(\d{1,3});(\d{1,4});(\d{1,4})[Mm]`)
+	// A report cut off mid-burst ("[<", "[<65", "[<65;50", …). Matched
+	// without burst context too, but only with the bracket: "<65" alone
+	// could be real typing ("x<65").
 	sgrTail = regexp.MustCompile(`\[<\d{0,3};?\d{0,4};?\d{0,4}$`)
+	// Same, bracket optional ("<65", "<65;50", …). Burst context only.
+	sgrTailLoose = regexp.MustCompile(`\[?<\d{0,3};?\d{0,4};?\d{0,4}$`)
+	// Pure fragment soup (digits/semicolons/split heads/trailing M) for the
+	// burst-armed path below.
+	fragSoup = regexp.MustCompile(`^[\d;\[<>mM]+$`)
+	// A split head ("<65", "[<65"): bracket optional, 2-3 digits (a lone
+	// "<3" is a heart, not shrapnel — single digits always pass).
+	fragHead = regexp.MustCompile(`^\[?<\d{2,3}$`)
 	// Head of a (possibly partial) report: Cb plus optional Cx/Cy.
 	sgrHead = regexp.MustCompile(`^\[<(\d+)(?:;(\d*))?(?:;(\d*))?`)
 )
@@ -45,15 +64,63 @@ func cleanMouseLeak(runes []rune) (events []tea.MouseMsg, cleaned []rune, ok boo
 		}
 	}
 	s = sgrReport.ReplaceAllString(s, "")
+	// Burst context (a full report was just stripped): a head-less residue
+	// ("65;99;18M" — its "[<" died as a tail in the prior read) is noise
+	// too, as is a trailing split fragment ("[<65", "<65").
+	for _, mt := range sgrBare.FindAllStringSubmatch(s, -1) {
+		if ev, good := leakEventParts(mt[1], mt[2], mt[3]); good {
+			events = append(events, ev)
+		}
+	}
+	s = sgrBare.ReplaceAllString(s, "")
 	// A burst split across reads can leave a tail fragment behind; in burst
-	// context even a bare "[<" is residue, not typing.
-	if loc := sgrTail.FindStringIndex(s); loc != nil {
+	// context even a bracket-less "<65" is residue, not typing.
+	if loc := sgrTailLoose.FindStringIndex(s); loc != nil {
 		if ev, good := leakEvent(s[loc[0]:]); good {
 			events = append(events, ev)
 		}
 		s = s[:loc[0]]
 	}
 	return events, []rune(s), true
+}
+
+// cleanMouseFrag swallows a lone report fragment that arrives as its own
+// message right after a burst ("65;99;18M", ";50;31M" — the head was
+// swallowed as a tail in the prior read). Call only while burst-armed (see
+// mouseBurst): the remainder must be pure fragment soup containing ";" or a
+// split head, so ordinary typing never matches.
+func cleanMouseFrag(s string) (events []tea.MouseMsg, ok bool) {
+	for _, mt := range sgrReport.FindAllStringSubmatch(s, -1) {
+		if ev, good := leakEventParts(mt[1], mt[2], mt[3]); good {
+			events = append(events, ev)
+		}
+	}
+	rest := sgrReport.ReplaceAllString(s, "")
+	for _, mt := range sgrBare.FindAllStringSubmatch(rest, -1) {
+		if ev, good := leakEventParts(mt[1], mt[2], mt[3]); good {
+			events = append(events, ev)
+		}
+	}
+	rest = sgrBare.ReplaceAllString(rest, "")
+	if rest == "" {
+		return events, true
+	}
+	// Pure fragment soup with ";" (split coordinates) qualifies, unless it
+	// is too short to tell from typing ("50;" passes — it needs an M
+	// terminator or 3+ digits to count as residue). A split head ("<65")
+	// qualifies on its own shape.
+	digits := 0
+	for i := 0; i < len(rest); i++ {
+		if rest[i] >= '0' && rest[i] <= '9' {
+			digits++
+		}
+	}
+	if fragSoup.MatchString(rest) &&
+		((strings.Contains(rest, ";") && (strings.ContainsAny(rest, "Mm") || digits >= 3)) ||
+			fragHead.MatchString(rest)) {
+		return events, true
+	}
+	return nil, false
 }
 
 // leakEvent decodes one (possibly partial) "[<Cb[;Cx[;Cy]]" fragment.

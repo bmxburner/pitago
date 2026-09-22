@@ -47,7 +47,7 @@ func (m *Model) refreshCmds() {
 // must stay <= winH. Tall screens keep palette.Win; the box never grows
 // past it (see components/palette).
 func (m Model) cmdWin() int {
-	boxMax := m.winH - 1 - 3 - (6 + m.chipH()) - m.atPopupH()
+	boxMax := m.winH - 1 - 3 - (6 + m.chipH()) - m.atPopupH() - m.uiPopupH()
 	win := boxMax - 2 - 1 - 2 // border + footer + both scroll hints
 	if win > palette.Win {
 		win = palette.Win
@@ -94,7 +94,7 @@ func (m *Model) applyPopupH() {
 	if !m.ready {
 		return
 	}
-	h := m.baseVpH - m.popupH() - m.atPopupH() - m.chipH()
+	h := m.baseVpH - m.popupH() - m.atPopupH() - m.uiPopupH() - m.chipH()
 	if h < 3 {
 		h = 3
 	}
@@ -245,4 +245,158 @@ func (m Model) renderCmdPopup() string {
 	return cmdPopStyle.Width(boxW).Render(strings.TrimRight(b.String(), "\n"))
 }
 
-// render ----------------------------------------------------------------------
+// isInlineUI reports an extension select/confirm dialog (e.g. plan-mode
+// menu) that renders as a small popup above the input — like /commands —
+// instead of the fullscreen centered modal.
+func (m Model) isInlineUI() bool {
+	return len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "ui"
+}
+
+// containsPlan matches plan-mode text (menu title/options, setStatus).
+func containsPlan(s string) bool {
+	return strings.Contains(strings.ToLower(s), "plan")
+}
+
+// isPlanMode reports whether the plan indicator should show (live only).
+// The extension exposes no plan flag in get_state, so this is a heuristic:
+// latched Start choice, open plan menu, or plan in extension status.
+func (m Model) isPlanMode() bool {
+	if m.planOn {
+		return true
+	}
+	if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "ui" {
+		d := m.Dialogs[0]
+		if containsPlan(d.Title) || containsPlan(d.Message) {
+			return true
+		}
+		for _, o := range d.Options {
+			if containsPlan(o) {
+				return true
+			}
+		}
+		return false
+	}
+	return containsPlan(m.extStat)
+}
+
+// uiPopupH reserves viewport rows for the inline extension popup so the
+// frame stays exactly winH (header + chat + popup + input).
+func (m Model) uiPopupH() int {
+	if !m.isInlineUI() {
+		return 0
+	}
+	return lipgloss.Height(m.renderUIDialogPopup())
+}
+
+// uiWin caps visible option rows so title + message + options + footer +
+// input still fit winH. Small menus (plan-mode: 4 rows) show fully.
+func (m Model) uiWin(titleLines, msgLines int) int {
+	// header(1) + chat min(3) + input(6+chips) + title + msg + blank + footer + border(2)
+	reserved := 1 + 3 + (6 + m.chipH()) + titleLines + msgLines + 1 + 1 + 2
+	win := m.winH - reserved - 2 // both scroll hints
+	if win > 10 {
+		win = 10
+	}
+	if win < 1 {
+		win = 1
+	}
+	return win
+}
+
+func (m Model) renderUIDialogPopup() string {
+	d := m.Dialogs[0]
+	mainW := m.mainW()
+	title := d.Title
+	if title == "" {
+		title = "Select"
+	}
+	var msgs []string
+	if strings.TrimSpace(d.Message) != "" {
+		msgs = strings.Split(strings.TrimSpace(d.Message), "\n")
+	}
+	foot := "↑↓ select · Enter confirm · Esc cancel"
+	total := len(d.FIdx)
+	win := m.uiWin(1, len(msgs))
+	start := 0
+	if total > win {
+		start = d.Cursor - 2
+		if start < 0 {
+			start = 0
+		}
+		if start+win > total {
+			start = total - win
+		}
+	}
+	end := start + win
+	if end > total {
+		end = total
+	}
+	// Hug content like /commands: widest plain line + padding, capped.
+	contentW := lipgloss.Width(title)
+	for _, ln := range msgs {
+		if w := lipgloss.Width(Short(strings.TrimSpace(ln), mainW)); w > contentW {
+			contentW = w
+		}
+	}
+	if w := lipgloss.Width(foot); w > contentW {
+		contentW = w
+	}
+	if start > 0 {
+		if w := lipgloss.Width(fmt.Sprintf("…(+%d above)", start)); w > contentW {
+			contentW = w
+		}
+	}
+	if end < total {
+		if w := lipgloss.Width(fmt.Sprintf("…(+%d below)", total-end)); w > contentW {
+			contentW = w
+		}
+	}
+	for fi := start; fi < end; fi++ {
+		ri := d.FIdx[fi]
+		row := ""
+		if ri >= 0 && ri < len(d.Options) {
+			row = d.Options[ri]
+		}
+		if w := 2 + lipgloss.Width(Short(row, mainW)); w > contentW {
+			contentW = w
+		}
+	}
+	boxW := contentW + 2
+	if boxW > mainW-2 {
+		boxW = mainW - 2
+	}
+	textW := boxW - 2 - 2
+	if textW < 1 {
+		textW = 1
+	}
+	var b strings.Builder
+	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(Short(title, textW)) + "\n")
+	for _, ln := range msgs {
+		b.WriteString(statusBarStyle.Render(Short(strings.TrimSpace(ln), textW)) + "\n")
+	}
+	b.WriteString("\n")
+	if start > 0 {
+		b.WriteString("  " + toolStyle.Render(fmt.Sprintf("…(+%d above)", start)) + "\n")
+	}
+	for fi := start; fi < end; fi++ {
+		ri := d.FIdx[fi]
+		row := ""
+		if ri >= 0 && ri < len(d.Options) {
+			row = d.Options[ri]
+		}
+		row = Short(row, textW)
+		if fi == d.Cursor {
+			b.WriteString("▸ " + rowHiStyle.Render(row) + "\n")
+		} else {
+			b.WriteString("  " + statusBarStyle.Render(row) + "\n")
+		}
+	}
+	if end < total {
+		b.WriteString("  " + toolStyle.Render(fmt.Sprintf("…(+%d below)", total-end)) + "\n")
+	}
+	if total == 0 {
+		b.WriteString("  " + toolStyle.Render("— no match —") + "\n")
+	}
+	b.WriteString(toolStyle.Render(foot))
+	return cmdPopStyle.Width(boxW).Render(strings.TrimRight(b.String(), "\n"))
+}

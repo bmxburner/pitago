@@ -95,6 +95,7 @@ type Model struct {
 	thinking     bool
 	Status       string
 	extStat      string
+	planOn       bool // plan-mode latch, live only: set on Start choice, cleared on /new (heuristic, extension has no plan flag in get_state)
 	ready        bool
 	winW         int
 	winH         int
@@ -163,10 +164,21 @@ type Model struct {
 	expandTools  bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
 	quitArm      time.Time // first Ctrl+C timestamp (second press within window quits)
 	quitGen      int       // arm generation (stale disarm ticks ignored)
+	mouseLeakAt  time.Time // last SGR mouse-report burst (split fragments within window are residue)
 }
 
 // quitArmWindow is the double-press window for Ctrl+C quit.
 const quitArmWindow = 3 * time.Second
+
+// mouseFragWindow is how long after an SGR mouse-report burst a lone
+// coordinate fragment ("65;99;18M") still counts as split-read residue.
+const mouseFragWindow = 500 * time.Millisecond
+
+// mouseBurst reports a wheel/click burst within the fragment window: split
+// reads still arriving get scrubbed as residue, not typed as text.
+func (m Model) mouseBurst() bool {
+	return !m.mouseLeakAt.IsZero() && time.Since(m.mouseLeakAt) < mouseFragWindow
+}
 
 type connectedMsg struct {
 	state   pirpc.State

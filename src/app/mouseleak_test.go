@@ -72,6 +72,88 @@ func TestMouseLeakNormalTyping(t *testing.T) {
 	}
 }
 
+// Split-read shrapnel: the "[" arrives as a lone Alt+[ and the remainder
+// "<Cb;Cx;CyM" without its bracket. Both must be swallowed, never typed.
+func TestMouseLeakSplitBracket(t *testing.T) {
+	m := New(nil, t.TempDir())
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = tm.(Model)
+
+	// Lone Alt+[ (split ESC[) is dropped, not inserted.
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("["), Alt: true})
+	m = tm.(Model)
+	if got := m.ta.Value(); got != "" {
+		t.Fatalf("orphan Alt+[ leaked into input: %q", got)
+	}
+
+	// Bracket-less remainder is a full report: stripped + scrolls.
+	for i := 0; i < 30; i++ {
+		m.AddBlock(Block{Kind: "user", Text: "line " + strings.Repeat("x", 40)})
+	}
+	m.RefreshFollow()
+	top := m.vp.YOffset
+	if top <= 0 {
+		t.Fatal("need tall content for the scroll check")
+	}
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<64;50;31M")})
+	m = tm.(Model)
+	if got := m.ta.Value(); got != "" {
+		t.Fatalf("bracket-less report leaked into input: %q", got)
+	}
+	if m.vp.YOffset >= top {
+		t.Fatal("bracket-less wheel report should still scroll the chat")
+	}
+
+	// The exact screenshot shape (far-right column, over the sidebar):
+	// still swallowed, never typed.
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("<66;99;18M")})
+	m = tm.(Model)
+	if got := m.ta.Value(); got != "" {
+		t.Fatalf("screenshot-shaped report leaked into input: %q", got)
+	}
+
+	// Head-less residue glued to a full report ("65;99;18M[<64;99;18M").
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("65;99;18M[<64;99;18M")})
+	m = tm.(Model)
+	if got := m.ta.Value(); got != "" {
+		t.Fatalf("bare-coordinate residue leaked into input: %q", got)
+	}
+
+	// A lone continuation right after a burst (burst-armed path).
+	tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(";50;31M")})
+	m = tm.(Model)
+	if got := m.ta.Value(); got != "" {
+		t.Fatalf("burst continuation leaked into input: %q", got)
+	}
+}
+
+// cleanMouseFrag only fires on fragment soup, never on real typing.
+func TestCleanMouseFrag(t *testing.T) {
+	for _, in := range []string{"65;99;18M", ";50;31M", "<65;99;18M", "65;99", ";31M", "<65"} {
+		if _, ok := cleanMouseFrag(in); !ok {
+			t.Fatalf("frag %q not swallowed", in)
+		}
+	}
+	for _, in := range []string{"hello", "hi there", "x<65", "[<", "[", "<3", "<6", "50;", ";31", "call 65"} {
+		if _, ok := cleanMouseFrag(in); ok {
+			t.Fatalf("typing %q wrongly swallowed", in)
+		}
+	}
+}
+
+// Bracket-less typing that must keep working: hearts, comparisons, brackets.
+func TestMouseLeakBracketlessTyping(t *testing.T) {
+	for _, in := range []string{"<3", "x<65", "[", "[<", "a[b", "50;"} {
+		m := New(nil, t.TempDir())
+		tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+		m = tm.(Model)
+		tm, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(in)})
+		m = tm.(Model)
+		if got := m.ta.Value(); got != in {
+			t.Fatalf("input %q became %q", in, got)
+		}
+	}
+}
 // Cb bit 64 = wheel, low bits = up/down/left/right (bubbletea parity).
 func TestCleanMouseLeakDecode(t *testing.T) {
 	evs, _, ok := cleanMouseLeak([]rune("[<64;50;31M[<65;50;31M[<66;50;31M[<67;50;31M"))
