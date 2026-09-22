@@ -1,9 +1,11 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"pitago/src/pirpc"
 )
@@ -33,8 +35,8 @@ func TestOpenPconfigTwoPane(t *testing.T) {
 		t.Fatalf("expected one pconfig dialog, got %+v", m.Dialogs)
 	}
 	d := m.Dialogs[0]
-	if len(d.Provs) != 9 || len(d.PsecIDs) != 9 {
-		t.Fatalf("left pane needs 9 sections, got %d/%d", len(d.Provs), len(d.PsecIDs))
+	if len(d.Provs) != 10 || len(d.PsecIDs) != 10 {
+		t.Fatalf("left pane needs 10 sections, got %d/%d", len(d.Provs), len(d.PsecIDs))
 	}
 	if !d.ProvFocus {
 		t.Error("focus should start on the left (sections) pane")
@@ -140,4 +142,61 @@ func mustUpdate(t *testing.T, m *Model, km tea.KeyMsg) tea.Model {
 	t.Helper()
 	mm, _ := m.updatePconfigDialog(km, m.Dialogs[0])
 	return mm
+}
+
+// Sidebar rows render table-like: every "—" starts at the same column,
+// and the state word is colored (shown bright, hidden dark).
+func TestPconfigSideTableAligned(t *testing.T) {
+	m := testPconfigModel()
+	m.winW, m.winH = 120, 40
+	m.OpenPconfig()
+	d := m.Dialogs[0]
+	for i, id := range d.PsecIDs {
+		if id == PsecSide {
+			d.ProvCursor = i
+		}
+	}
+	d.ProvFocus = false
+	m.LoadPsecRows(d)
+	lines := strings.Split(stripANSI(m.renderPconfigDialog(d)), "\n")
+	dash := -1
+	n := 0
+	for _, ln := range lines {
+		if !strings.Contains(ln, "│") {
+			continue
+		}
+		j := strings.Index(ln, "—")
+		if j < 0 {
+			continue
+		}
+		n++
+		// display column, not byte index (marks like ▸ are multibyte)
+		if col := lipgloss.Width(ln[:j]); dash < 0 {
+			dash = col
+		} else if col != dash {
+			t.Fatalf("desc column drifts: col %d, want %d\n%s", col, dash, ln)
+		}
+	}
+	if n != len(sideOrder) {
+		t.Fatalf("want %d sidebar rows, got %d", len(sideOrder), n)
+	}
+}
+
+func TestPsecDescStateColors(t *testing.T) {
+	shown := psecDesc("side:mcp", "shown · Enter: toggle", 40)
+	hidden := psecDesc("side:mcp", "hidden · Enter: toggle", 40)
+	if stripANSI(shown) != "— shown · Enter: toggle" || stripANSI(hidden) != "— hidden · Enter: toggle" {
+		t.Fatalf("stripped descs wrong: %q %q", stripANSI(shown), stripANSI(hidden))
+	}
+	// shown = bright text, hidden = dark like the hint
+	if got := sideStateStyle("shown").GetForeground(); got != cText {
+		t.Errorf("shown should be bright (%v), got %v", cText, got)
+	}
+	if got := sideStateStyle("hidden").GetForeground(); got != toolStyle.GetForeground() {
+		t.Errorf("hidden should be dark (%v), got %v", toolStyle.GetForeground(), got)
+	}
+	// truncation still applies before styling (no ANSI to cut)
+	if got := stripANSI(psecDesc("side:mcp", "shown · Enter: toggle", 8)); got != "— "+Short("shown · Enter: toggle", 8) {
+		t.Fatalf("truncated desc wrong: %q", got)
+	}
 }

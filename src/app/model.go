@@ -125,6 +125,7 @@ type Model struct {
 	MCP          []McpServer // pi agent-dir MCP snapshot (sidebar)
 	Plugins      []Plugin    // installed pi packages (sidebar PLUGINS toggle)
 	showPlugins  bool        // PLUGINS expanded (click header or /plugins)
+	Side         map[string]bool // sidebar section visibility (nil entry = default; MCP + Plugins hide)
 	Dialogs      []*Dialog
 	connErr      string
 	AutoRetry    bool          // no RPC getter; tracked locally (default on)
@@ -544,10 +545,15 @@ func (m *Model) ToggleSide() {
 }
 
 // TogglePlugins collapses/expands the sidebar PLUGINS list (click its
-// header or /plugins). Content stays in the sidebar viewport, so a long
-// list scrolls instead of pushing the layout.
+// header or /plugins). When the section is hidden (Sidebar tab default)
+// the first toggle reveals it expanded instead of flipping blind state.
 func (m *Model) TogglePlugins() {
-	m.showPlugins = !m.showPlugins
+	if !m.SideVisible(SidePlugins) {
+		m.showPlugins = true
+		m.setSideVisible(SidePlugins, true)
+	} else {
+		m.showPlugins = !m.showPlugins
+	}
 	if !m.ready {
 		return
 	}
@@ -687,6 +693,7 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.prefsPath = PrefsPath()
 	prefs := LoadPrefs(m.prefsPath)
 	m.HideThinking = prefs.HideThinking
+	m.Side = prefs.Side
 	palette.Win = prefs.EffectiveAutocompleteMax()
 }
 

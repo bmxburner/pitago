@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"strings"
 	"testing"
 
 	"pitago/src/app"
@@ -62,5 +63,49 @@ func TestConfirmPconfigInfoRowStays(t *testing.T) {
 	mm, _ := confirmPconfig(m, d, d.FIdx[d.Cursor])
 	if len(mm.(*app.Model).Dialogs) != 1 {
 		t.Error("info row should keep the hub open")
+	}
+}
+
+func TestConfirmPconfigSideToggle(t *testing.T) {
+	m := hubModel()
+	d := m.Dialogs[0]
+	selectPsec(m, d, app.PsecSide)
+	if len(d.Options) != 11 {
+		t.Fatalf("sidebar section should list 11 rows, got %d", len(d.Options))
+	}
+	// MCP starts hidden
+	mi := -1
+	for i, o := range d.Options {
+		if o == "MCP servers" {
+			mi = d.FIdx[i]
+		}
+	}
+	if mi < 0 {
+		t.Fatal("no MCP servers row")
+	}
+	if !strings.Contains(d.Descs[mi], "hidden") {
+		t.Fatalf("mcp should show hidden, got %q", d.Descs[mi])
+	}
+	// cursor sits on the MCP row: toggling must not jump it back to top
+	d.Cursor = 0
+	for i, fi := range d.FIdx {
+		if fi == mi {
+			d.Cursor = i
+		}
+	}
+	wantCursor := d.Cursor
+	mm, _ := confirmPconfig(m, d, mi)
+	m2 := mm.(*app.Model)
+	if got := m2.Dialogs[0].Cursor; got != wantCursor {
+		t.Fatalf("toggle moved cursor to %d, want %d", got, wantCursor)
+	}
+	if len(m2.Dialogs) != 1 {
+		t.Fatal("sidebar toggle should keep the hub open")
+	}
+	if !m2.SideVisible(app.SideMCP) {
+		t.Error("enter should show mcp")
+	}
+	if !strings.Contains(m2.Dialogs[0].Descs[mi], "shown") {
+		t.Fatalf("row should refresh to shown, got %q", m2.Dialogs[0].Descs[mi])
 	}
 }

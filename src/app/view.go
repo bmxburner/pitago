@@ -451,166 +451,188 @@ func renderToolResultExpanded(tool, status, s string, expanded bool) string {
 func (m Model) buildSidebarContent() string {
 	inner := sideInnerW
 	var b strings.Builder
-	b.WriteString(m.renderPet(inner))
-	b.WriteString(sideTitleStyle.Render("SESSION") + "\n")
-	first := m.firstUser()
-	if first == "" {
-		dot := statusBarStyle.Render("○")
-		if m.thinking {
-			dot = okStyle.Render("●")
+	if m.SideVisible(SidePet) {
+		b.WriteString(m.renderPet(inner))
+	}
+	if m.SideVisible(SideSession) {
+		b.WriteString(sideTitleStyle.Render("SESSION") + "\n")
+		first := m.firstUser()
+		if first == "" {
+			dot := statusBarStyle.Render("○")
+			if m.thinking {
+				dot = okStyle.Render("●")
+			}
+			first = dot + " " + Short(m.Status, inner-2)
+		} else {
+			first = Short(first, inner)
 		}
-		first = dot + " " + Short(m.Status, inner-2)
-	} else {
-		first = Short(first, inner)
-	}
-	b.WriteString(statusBarStyle.Render(first) + "\n")
-	sess := m.session
-	if sess == "" {
-		sess = "…"
-	}
-	b.WriteString(statusBarStyle.Render(Short(sess, inner)) + "\n")
-	file := m.sessionFile
-	if file == "" {
-		file = "In-memory"
-	}
-	b.WriteString(statusBarStyle.Render(Short(file, inner)) + "\n")
-	b.WriteString(sep() + "\n")
-
-	lvl := m.thinkLvl
-	if lvl == "" {
-		lvl = "off"
-	}
-	modelName := Short(m.ModelLbl+" - "+lvl, inner-8)
-	b.WriteString(statusBarStyle.Render("model · ") + lipgloss.NewStyle().Foreground(cText).Render(modelName) + "\n")
-	barW := inner - len("ctx ") - len(" 100%")
-	if barW < 4 {
-		barW = 4
-	}
-	pct := fmt.Sprintf("%3.0f%%", m.Stats.ContextPct)
-	b.WriteString(statusBarStyle.Render("ctx "+ctxBar(m.Stats.ContextPct, barW)+" "+pct) + "\n")
-	used := m.Stats.ContextToks
-	if used == 0 {
-		used = m.Stats.TokensTotal
-	}
-	win := m.ctxWindow
-	if win == 0 {
-		win = m.Stats.ContextWin
-	}
-	compact := "manual"
-	if m.autoCompact {
-		compact = "compact auto"
-	}
-	tokLine := "tok —"
-	if win > 0 {
-		tokLine = fmt.Sprintf("%s/%s tkns - %s", FmtNum(used), FmtNum(win), compact)
-	} else if used > 0 {
-		tokLine = "tok " + FmtNum(used)
-	}
-	b.WriteString(statusBarStyle.Render(Short(tokLine, inner)) + "\n")
-	b.WriteString(sep() + "\n")
-
-	b.WriteString(sideTitleStyle.Render(twoCol("Stats", "Tokens", inner)) + "\n")
-	elapsed := "—"
-	if !m.sessStart.IsZero() {
-		elapsed = fmtDur(time.Since(m.sessStart))
-	}
-	last := "—"
-	if m.lastDur > 0 {
-		last = fmtDur(m.lastDur)
-	}
-	speed := "—"
-	if m.lastSpeed > 0 {
-		speed = fmt.Sprintf("%.0f tok/s", m.lastSpeed)
-	}
-	cache := "—"
-	if m.Stats.TokensTotal > 0 && m.Stats.CacheRead > 0 {
-		cache = fmt.Sprintf("%.0f%%", 100*float64(m.Stats.CacheRead)/float64(m.Stats.TokensTotal))
-	}
-	cost := "—"
-	if m.Stats.Cost > 0 {
-		cost = fmt.Sprintf("$%.2f", m.Stats.Cost)
-	}
-	b.WriteString(statusBarStyle.Render(twoCol("time "+elapsed, "in "+FmtNum(m.Stats.In), inner)) + "\n")
-	b.WriteString(statusBarStyle.Render(twoCol("last "+last, "out "+FmtNum(m.Stats.Out), inner)) + "\n")
-	b.WriteString(statusBarStyle.Render(twoCol("speed "+speed, "total "+FmtNum(m.Stats.TokensTotal), inner)) + "\n")
-	b.WriteString(statusBarStyle.Render(twoCol(fmt.Sprintf("turns %d", m.Stats.UserMsgs), "cache "+cache, inner)) + "\n")
-	left := "—"
-	if m.Stats.ContextPct > 0 {
-		left = fmt.Sprintf("%.0f%%", 100-m.Stats.ContextPct)
-	}
-	b.WriteString(statusBarStyle.Render(twoCol("left "+left, "cost "+cost, inner)) + "\n")
-	b.WriteString(statusBarStyle.Render(Short(fmt.Sprintf("msgs %s · u %s a %s",
-		fmtComma(m.Stats.TotalMessages), fmtComma(m.Stats.UserMsgs), fmtComma(m.Stats.AsstMsgs)), inner)) + "\n")
-	cached, uncached := "—", "—"
-	if m.Stats.TokensTotal > 0 {
-		cached = fmtComma(m.Stats.CacheRead)
-		uncached = fmtComma(m.Stats.In + m.Stats.CacheWrite)
-	}
-	b.WriteString(statusBarStyle.Render(Short("cached "+cached+" · uncached "+uncached, inner)) + "\n")
-	b.WriteString(sep() + "\n")
-
-	if rows := m.sideCostRows(); len(rows) > 0 {
-		b.WriteString(sideTitleStyle.Render("COST") + "\n")
-		for _, r := range rows {
-			b.WriteString(statusBarStyle.Render(r) + "\n")
+		b.WriteString(statusBarStyle.Render(first) + "\n")
+		sess := m.session
+		if sess == "" {
+			sess = "…"
 		}
+		b.WriteString(statusBarStyle.Render(Short(sess, inner)) + "\n")
+		file := m.sessionFile
+		if file == "" {
+			file = "In-memory"
+		}
+		b.WriteString(statusBarStyle.Render(Short(file, inner)) + "\n")
 		b.WriteString(sep() + "\n")
 	}
 
-	b.WriteString(sideTitleStyle.Render("RECENT MODELS") + "\n")
-	if len(m.recentModels) == 0 {
-		b.WriteString(toolStyle.Render("—") + "\n")
-	} else {
-		for i, r := range m.recentModels {
-			cur := r.ID == m.ModelLbl || r.DispLabel() == m.ModelLbl
-			mark, style := "○ ", statusBarStyle
-			row := style
-			if cur {
-				mark, style = "● ", okStyle
-				row = lipgloss.NewStyle().Foreground(cText)
-			}
-			b.WriteString(style.Render(mark) + row.Render(fmt.Sprintf("%d. %s", i+1, Short(r.DispLabel(), inner-5))) + "\n")
+	if m.SideVisible(SideModel) {
+		lvl := m.thinkLvl
+		if lvl == "" {
+			lvl = "off"
 		}
+		modelName := Short(m.ModelLbl+" - "+lvl, inner-8)
+		b.WriteString(statusBarStyle.Render("model · ") + lipgloss.NewStyle().Foreground(cText).Render(modelName) + "\n")
+		barW := inner - len("ctx ") - len(" 100%")
+		if barW < 4 {
+			barW = 4
+		}
+		pct := fmt.Sprintf("%3.0f%%", m.Stats.ContextPct)
+		b.WriteString(statusBarStyle.Render("ctx "+ctxBar(m.Stats.ContextPct, barW)+" "+pct) + "\n")
+		used := m.Stats.ContextToks
+		if used == 0 {
+			used = m.Stats.TokensTotal
+		}
+		win := m.ctxWindow
+		if win == 0 {
+			win = m.Stats.ContextWin
+		}
+		compact := "manual"
+		if m.autoCompact {
+			compact = "compact auto"
+		}
+		tokLine := "tok —"
+		if win > 0 {
+			tokLine = fmt.Sprintf("%s/%s tkns - %s", FmtNum(used), FmtNum(win), compact)
+		} else if used > 0 {
+			tokLine = "tok " + FmtNum(used)
+		}
+		b.WriteString(statusBarStyle.Render(Short(tokLine, inner)) + "\n")
+		b.WriteString(sep() + "\n")
 	}
-	b.WriteString(toolStyle.Render(m.recentHint()) + "\n")
-	b.WriteString(sep() + "\n")
 
-	b.WriteString(sideTitleStyle.Render("COMMANDS") + "\n")
-	if len(m.Cmds) == 0 {
-		b.WriteString(toolStyle.Render("—") + "\n")
-	} else {
-		// Per-source counts: extension vs prompt vs skill vs builtin
-		// (source taxonomy owned by src/extension).
-		ext, prm, skl, bin := extension.Summarize(m.Cmds)
-		b.WriteString(statusBarStyle.Render(Short(fmt.Sprintf("%d ext · %d prompt · %d skill · %d builtin", ext, prm, skl, bin), inner)) + "\n")
+	if m.SideVisible(SideStats) {
+		b.WriteString(sideTitleStyle.Render(twoCol("Stats", "Tokens", inner)) + "\n")
+		elapsed := "—"
+		if !m.sessStart.IsZero() {
+			elapsed = fmtDur(time.Since(m.sessStart))
+		}
+		last := "—"
+		if m.lastDur > 0 {
+			last = fmtDur(m.lastDur)
+		}
+		speed := "—"
+		if m.lastSpeed > 0 {
+			speed = fmt.Sprintf("%.0f tok/s", m.lastSpeed)
+		}
+		cache := "—"
+		if m.Stats.TokensTotal > 0 && m.Stats.CacheRead > 0 {
+			cache = fmt.Sprintf("%.0f%%", 100*float64(m.Stats.CacheRead)/float64(m.Stats.TokensTotal))
+		}
+		cost := "—"
+		if m.Stats.Cost > 0 {
+			cost = fmt.Sprintf("$%.2f", m.Stats.Cost)
+		}
+		b.WriteString(statusBarStyle.Render(twoCol("time "+elapsed, "in "+FmtNum(m.Stats.In), inner)) + "\n")
+		b.WriteString(statusBarStyle.Render(twoCol("last "+last, "out "+FmtNum(m.Stats.Out), inner)) + "\n")
+		b.WriteString(statusBarStyle.Render(twoCol("speed "+speed, "total "+FmtNum(m.Stats.TokensTotal), inner)) + "\n")
+		b.WriteString(statusBarStyle.Render(twoCol(fmt.Sprintf("turns %d", m.Stats.UserMsgs), "cache "+cache, inner)) + "\n")
+		left := "—"
+		if m.Stats.ContextPct > 0 {
+			left = fmt.Sprintf("%.0f%%", 100-m.Stats.ContextPct)
+		}
+		b.WriteString(statusBarStyle.Render(twoCol("left "+left, "cost "+cost, inner)) + "\n")
+		b.WriteString(statusBarStyle.Render(Short(fmt.Sprintf("msgs %s · u %s a %s",
+			fmtComma(m.Stats.TotalMessages), fmtComma(m.Stats.UserMsgs), fmtComma(m.Stats.AsstMsgs)), inner)) + "\n")
+		cached, uncached := "—", "—"
+		if m.Stats.TokensTotal > 0 {
+			cached = fmtComma(m.Stats.CacheRead)
+			uncached = fmtComma(m.Stats.In + m.Stats.CacheWrite)
+		}
+		b.WriteString(statusBarStyle.Render(Short("cached "+cached+" · uncached "+uncached, inner)) + "\n")
+		b.WriteString(sep() + "\n")
 	}
-	if len(m.queue.Steering)+len(m.queue.FollowUp) > 0 {
-		b.WriteString(statusBarStyle.Render(fmt.Sprintf("queue: %d steer · %d follow",
-			len(m.queue.Steering), len(m.queue.FollowUp))) + "\n")
-	}
-	b.WriteString(m.renderPluginsSection(inner))
-	b.WriteString(m.renderMcpSection(inner))
-	b.WriteString(m.renderTodosSection(inner))
-	if m.ws.ok {
-		b.WriteString(sideTitleStyle.Render(Short("WORKSPACE · "+m.ws.branch, inner)) + "\n")
-		for _, f := range m.ws.files {
-			stat := fmt.Sprintf("+%d -%d", f.add, f.del)
-			gap := inner - lipgloss.Width(f.path) - lipgloss.Width(stat)
-			name := f.path
-			if gap < 1 {
-				name = Short(f.path, inner-lipgloss.Width(stat)-1)
-				gap = 1
+
+	if m.SideVisible(SideCost) {
+		if rows := m.sideCostRows(); len(rows) > 0 {
+			b.WriteString(sideTitleStyle.Render("COST") + "\n")
+			for _, r := range rows {
+				b.WriteString(statusBarStyle.Render(r) + "\n")
 			}
-			b.WriteString(statusBarStyle.Render(name+strings.Repeat(" ", gap)) + okStyle.Render(stat) + "\n")
-		}
-		if m.ws.more > 0 {
-			b.WriteString(toolStyle.Render(fmt.Sprintf("… %d more files", m.ws.more)) + "\n")
-		}
-		if m.ws.untracked > 0 {
-			b.WriteString(toolStyle.Render(fmt.Sprintf("?%d untracked", m.ws.untracked)) + "\n")
+			b.WriteString(sep() + "\n")
 		}
 	}
-	b.WriteString(toolStyle.Render(Short(m.cwd, inner)) + "\n")
+
+	if m.SideVisible(SideRecent) {
+		b.WriteString(sideTitleStyle.Render("RECENT MODELS") + "\n")
+		if len(m.recentModels) == 0 {
+			b.WriteString(toolStyle.Render("—") + "\n")
+		} else {
+			for i, r := range m.recentModels {
+				cur := r.ID == m.ModelLbl || r.DispLabel() == m.ModelLbl
+				mark, style := "○ ", statusBarStyle
+				row := style
+				if cur {
+					mark, style = "● ", okStyle
+					row = lipgloss.NewStyle().Foreground(cText)
+				}
+				b.WriteString(style.Render(mark) + row.Render(fmt.Sprintf("%d. %s", i+1, Short(r.DispLabel(), inner-5))) + "\n")
+			}
+		}
+		b.WriteString(toolStyle.Render(m.recentHint()) + "\n")
+		b.WriteString(sep() + "\n")
+	}
+
+	if m.SideVisible(SideCommands) {
+		b.WriteString(sideTitleStyle.Render("COMMANDS") + "\n")
+		if len(m.Cmds) == 0 {
+			b.WriteString(toolStyle.Render("—") + "\n")
+		} else {
+			// Per-source counts: extension vs prompt vs skill vs builtin
+			// (source taxonomy owned by src/extension).
+			ext, prm, skl, bin := extension.Summarize(m.Cmds)
+			b.WriteString(statusBarStyle.Render(Short(fmt.Sprintf("%d ext · %d prompt · %d skill · %d builtin", ext, prm, skl, bin), inner)) + "\n")
+		}
+		if len(m.queue.Steering)+len(m.queue.FollowUp) > 0 {
+			b.WriteString(statusBarStyle.Render(fmt.Sprintf("queue: %d steer · %d follow",
+				len(m.queue.Steering), len(m.queue.FollowUp))) + "\n")
+		}
+	}
+	if m.SideVisible(SidePlugins) {
+		b.WriteString(m.renderPluginsSection(inner))
+	}
+	if m.SideVisible(SideMCP) {
+		b.WriteString(m.renderMcpSection(inner))
+	}
+	if m.SideVisible(SideTodos) {
+		b.WriteString(m.renderTodosSection(inner))
+	}
+	if m.SideVisible(SideWorkspace) {
+		if m.ws.ok {
+			b.WriteString(sideTitleStyle.Render(Short("WORKSPACE · "+m.ws.branch, inner)) + "\n")
+			for _, f := range m.ws.files {
+				stat := fmt.Sprintf("+%d -%d", f.add, f.del)
+				gap := inner - lipgloss.Width(f.path) - lipgloss.Width(stat)
+				name := f.path
+				if gap < 1 {
+					name = Short(f.path, inner-lipgloss.Width(stat)-1)
+					gap = 1
+				}
+				b.WriteString(statusBarStyle.Render(name+strings.Repeat(" ", gap)) + okStyle.Render(stat) + "\n")
+			}
+			if m.ws.more > 0 {
+				b.WriteString(toolStyle.Render(fmt.Sprintf("… %d more files", m.ws.more)) + "\n")
+			}
+			if m.ws.untracked > 0 {
+				b.WriteString(toolStyle.Render(fmt.Sprintf("?%d untracked", m.ws.untracked)) + "\n")
+			}
+		}
+		b.WriteString(toolStyle.Render(Short(m.cwd, inner)) + "\n")
+	}
 	return b.String()
 }
 

@@ -9,28 +9,45 @@ import (
 	"pitago/src/components/recent"
 )
 
-// recentBaseRows is the fixed rows above RECENT MODELS without detail
-// extras: SESSION(3) first(4) sess(5) sep(6) model(7) ctx(8) toks(9)
-// sep(10) STATS head(11) time(12) last(13) speed(14) turns(15) left(16)
-// sep(17) RECENT MODELS(18) models(19…) — PET takes rows 0-2 (petRows),
-// the file/msgs/cached detail rows and the COST section add sideExtraRows.
-const recentBaseRows = 16
+// Sidebar section row budgets above the RECENT MODELS block: each visible
+// block contributes a fixed number of content rows (header + lines +
+// separator). recentAt/pluginToggleAt derive click rows from the same
+// budgets, so hiding a section keeps clicks in sync with the render —
+// guarded by TestRecentAtMatchesRender.
+const (
+	sideSessionRows = 5 // SESSION header + first + sess + file + sep
+	sideModelRows   = 4 // model + ctx + toks + sep
+	sideStatsRows   = 9 // header + 7 stat lines + sep
+)
+
+// sideRowsBeforeRecent counts the sidebar content rows above the RECENT
+// MODELS header from the sections currently visible.
+func (m Model) sideRowsBeforeRecent() int {
+	n := 0
+	if m.SideVisible(SidePet) {
+		n += petRows
+	}
+	if m.SideVisible(SideSession) {
+		n += sideSessionRows
+	}
+	if m.SideVisible(SideModel) {
+		n += sideModelRows
+	}
+	if m.SideVisible(SideStats) {
+		n += sideStatsRows
+	}
+	if m.SideVisible(SideCost) {
+		if r := m.sideCostRows(); len(r) > 0 {
+			n += 2 + len(r) // COST header + rows + sep
+		}
+	}
+	return n
+}
 
 // recentContentRow is the sidebar content row of the first recent model.
 // Screen y = 1 (box border) + row; recentAt must match.
 func (m Model) recentContentRow() int {
-	return recentBaseRows + petRows + m.sideExtraRows()
-}
-
-// sideExtraRows counts the SESSION-detail rows above RECENT MODELS: file
-// + msgs + cached (always rendered) plus the COST section (header + rows +
-// separator, only when the session spans more than one model).
-func (m Model) sideExtraRows() int {
-	n := 3
-	if c := len(m.sideCostRows()); c > 0 {
-		n += 2 + c
-	}
-	return n
+	return m.sideRowsBeforeRecent() + 1 // +1 for the RECENT MODELS header
 }
 
 // sideCostRows formats the sidebar COST breakdown: top-3 models by cost,
@@ -133,6 +150,9 @@ func (m Model) recentAt(x, y int) (int, bool) {
 	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 || len(m.recentModels) == 0 {
 		return 0, false
 	}
+	if !m.SideVisible(SideRecent) {
+		return 0, false
+	}
 	if x < m.mainW()+1 || x > m.winW || y < 1+m.recentContentRow() {
 		return 0, false
 	}
@@ -144,9 +164,11 @@ func (m Model) recentAt(x, y int) (int, bool) {
 	return idx, true
 }
 
-// pluginHeaderRow is the sidebar content row of the PLUGINS toggle header:
-// first model row + recent rows + hint + sep + COMMANDS header + command
-// rows. Everything after it (MCP/Todos/WORKSPACE) doesn't affect the row.
+// pluginHeaderRow is the sidebar content row of the PLUGINS toggle header,
+// counted from the visible sections above it: the RECENT block (header +
+// models + hint + sep) and the COMMANDS block (header + count rows) only
+// contribute when visible. Everything after it (MCP/Todos/WORKSPACE)
+// doesn't affect the row.
 func (m Model) pluginHeaderRow() int {
 	r := len(m.recentModels)
 	if r == 0 {
@@ -156,7 +178,14 @@ func (m Model) pluginHeaderRow() int {
 	if len(m.queue.Steering)+len(m.queue.FollowUp) > 0 {
 		c++ // queue line
 	}
-	return m.recentContentRow() + r + 3 + c
+	n := m.sideRowsBeforeRecent()
+	if m.SideVisible(SideRecent) {
+		n += 1 + r + 2
+	}
+	if m.SideVisible(SideCommands) {
+		n += 1 + c
+	}
+	return n
 }
 
 // pluginToggleAt reports a click on the PLUGINS header (collapses/expands
@@ -164,6 +193,9 @@ func (m Model) pluginHeaderRow() int {
 // plus YOffset when scrolled).
 func (m Model) pluginToggleAt(x, y int) bool {
 	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 {
+		return false
+	}
+	if !m.SideVisible(SidePlugins) {
 		return false
 	}
 	if x < m.mainW()+1 || x > m.winW {

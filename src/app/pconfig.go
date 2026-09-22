@@ -19,15 +19,16 @@ import (
 
 // Hub section ids (Dialog.PsecIDs parallels the left pane).
 const (
-	PsecAgent  = "agent"
-	PsecSkill  = "skill"
-	PsecPrompt = "prompt"
-	PsecExt    = "extension"
-	PsecPlugin = "plugin"
-	PsecMCP    = "mcp"
-	PsecTool   = "tool"
-	PsecTheme  = "theme"
-	PsecLogin  = "login"
+	PsecAgent    = "agent"
+	PsecSkill    = "skill"
+	PsecPrompt   = "prompt"
+	PsecExt      = "extension"
+	PsecPlugin   = "plugin"
+	PsecMCP      = "mcp"
+	PsecTool     = "tool"
+	PsecSide     = "side"
+	PsecTheme    = "theme"
+	PsecLogin    = "login"
 )
 
 // Payload markers for non-runnable right rows: "@<section>" opens the
@@ -77,8 +78,8 @@ func psecCount(m *Model, id string) int {
 // OpenPconfig pushes the two-pane settings hub (focus starts on sections).
 func (m *Model) OpenPconfig() {
 	d := &Dialog{Kind: "pconfig", Title: "Pitago settings",
-		Provs:     []string{"Agent", "Skills", "Prompts", "Extensions", "Plugins", "MCP", "Tools", "Theme", "Login"},
-		PsecIDs:   []string{PsecAgent, PsecSkill, PsecPrompt, PsecExt, PsecPlugin, PsecMCP, PsecTool, PsecTheme, PsecLogin},
+		Provs:     []string{"Agent", "Skills", "Prompts", "Extensions", "Plugins", "MCP", "Tools", "Sidebar", "Theme", "Login"},
+		PsecIDs:   []string{PsecAgent, PsecSkill, PsecPrompt, PsecExt, PsecPlugin, PsecMCP, PsecTool, PsecSide, PsecTheme, PsecLogin},
 		ProvFocus: true}
 	m.LoadPsecRows(d)
 	m.Dialogs = append(m.Dialogs, d)
@@ -221,8 +222,52 @@ func psecRows(m *Model, id string) (opts, descs, payload []string, msg string) {
 			descs = []string{"tools appear here as the agent works"}
 			payload = []string{""}
 		}
+	case PsecSide:
+		msg = "Enter shows/hides a sidebar section · MCP + Plugins start hidden · Esc closes"
+		for _, k := range sideOrder {
+			state := "shown"
+			if !m.SideVisible(k) {
+				state = "hidden"
+			}
+			opts = append(opts, sideLabel(k))
+			descs = append(descs, state+" · Enter: toggle")
+			payload = append(payload, "side:"+k)
+		}
 	}
 	return opts, descs, payload, msg
+}
+
+// payloadOf parallels DescOf for the right pane's per-row payload.
+func payloadOf(d *Dialog, ri int) string {
+	if ri < len(d.Payload) {
+		return d.Payload[ri]
+	}
+	return ""
+}
+
+// sideStateStyle is the sidebar state word's color: shown renders bright,
+// hidden stays dark like the hint.
+func sideStateStyle(state string) lipgloss.Style {
+	if state == "shown" {
+		return lipgloss.NewStyle().Foreground(cText)
+	}
+	return toolStyle
+}
+
+// psecDesc renders one right-pane description, truncated to maxW. Sidebar
+// rows lead with their state word (shown bright, hidden dark). Styling
+// happens after truncation so no ANSI sequence can be cut in half
+// (Fit/Short require unstyled input).
+func psecDesc(payload, desc string, maxW int) string {
+	desc = Short(desc, maxW)
+	if !strings.HasPrefix(payload, "side:") {
+		return toolStyle.Render("— " + desc)
+	}
+	state, rest := desc, ""
+	if i := strings.Index(desc, " "); i >= 0 {
+		state, rest = desc[:i], desc[i:]
+	}
+	return toolStyle.Render("— ") + sideStateStyle(state).Render(state) + toolStyle.Render(rest)
 }
 
 // extTag shortens an extension source ("npm:pi-subagents" → "pi-subagents")
@@ -491,9 +536,9 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 				style = rowHiStyle
 			}
 		}
-		row := Short(d.Options[ri], optW)
+		row := Fit(Short(d.Options[ri], optW), optW)
 		if desc := DescOf(d, ri); desc != "" {
-			row += "  " + toolStyle.Render("— "+Short(desc, rightW-4-optW-3))
+			row += "  " + psecDesc(payloadOf(d, ri), desc, rightW-4-optW-3)
 		}
 		rightLines = append(rightLines, mark+style.Width(rightW-2).Render(row))
 	}

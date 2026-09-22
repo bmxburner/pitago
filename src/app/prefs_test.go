@@ -8,18 +8,36 @@ import (
 
 func TestPrefsRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "prefs.json")
-	if err := SavePrefs(path, Prefs{HideThinking: true, AutocompleteMax: 5}); err != nil {
+	if err := SavePrefs(path, Prefs{HideThinking: true, AutocompleteMax: 5,
+		Side: map[string]bool{"mcp": true, "plugins": false}}); err != nil {
 		t.Fatalf("save: %v", err)
 	}
 	p := LoadPrefs(path)
 	if !p.HideThinking || p.AutocompleteMax != 5 {
 		t.Errorf("round trip failed: %+v", p)
 	}
+	if !p.SideVisible("mcp") || p.SideVisible("plugins") {
+		t.Errorf("side round trip failed: %+v", p.Side)
+	}
 	if got := (Prefs{}).EffectiveAutocompleteMax(); got != 10 {
 		t.Errorf("unset max should be pitago default 10, got %d", got)
 	}
 	if got := (Prefs{AutocompleteMax: 99}).EffectiveAutocompleteMax(); got != 10 {
 		t.Errorf("out-of-range max should clamp to 10, got %d", got)
+	}
+}
+
+func TestSideDefaults(t *testing.T) {
+	var p Prefs // nothing ever toggled: MCP + Plugins hide, the rest show
+	for _, k := range []string{"mcp", "plugins"} {
+		if p.SideVisible(k) {
+			t.Errorf("%s should hide by default", k)
+		}
+	}
+	for _, k := range []string{"pet", "session", "model", "stats", "cost", "recent", "commands", "todos", "workspace"} {
+		if !p.SideVisible(k) {
+			t.Errorf("%s should show by default", k)
+		}
 	}
 }
 

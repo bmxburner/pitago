@@ -14,6 +14,7 @@ import (
 // with those extras present.
 func TestSidebarSessionDetail(t *testing.T) {
 	m := New(nil, t.TempDir())
+	m.Side = map[string]bool{SidePlugins: true} // hidden by default
 	m.Status = "ready"
 	m.sessionFile = "/tmp/sess.json"
 	m.Stats = pirpc.Stats{

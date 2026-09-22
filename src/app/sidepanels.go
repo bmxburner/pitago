@@ -17,6 +17,92 @@ import (
 // pi's RPC surface: todos are tracked from todo-tool calls (any tool with
 // "todo" in the name), MCP servers are read from the pi agent dir files.
 
+// Sidebar section keys for the /pitago-setting Sidebar tab (persisted in
+// prefs.json under "side"; MCP + Plugins start hidden, the rest show).
+const (
+	SidePet       = "pet"
+	SideSession   = "session"
+	SideModel     = "model"
+	SideStats     = "stats"
+	SideCost      = "cost"
+	SideRecent    = "recent"
+	SideCommands  = "commands"
+	SidePlugins   = "plugins"
+	SideMCP       = "mcp"
+	SideTodos     = "todos"
+	SideWorkspace = "workspace"
+)
+
+// sideOrder is the Sidebar tab row order (top-to-bottom like the sidebar).
+var sideOrder = []string{
+	SidePet, SideSession, SideModel, SideStats, SideCost, SideRecent,
+	SideCommands, SidePlugins, SideMCP, SideTodos, SideWorkspace,
+}
+
+// sideLabel is the Sidebar tab display name per section key.
+func sideLabel(key string) string {
+	switch key {
+	case SidePet:
+		return "Pet"
+	case SideSession:
+		return "Session"
+	case SideModel:
+		return "Model & context"
+	case SideStats:
+		return "Stats"
+	case SideCost:
+		return "Cost"
+	case SideRecent:
+		return "Recent models"
+	case SideCommands:
+		return "Commands"
+	case SidePlugins:
+		return "Plugins"
+	case SideMCP:
+		return "MCP servers"
+	case SideTodos:
+		return "Todos"
+	case SideWorkspace:
+		return "Workspace"
+	}
+	return key
+}
+
+// SideVisible reports one sidebar section's visibility (explicit toggle or
+// the default). Click mapping (recent.go) and rendering (view.go) share it,
+// so a hidden section disappears from both.
+func (m Model) SideVisible(key string) bool {
+	if m.Side != nil {
+		if v, ok := m.Side[key]; ok {
+			return v
+		}
+	}
+	return DefaultSideVisible(key)
+}
+
+// setSideVisible persists one section toggle (the Sidebar tab + /plugins).
+func (m *Model) setSideVisible(key string, v bool) {
+	if m.Side == nil {
+		m.Side = map[string]bool{}
+	}
+	m.Side[key] = v
+	prefs := LoadPrefs(m.prefsPath)
+	if prefs.Side == nil {
+		prefs.Side = map[string]bool{}
+	}
+	prefs.Side[key] = v
+	_ = SavePrefs(m.prefsPath, prefs)
+}
+
+// ToggleSideSection flips one sidebar section (the /pitago-setting Sidebar
+// tab): the hub stays open so several sections toggle in one visit.
+func (m *Model) ToggleSideSection(key string) {
+	m.setSideVisible(key, !m.SideVisible(key))
+	if m.ready {
+		m.Refresh()
+	}
+}
+
 type TodoStatus string
 
 const (

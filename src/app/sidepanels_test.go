@@ -93,6 +93,7 @@ func TestReadPlugins(t *testing.T) {
 
 func TestPluginsSectionToggle(t *testing.T) {
 	m := New(nil, t.TempDir())
+	m.Side = map[string]bool{SidePlugins: true} // hidden by default
 	m.Plugins = []Plugin{{Spec: "npm:pi-lens", Name: "pi-lens"}, {Spec: "npm:pi-foo", Name: "pi-foo"}}
 	if !m.showPlugins {
 		t.Fatal("PLUGINS must start expanded")
@@ -121,6 +122,7 @@ func TestPluginsSectionToggle(t *testing.T) {
 
 func TestSidebarHasMcpTodos(t *testing.T) {
 	m := New(nil, t.TempDir())
+	m.Side = map[string]bool{SideMCP: true} // hidden by default
 	m.MCP = []McpServer{{Name: "alpha", Direct: 1, Total: 2, Tokens: 1234, Connected: true}}
 	m.Todos = []TodoItem{{ID: "1", Content: "Write code", Status: TodoInProgress}}
 	out := m.buildSidebarContent()

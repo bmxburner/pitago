@@ -76,6 +76,7 @@ func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 
 // confirmPconfig runs Enter on the hub's right pane. "@..." action rows pop
 // the hub and reuse the classic single-dialog flows (settings/theme/login);
+// "side:..." rows toggle a sidebar section in place (hub stays open);
 // runnable rows (skill/prompt/extension, connected MCP) stage the /command
 // in the input; info-only rows explain where to manage them.
 func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
@@ -83,6 +84,15 @@ func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	switch p := d.Payload[ri]; {
+	case strings.HasPrefix(p, "side:"):
+		m.ToggleSideSection(strings.TrimPrefix(p, "side:"))
+		cur := d.Cursor // toggle rebuilds rows: keep the cursor where it was
+		m.LoadPsecRows(d)
+		if cur < len(d.FIdx) {
+			d.Cursor = cur
+		}
+		m.Refresh()
+		return m, nil
 	case p == "@agent":
 		m.Dialogs = m.Dialogs[1:]
 		m.Status = "loading settings…"

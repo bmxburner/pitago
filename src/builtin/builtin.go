@@ -983,7 +983,7 @@ func All() []app.Builtin {
 			return loadSettings(m)
 		}),
 		{
-			Name: "pitago-setting", Desc: "Open Pitago settings hub (agent · skills · plugins · MCP · tools)", Usage: "/pitago-setting",
+			Name: "pitago-setting", Desc: "Open Pitago settings hub (agent · skills · plugins · MCP · tools · sidebar)", Usage: "/pitago-setting",
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				m.OpenPconfig()
