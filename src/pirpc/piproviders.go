@@ -154,11 +154,12 @@ func discoverPiProviders() []ProviderEnv {
 		if err != nil || len(raw) == 0 || len(raw) > 50<<20 {
 			continue
 		}
-		for _, p := range parsePiEnvMap(string(raw)) {
+		parsed := parsePiEnvMap(string(raw))
+		for _, p := range parsed {
 			add(p)
 		}
-		if len(out) > 10 {
-			break // the env map lives in a single chunk
+		if len(parsed) > 0 {
+			break // the env map lives in a single chunk when anchor is present
 		}
 	}
 	for _, p := range piSpecialEnvs {

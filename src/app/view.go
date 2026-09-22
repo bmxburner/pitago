@@ -583,8 +583,9 @@ func sep() string {
 }
 
 func (m Model) sideH() int {
-	// sidebar box fills body (winH - header 1) minus its own border 2
-	h := m.winH - 3
+	// sidebar box fills the full terminal height edge-to-edge, so no gap
+	// stays above (header row) or below (input box) it
+	h := m.winH
 	if h < 6 {
 		h = 6
 	}
@@ -1288,7 +1289,8 @@ func (m Model) View() string {
 		body = lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
 	if m.showSide() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, " ", m.renderSidebar())
+		left := lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
+		return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", m.renderSidebar())
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
 }

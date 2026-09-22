@@ -91,6 +91,7 @@ type Model struct {
 	cwd          string
 	ModelLbl     string
 	AppVersion   string // pitago build version for the welcome header ("" = omit)
+	UpdateAvail  string // latest tag when auto-check found newer ("" = up to date) — welcome banner + /update hint
 	thinkLvl     string // thinking level from get_state
 	autoCompact  bool   // auto-compaction from get_state
 	ctxWindow    int    // model context window from get_state/stats

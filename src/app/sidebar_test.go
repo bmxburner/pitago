@@ -108,7 +108,7 @@ func TestPluginHeaderToggleClick(t *testing.T) {
 	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m = tm.(Model)
 	sx := m.mainW() + 5
-	y := 2 + m.pluginHeaderRow()
+	y := 1 + m.pluginHeaderRow()
 	if !m.pluginToggleAt(sx, y) {
 		t.Fatalf("header row %d not hit at y=%d", m.pluginHeaderRow(), y)
 	}
@@ -132,7 +132,7 @@ func TestPluginHeaderToggleClick(t *testing.T) {
 	m2 := tallModel(t)
 	tm, _ = m2.Update(tea.WindowSizeMsg{Width: 120, Height: 40})
 	m2 = tm.(Model)
-	rel := tea.MouseMsg{X: sx, Y: 2 + m2.pluginHeaderRow(), Action: tea.MouseActionRelease, Button: tea.MouseButtonNone}
+	rel := tea.MouseMsg{X: sx, Y: 1 + m2.pluginHeaderRow(), Action: tea.MouseActionRelease, Button: tea.MouseButtonNone}
 	tm, _ = m2.Update(rel)
 	m2 = tm.(Model)
 	if m2.showPlugins {
@@ -144,7 +144,7 @@ func TestPluginHeaderToggleClick(t *testing.T) {
 		t.Fatal("clicking the header again must expand the list")
 	}
 	// press alone (no release) must not toggle
-	press := tea.MouseMsg{X: sx, Y: 2 + m2.pluginHeaderRow(), Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
+	press := tea.MouseMsg{X: sx, Y: 1 + m2.pluginHeaderRow(), Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}
 	tm, _ = m2.Update(press)
 	m2 = tm.(Model)
 	if !m2.showPlugins {

@@ -88,6 +88,9 @@ func (m *Model) handleUpdateCheck(msg UpdateCheckMsg) {
 		if !msg.Auto {
 			m.AddBlock(Block{Kind: "notice", Text: "already on latest (" + verOrDev(msg.Current) + ")"})
 			m.Refresh()
+		} else if m.UpdateAvail != "" && !update.NeedsUpdate(msg.Current, m.UpdateAvail) {
+			m.UpdateAvail = "" // cache said new, network says settled
+			m.Refresh()
 		}
 		return
 	}
@@ -95,19 +98,28 @@ func (m *Model) handleUpdateCheck(msg UpdateCheckMsg) {
 		if !update.IsRelease(msg.Current) {
 			return // source build: don't nag on every launch
 		}
-		m.AddBlock(Block{Kind: "notice", Text: msg.Latest + " available — /update to install"})
+		m.UpdateAvail = msg.Latest // welcome banner survives, even with empty chat
+		text := "⬆ " + msg.Latest + " available — run /update or pitago --update to install"
+		if len(m.blocks) == 0 {
+			// fresh open: welcomeView already shows the banner, a block
+			// would hide the logo — just repaint.
+			m.Refresh()
+			return
+		}
+		m.AddBlock(Block{Kind: "notice", Text: text})
 		m.Refresh()
 		return
 	}
 	d := &Dialog{
 		Kind: "update", Title: "Update available",
-		Message:  verOrDev(msg.Current) + " → " + msg.Latest,
+		Message:  verOrDev(msg.Current) + " → " + msg.Latest + "\nTerminal: pitago --update",
 		Options:  []string{"Install " + msg.Latest, "Later"},
 		Descs:    []string{"download + replace binary, then restart", "dismiss"},
 		UpdateTo: msg.Latest,
 	}
 	d.Reindex()
 	m.Dialogs = append(m.Dialogs, d)
+	m.UpdateAvail = msg.Latest // keeps the welcome banner after Later
 	m.Refresh()
 }
 
@@ -125,6 +137,7 @@ func (m *Model) handleUpdateDone(msg UpdateDoneMsg) {
 		m.Refresh()
 		return
 	}
+	m.UpdateAvail = "" // installed — no more nag, just restart
 	m.AddBlock(Block{Kind: "notice",
 		Text: "updated " + verOrDev(msg.From) + " → " + msg.To + " — restart pitago to use it"})
 	m.Refresh()

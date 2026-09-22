@@ -67,6 +67,23 @@ var ProviderEnvs = []ProviderEnv{
 	{"moonshotai", "Moonshot AI", "MOONSHOT_API_KEY"},
 	{"moonshotai-cn", "Moonshot AI (China)", "MOONSHOT_API_KEY"},
 	{"qwen-token-plan", "Qwen Token Plan", "QWEN_TOKEN_PLAN_API_KEY"},
+	{"qwen-token-plan-cn", "Qwen Token Plan (China)", "QWEN_TOKEN_PLAN_CN_API_KEY"},
+	{"qwen-token-plan-individual", "Qwen Token Plan (Individual)", "QWEN_TOKEN_PLAN_INDIVIDUAL_API_KEY"},
+	{"minimax-cn", "MiniMax (China)", "MINIMAX_CN_API_KEY"},
+	{"zai-coding-cn", "ZAI Coding Plan (China)", "ZAI_CODING_CN_API_KEY"},
+	{"xiaomi", "Xiaomi MiMo", "XIAOMI_API_KEY"},
+	{"xiaomi-token-plan-cn", "Xiaomi Token Plan (China)", "XIAOMI_TOKEN_PLAN_CN_API_KEY"},
+	{"xiaomi-token-plan-ams", "Xiaomi Token Plan (Amsterdam)", "XIAOMI_TOKEN_PLAN_AMS_API_KEY"},
+	{"xiaomi-token-plan-sgp", "Xiaomi Token Plan (Singapore)", "XIAOMI_TOKEN_PLAN_SGP_API_KEY"},
+	{"ant-ling", "Ant Ling", "ANT_LING_API_KEY"},
+	{"azure-openai-responses", "Azure OpenAI", "AZURE_OPENAI_API_KEY"},
+	{"baseten", "Baseten", "BASETEN_API_KEY"},
+	{"cloudflare-ai-gateway", "Cloudflare AI Gateway", "CLOUDFLARE_AI_GATEWAY_API_KEY"},
+	{"cloudflare-workers-ai", "Cloudflare Workers AI", "CLOUDFLARE_WORKERS_AI_API_KEY"},
+	{"google-vertex", "Google Vertex AI", "GOOGLE_VERTEX_API_KEY"},
+	{"meta", "Meta", "META_API_KEY"},
+	{"opencode-go", "OpenCode Go", "OPENCODE_GO_API_KEY"},
+	{"radius", "Radius", "RADIUS_API_KEY"},
 }
 
 // OAuthProvider is a subscription/OAuth-only provider (no API-key env).

@@ -37,7 +37,7 @@ func TestRecentAt(t *testing.T) {
 	m := Model{winW: 120, winH: 30, ready: true} // mainW=81, sidebar x>=82
 	m.recentModels = []RecentModel{{ID: "a"}, {ID: "b"}}
 	m.ModelLbl = "a"
-	y0 := 2 + recentContentRow // first model row
+	y0 := 1 + recentContentRow // first model row
 	if idx, ok := m.recentAt(82, y0); !ok || idx != 0 {
 		t.Fatalf("row 0: got %d,%v", idx, ok)
 	}
@@ -78,18 +78,18 @@ func TestRecentAtMatchesRender(t *testing.T) {
 	}
 	x := m.mainW() + 1
 	// output line 0 is the box top border, so content row = line-1 and
-	// screen y = 2 (header + border) + content row.
+	// screen y = 1 (border) + content row.
 	at := func(y, want int) {
 		t.Helper()
 		if idx, ok := m.recentAt(x, y); !ok || idx != want {
 			t.Fatalf("y=%d: got %d,%v, want %d", y, idx, ok, want)
 		}
 	}
-	at(2+head, 0)
-	at(2+head+1, 1)
+	at(1+head, 0)
+	at(1+head+1, 1)
 	// scrolled 2 rows down: the same screen rows map 2 models further
 	m.sideVp.SetYOffset(2)
-	if idx, ok := m.recentAt(x, 2+head); !ok || idx != 2 {
-		t.Fatalf("scrolled y=%d: got %d,%v, want 2", 2+head, idx, ok)
+	if idx, ok := m.recentAt(x, 1+head); !ok || idx != 2 {
+		t.Fatalf("scrolled y=%d: got %d,%v, want 2", 1+head, idx, ok)
 	}
 }

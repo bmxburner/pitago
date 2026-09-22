@@ -80,6 +80,13 @@ func main() {
 	m := app.New(pi, cwd)
 	m.AppVersion = version
 	m.Configure(opts, keyPath)
+	// Preload the update cache so the welcome banner ("⬆ … pitago
+	// --update") shows on the first frame — the async auto-check in
+	// Init() refreshes it right after.
+	if c := update.LoadCache(update.CachePath()); update.Fresh(c, update.CheckTTL) &&
+		update.NeedsUpdate(version, c.LatestTag) && update.IsRelease(version) {
+		m.UpdateAvail = c.LatestTag
+	}
 	m.Mouse = *mouse
 	m.UseBuiltins(builtin.All(), builtin.Confirmers())
 	// Mouse capture on by default so the sidebar is clickable + scrollable.

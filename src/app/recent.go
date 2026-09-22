@@ -13,7 +13,7 @@ import (
 // PET(0) face(1) sep(2) SESSION(3) first(4) sess(5) sep(6) model(7) ctx(8)
 // toks(9) sep(10) STATS head(11) time(12) last(13) speed(14) turns(15)
 // left(16) sep(17) RECENT MODELS(18) models(19…).
-// Screen y = 2 (header + box border) + row; recentAt must match.
+// Screen y = 1 (box border) + row; recentAt must match.
 // petRows is added (not inlined) so a PET height change moves this too.
 const recentContentRow = 16 + petRows
 
@@ -99,11 +99,11 @@ func (m Model) recentAt(x, y int) (int, bool) {
 	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 || len(m.recentModels) == 0 {
 		return 0, false
 	}
-	if x < m.mainW()+1 || x > m.winW || y < 2+recentContentRow {
+	if x < m.mainW()+1 || x > m.winW || y < 1+recentContentRow {
 		return 0, false
 	}
 	// visible rows start at YOffset when the sidebar is scrolled
-	idx := y - (2 + recentContentRow) + m.sideVp.YOffset
+	idx := y - (1 + recentContentRow) + m.sideVp.YOffset
 	if idx < 0 || idx >= len(m.recentModels) {
 		return 0, false
 	}
@@ -126,8 +126,8 @@ func (m Model) pluginHeaderRow() int {
 }
 
 // pluginToggleAt reports a click on the PLUGINS header (collapses/expands
-// the list). Same screen→content mapping as recentAt (header 1 + box
-// border 1, plus YOffset when scrolled).
+// the list). Same screen→content mapping as recentAt (box border 1,
+// plus YOffset when scrolled).
 func (m Model) pluginToggleAt(x, y int) bool {
 	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 {
 		return false
@@ -135,7 +135,7 @@ func (m Model) pluginToggleAt(x, y int) bool {
 	if x < m.mainW()+1 || x > m.winW {
 		return false
 	}
-	return y-2+m.sideVp.YOffset == m.pluginHeaderRow()
+	return y-1+m.sideVp.YOffset == m.pluginHeaderRow()
 }
 
 // recentHint advertises click-switch only when the terminal reports mouse

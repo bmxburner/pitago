@@ -67,6 +67,10 @@ func (m Model) welcomeView(w int) string {
 	hints := statusBarStyle.Render("/ commands · ! bash · ctrl+o more")
 	ready := okStyle.Render("●") + " " + sideTitleStyle.Render("ready")
 	details := []string{title, hints, ready}
+	if m.UpdateAvail != "" {
+		details = append(details,
+			warnStyle.Render("⬆ "+m.UpdateAvail+" available — /update or pitago --update"))
+	}
 
 	ext, prm, skl, bin := extension.Summarize(m.Cmds)
 	res := sideTitleStyle.Render("◆") + " " +
