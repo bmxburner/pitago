@@ -40,6 +40,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Toasts expire by wall clock: prune on every message so a missed
 	// dismissal tick still clears (the tick itself just triggers repaint).
 	m.pruneToasts()
+	// SGR mouse-report leakage: a trackpad/mouse-wheel burst can split
+	// across input reads, losing the ESC prefix — the "[<65;50;31M…"
+	// remainder then arrives as plain KeyRunes. Scrub it before dialogs,
+	// popups, or the textarea can insert the noise as text; wheel reports
+	// still scroll the chat.
+	if km, ok := msg.(tea.KeyMsg); ok && !km.Paste && km.Type == tea.KeyRunes {
+		if events, cleaned, isLeak := cleanMouseLeak(km.Runes); isLeak {
+			if len(cleaned) == 0 {
+				if len(m.Dialogs) > 0 {
+					return m, nil // dialogs swallow mouse, like MouseMsg
+				}
+				return m, m.scrollLeak(events)
+			}
+			km.Runes = cleaned
+			km.Alt = false // the Alt bit is the eaten ESC, not the user
+			msg = km
+		}
+	}
 	// dialog captures all keys while open
 	if len(m.Dialogs) > 0 {
 		if km, ok := msg.(tea.KeyMsg); ok {
@@ -667,10 +685,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, cmd
 		}
 	}
-	m.ta, cmd = m.ta.Update(msg)
-	cmds = append(cmds, cmd)
-	if km, ok := msg.(tea.KeyMsg); ok && km.Paste {
-		m.collectDrops() // terminal drop/paste: long paths → [Image N] chips
+	// Mouse events never reach the textarea (it has no mouse handling —
+	// feeding them in only risks echoing reports as text), just viewports.
+	if _, isMouse := msg.(tea.MouseMsg); !isMouse {
+		m.ta, cmd = m.ta.Update(msg)
+		cmds = append(cmds, cmd)
+		if km, ok := msg.(tea.KeyMsg); ok && km.Paste {
+			m.collectDrops() // terminal drop/paste: long paths → [Image N] chips
+		}
 	}
 	if m.ready {
 		// wheel over the sidebar scrolls it, not the chat

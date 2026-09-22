@@ -55,27 +55,27 @@ From a release binary (latest version, pick your OS — single block, no variabl
 macOS (Apple Silicon):
 
 ```bash
-curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-arm64
-chmod +x pitago
-sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
+mkdir -p ~/.local/bin
+curl -L -o ~/.local/bin/pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-arm64
+chmod +x ~/.local/bin/pitago
 pitago --version
 ```
 
 macOS (Intel):
 
 ```bash
-curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-amd64
-chmod +x pitago
-sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
+mkdir -p ~/.local/bin
+curl -L -o ~/.local/bin/pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-darwin-amd64
+chmod +x ~/.local/bin/pitago
 pitago --version
 ```
 
 Linux:
 
 ```bash
-curl -L -o pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-linux-amd64
-chmod +x pitago
-sudo mv pitago /usr/local/bin/pitago   # or ~/go/bin, ~/.local/bin — any dir on PATH
+mkdir -p ~/.local/bin
+curl -L -o ~/.local/bin/pitago https://github.com/cavaldos/pitago/releases/latest/download/pitago-linux-amd64
+chmod +x ~/.local/bin/pitago
 pitago --version
 ```
 
@@ -92,7 +92,7 @@ From source:
 git clone https://github.com/cavaldos/pitago.git
 cd pitago
 script/build.sh                      # outputs bin/pitago (VERSION defaults to git tag/commit)
-sudo cp bin/pitago /usr/local/bin/pitago
+mkdir -p ~/.local/bin && cp bin/pitago ~/.local/bin/pitago
 pitago --version
 ```
 
@@ -101,14 +101,14 @@ Uninstall (if installed into bin):
 macOS:
 
 ```bash
-sudo rm /usr/local/bin/pitago   # or wherever you put it: ~/go/bin, ~/.local/bin, …
+rm ~/.local/bin/pitago   # or /usr/local/bin/pitago if you installed with sudo before
 rm -rf ~/.config/pitago         # optional: remove saved API keys + recent models
 ```
 
 Linux:
 
 ```bash
-sudo rm /usr/local/bin/pitago   # or wherever you put it: ~/go/bin, ~/.local/bin, …
+rm ~/.local/bin/pitago   # or /usr/local/bin/pitago if you installed with sudo before
 rm -rf ~/.config/pitago         # optional: remove saved API keys + recent models
 ```
 

@@ -113,11 +113,15 @@ func main() {
 // runUpdate checks the latest GitHub release and replaces this binary.
 // Failures print a copy-paste fallback instead of a stack trace.
 func runUpdate(current string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	latest, err := update.FetchLatest(ctx)
 	if err != nil {
 		fmt.Println("pitago: update check failed:", err)
+		fmt.Println("hint: both github.com + api.github.com timed out → máy không ra được GitHub trực tiếp.")
+		fmt.Println("  1. kiểm tra proxy: env | grep -i proxy  vs  sudo env | grep -i proxy")
+		fmt.Println("  2. thử lại giữ proxy: sudo -E pitago --update")
+		fmt.Println("  3. hoặc cài tay: " + update.Manual(update.CurrentAsset()))
 		os.Exit(1)
 	}
 	if !update.NeedsUpdate(current, latest) {
@@ -130,7 +134,7 @@ func runUpdate(current string) {
 	defer dcancel()
 	if err := update.Install(dctx, update.LatestURL(asset)); err != nil {
 		if errors.Is(err, update.ErrNeedSudo) {
-			fmt.Println("pitago: binary dir needs sudo — run this instead:")
+			fmt.Println("pitago: binary is in a system dir (/usr/local/bin) — move it to ~/.local/bin once, then no sudo ever:")
 			fmt.Println("  " + update.Manual(asset))
 			os.Exit(1)
 		}

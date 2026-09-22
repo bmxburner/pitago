@@ -105,30 +105,35 @@ func LatestURL(asset string) string {
 }
 
 // Manual returns the copy-paste fallback when auto-replace can't write
-// (sudo dir) or is skipped (Windows lock, dev binary).
+// (system dir) or is skipped (Windows lock, dev binary). No-sudo first:
+// ~/.local/bin is user-writable so future `pitago --update` needs no sudo.
 func Manual(asset string) string {
 	url := LatestURL(asset)
 	if strings.HasSuffix(asset, ".exe") {
 		return "Invoke-WebRequest " + url + " -OutFile pitago.exe  # replace the exe on your PATH, then restart"
 	}
-	return "curl -L -o pitago " + url + " && chmod +x pitago && " +
-		"sudo mv pitago /usr/local/bin/pitago  # or ~/go/bin, ~/.local/bin — wherever yours lives"
+	return "mkdir -p ~/.local/bin && curl -L -o ~/.local/bin/pitago " + url + " && chmod +x ~/.local/bin/pitago"
 }
 
 // FetchLatest resolves the newest release tag ("v0.0.5"). Primary path
 // reads the redirect of .../releases/latest (plain github.com, no auth,
 // no API rate limit); the api.github.com lookup is only a fallback.
+// Each attempt gets its own budget: sharing one ctx starves the fallback
+// (first timeout eats the whole deadline, second fails instantly).
 func FetchLatest(ctx context.Context) (string, error) {
-	if tag, err := latestViaRedirect(ctx); err == nil {
-		return tag, nil
-	} else {
-		redirectErr := err
-		tag, err := fetchLatestAPI(ctx)
-		if err != nil {
-			return "", fmt.Errorf("update check failed (%v; api fallback: %v)", redirectErr, err)
-		}
+	ctx1, cancel1 := context.WithTimeout(ctx, 10*time.Second)
+	tag, redirectErr := latestViaRedirect(ctx1)
+	cancel1()
+	if redirectErr == nil {
 		return tag, nil
 	}
+	ctx2, cancel2 := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel2()
+	tag, err := fetchLatestAPI(ctx2)
+	if err != nil {
+		return "", fmt.Errorf("update check failed (%v; api fallback: %v)", redirectErr, err)
+	}
+	return tag, nil
 }
 
 // latestViaRedirect follows nothing: github.com answers
