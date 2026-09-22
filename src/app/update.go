@@ -75,6 +75,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.vp.Height = vpH
 			m.sideVp.Width = sideInnerW
 			m.syncSideH() // reserves the quit-arm footer line while armed
+			if m.cmdOpen || m.atOpen {
+				// Resizing with a popup open must keep the winH budget:
+				// shrink the chat like a keystroke would (and clamp the
+				// popup scroll offset to its new window).
+				m.ensureCmdVisible()
+				m.applyPopupH()
+			}
 		}
 		m.ta.SetWidth(mainW - 6)
 		m.Refresh()

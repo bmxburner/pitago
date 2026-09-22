@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"pitago/src/components/palette"
 )
@@ -41,14 +42,29 @@ func (m *Model) refreshCmds() {
 	m.applyPopupH()
 }
 
-// ensureCmdVisible keeps cmdCursor inside the [cmdOffset, cmdOffset+palette.Win) window.
+// cmdWin caps the visible popup rows so the whole frame fits winH on
+// short terminals: header(1) + chat min(3) + popup box + input(6+chips)
+// must stay <= winH. Tall screens keep palette.Win; the box never grows
+// past it (see components/palette).
+func (m Model) cmdWin() int {
+	boxMax := m.winH - 1 - 3 - (6 + m.chipH()) - m.atPopupH()
+	win := boxMax - 2 - 1 - 2 // border + footer + both scroll hints
+	if win > palette.Win {
+		win = palette.Win
+	}
+	if win < 1 {
+		win = 1
+	}
+	return win
+}
 
 func (m *Model) ensureCmdVisible() {
+	win := m.cmdWin()
 	if m.cmdCursor < m.cmdOffset {
 		m.cmdOffset = m.cmdCursor
 	}
-	if m.cmdCursor >= m.cmdOffset+palette.Win {
-		m.cmdOffset = m.cmdCursor - palette.Win + 1
+	if m.cmdCursor >= m.cmdOffset+win {
+		m.cmdOffset = m.cmdCursor - win + 1
 	}
 	if m.cmdOffset < 0 {
 		m.cmdOffset = 0
@@ -59,15 +75,16 @@ func (m *Model) popupH() int {
 	if !m.cmdOpen {
 		return 0
 	}
+	win := m.cmdWin()
 	n := len(m.cmdItems)
-	if n > palette.Win {
-		n = palette.Win
+	if n > win {
+		n = win
 	}
 	extra := 0 // scroll hints above/below the window
 	if m.cmdOffset > 0 {
 		extra++
 	}
-	if m.cmdOffset+palette.Win < len(m.cmdItems) {
+	if m.cmdOffset+win < len(m.cmdItems) {
 		extra++
 	}
 	return n + extra + 3 // rows + hints + footer + border
@@ -151,18 +168,15 @@ func (m *Model) completeCmd() {
 
 func (m Model) renderCmdPopup() string {
 	mainW := m.mainW()
-	var b strings.Builder
-	end := m.cmdOffset + palette.Win
+	win := m.cmdWin()
+	end := m.cmdOffset + win
 	if end > len(m.cmdItems) {
 		end = len(m.cmdItems)
 	}
-	if m.cmdOffset > 0 {
-		b.WriteString("  " + toolStyle.Render(fmt.Sprintf("…(+%d above)", m.cmdOffset)) + "\n")
-	}
-	for i := m.cmdOffset; i < end; i++ {
+	// plain (unstyled) row text so width math stays ANSI-free
+	plain := func(i int) (name, rest string) {
 		c := m.Cmds[m.cmdItems[i]]
-		name := "/" + c.Name
-		rest := ""
+		name = "/" + c.Name
 		if tag := c.SourceTag(); tag != "" {
 			// extension command: "[u:npm:pi-subagents] desc", like pi
 			rest = " — [" + tag + "]"
@@ -175,7 +189,44 @@ func (m Model) renderCmdPopup() string {
 			}
 			rest += " [" + c.Source + "]"
 		}
-		row := Short(name+rest, mainW-8)
+		return name, rest
+	}
+	foot := fmt.Sprintf("(%d/%d) Tab complete · Enter send · Esc close", m.cmdCursor+1, len(m.cmdItems))
+	// The dropdown hugs its content instead of spanning the chat width:
+	// box = widest line over ALL matches (scrolling never jitters it)
+	// plus padding, capped at mainW.
+	contentW := lipgloss.Width(foot)
+	if m.cmdOffset > 0 {
+		if w := lipgloss.Width(fmt.Sprintf("…(+%d above)", m.cmdOffset)); w > contentW {
+			contentW = w
+		}
+	}
+	if below := len(m.cmdItems) - end; below > 0 {
+		if w := lipgloss.Width(fmt.Sprintf("…(+%d below)", below)); w > contentW {
+			contentW = w
+		}
+	}
+	for _, i := range m.cmdItems {
+		name, rest := plain(i)
+		if w := 2 + lipgloss.Width(Short(name+rest, mainW)); w > contentW {
+			contentW = w
+		}
+	}
+	boxW := contentW + 2 // horizontal padding (lipgloss adds the 2 border cols outside Width)
+	if boxW > mainW-2 {
+		boxW = mainW - 2
+	}
+	textW := boxW - 2 - 2 // padding + "▸ " marker
+	if textW < 1 {
+		textW = 1
+	}
+	var b strings.Builder
+	if m.cmdOffset > 0 {
+		b.WriteString("  " + toolStyle.Render(fmt.Sprintf("…(+%d above)", m.cmdOffset)) + "\n")
+	}
+	for i := m.cmdOffset; i < end; i++ {
+		name, rest := plain(i)
+		row := Short(name+rest, textW)
 		// command name cyan, annotation keeps the row color
 		nl := len(name)
 		if nl > len(row) {
@@ -190,8 +241,8 @@ func (m Model) renderCmdPopup() string {
 	if end < len(m.cmdItems) {
 		b.WriteString("  " + toolStyle.Render(fmt.Sprintf("…(+%d below)", len(m.cmdItems)-end)) + "\n")
 	}
-	b.WriteString(toolStyle.Render(fmt.Sprintf("(%d/%d) Tab complete · Enter send · Esc close", m.cmdCursor+1, len(m.cmdItems))))
-	return cmdPopStyle.Width(mainW).Render(strings.TrimRight(b.String(), "\n"))
+	b.WriteString(toolStyle.Render(foot))
+	return cmdPopStyle.Width(boxW).Render(strings.TrimRight(b.String(), "\n"))
 }
 
 // render ----------------------------------------------------------------------

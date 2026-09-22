@@ -1,10 +1,12 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
@@ -32,6 +34,7 @@ func TestRefreshCmdsShowsAll(t *testing.T) {
 	}...)
 	m.ta = textarea.New()
 	m.ta.SetValue("/")
+	m.winW, m.winH = 120, 30 // tall enough that cmdWin() keeps palette.Win
 	m.refreshCmds()
 	if !m.cmdOpen {
 		t.Fatal("popup must open on /")
@@ -44,7 +47,7 @@ func TestRefreshCmdsShowsAll(t *testing.T) {
 	}
 	m.cmdCursor = len(m.cmdItems) - 1
 	m.ensureCmdVisible()
-	if m.cmdOffset+palette.Win != len(m.cmdItems) {
+	if m.cmdOffset+m.cmdWin() != len(m.cmdItems) {
 		t.Fatalf("last row must scroll into view, offset=%d", m.cmdOffset)
 	}
 }
@@ -79,7 +82,7 @@ func TestCmdExtensionTag(t *testing.T) {
 		{Name: "council", Description: "Run a council", Source: "prompt"},
 	}...)
 	m.ta = textarea.New()
-	m.winW = 120
+	m.winW, m.winH = 120, 30 // tall enough that cmdWin() keeps palette.Win
 
 	m.ta.SetValue("/pi-subagents")
 	m.refreshCmds()
@@ -100,5 +103,91 @@ func TestCmdExtensionTag(t *testing.T) {
 	}
 	if !strings.Contains(out, "[36m") {
 		t.Errorf("command names must render cyan, got\n%s", out)
+	}
+}
+
+// Regression (screenshot): the / popup was a fixed 10-row window, so on a
+// short terminal it overflowed winH (or crushed the chat to 3 rows). The
+// window must shrink so the frame stays exactly winH rows.
+func TestCmdPopupFitsShortTerminal(t *testing.T) {
+	for _, wh := range [][2]int{{100, 20}, {120, 24}} {
+		m := New(nil, t.TempDir())
+		m.Status = "ready"
+		m.ModelLbl = "glm-4.7"
+		for i := 0; i < 83; i++ {
+			m.Cmds = append(m.Cmds, pirpc.RepoCommand{
+				Name:        fmt.Sprintf("cmd%02d", i),
+				Description: "Reload keybindings, extensions, skills, prompts, themes, and context files",
+				Source:      "builtin",
+			})
+		}
+		tm, _ := m.Update(tea.WindowSizeMsg{Width: wh[0], Height: wh[1]})
+		m = tm.(Model)
+		m.ta.SetValue("/")
+		m.refreshCmds()
+		if !m.cmdOpen {
+			t.Fatalf("%dx%d: popup must open on /", wh[0], wh[1])
+		}
+		if m.cmdWin() >= palette.Win {
+			t.Fatalf("%dx%d: popup window must shrink below %d, got %d", wh[0], wh[1], palette.Win, m.cmdWin())
+		}
+		if rows := strings.Split(stripANSI(m.renderCmdPopup()), "\n"); len(rows) != m.popupH() {
+			t.Fatalf("%dx%d: popup renders %d rows, want popupH %d", wh[0], wh[1], len(rows), m.popupH())
+		}
+		if lines := strings.Split(m.View(), "\n"); len(lines) != wh[1] {
+			t.Fatalf("%dx%d: frame is %d rows, want %d", wh[0], wh[1], len(lines), wh[1])
+		}
+	}
+}
+
+// The / dropdown hugs its content instead of spanning the chat width:
+// short matches → narrow box; long matches → capped at mainW.
+func TestCmdPopupHugsContent(t *testing.T) {
+	newPopModel := func(cmds []pirpc.RepoCommand, w, h int) Model {
+		m := New(nil, t.TempDir())
+		m.Status = "ready"
+		m.ModelLbl = "test"
+		m.Cmds = cmds
+		tm, _ := m.Update(tea.WindowSizeMsg{Width: w, Height: h})
+		m = tm.(Model)
+		m.ta.SetValue("/")
+		m.refreshCmds()
+		return m
+	}
+	popW := func(m Model) int {
+		w := 0
+		for _, ln := range strings.Split(stripANSI(m.renderCmdPopup()), "\n") {
+			if x := lipgloss.Width(ln); x > w {
+				w = x
+			}
+		}
+		return w
+	}
+	// short matches → narrow box, footer intact, frame fits
+	m := newPopModel([]pirpc.RepoCommand{
+		{Name: "new", Description: "Start a new session", Source: "builtin"},
+		{Name: "quit", Description: "Quit pi", Source: "builtin"},
+	}, 120, 24)
+	if !m.cmdOpen {
+		t.Fatal("popup must open on /")
+	}
+	if w, mw := popW(m), m.mainW(); w >= mw {
+		t.Fatalf("narrow popup width %d must be < chat width %d", w, mw)
+	}
+	if out := stripANSI(m.renderCmdPopup()); !strings.Contains(out, "Tab complete") {
+		t.Fatalf("popup footer clipped:\n%s", out)
+	}
+	if lines := strings.Split(m.View(), "\n"); len(lines) != 24 {
+		t.Fatalf("frame is %d rows, want 24", len(lines))
+	}
+	// long matches → capped at mainW
+	var long []pirpc.RepoCommand
+	for i := 0; i < 83; i++ {
+		long = append(long, pirpc.RepoCommand{Name: fmt.Sprintf("cmd%02d", i),
+			Description: "Reload keybindings, extensions, skills, prompts, themes, and context files", Source: "builtin"})
+	}
+	m2 := newPopModel(long, 120, 24)
+	if w, mw := popW(m2), m2.mainW(); w != mw {
+		t.Fatalf("wide popup width %d must cap at chat width %d", w, mw)
 	}
 }
