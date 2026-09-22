@@ -19,7 +19,7 @@ func TestRenderTreePiPayload(t *testing.T) {
 	if err := json.Unmarshal([]byte(raw), &data); err != nil {
 		t.Fatal(err)
 	}
-	got := renderTree(data.Tree, data.LeafID)
+	got := renderTree(data.Tree, data.LeafID, "all")
 	want := "└── • [model: glm-5.3]\n    └── • [thinking: high]"
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
@@ -53,7 +53,7 @@ func TestRenderTreeToolMapAndUsage(t *testing.T) {
 			{Entry: pirpc.TreeEntry{Type: "usage", ID: "x1"}},
 		},
 	}}
-	got := renderTree(nodes, "t1")
+	got := renderTree(nodes, "t1", "all")
 	want := "└── • user: hello\n" +
 		"    ├── • assistant: I'll read it\n" +
 		"    │   └── • [read: a.go:10-14]"
@@ -80,7 +80,7 @@ func TestRenderTreeMiscEntries(t *testing.T) {
 		{Entry: pirpc.TreeEntry{Type: "thinking_level_change", ID: "x2"}},
 		{Entry: msgEntry("u9", "", "user", `"hi"`), Label: "wip"},
 	}
-	got := renderTree(nodes, "c1")
+	got := renderTree(nodes, "c1", "all")
 	want := "├── • [compaction: 12k tokens]\n" +
 		"├── [branch summary]: tried X next\n" +
 		"├── [label: (cleared)]\n" +
@@ -112,7 +112,7 @@ func TestRenderTreeAssistantFallbacks(t *testing.T) {
 		{Entry: orphan},
 		{Entry: bash},
 	}
-	got := renderTree(nodes, "")
+	got := renderTree(nodes, "", "all")
 	want := "├── assistant: (aborted)\n" +
 		"├── assistant: boom\n" +
 		"├── assistant: (no content)\n" +
@@ -124,7 +124,40 @@ func TestRenderTreeAssistantFallbacks(t *testing.T) {
 }
 
 func TestRenderTreeEmpty(t *testing.T) {
-	if got := renderTree(nil, ""); got != "No entries in session" {
+	if got := renderTree(nil, "", "all"); got != "No entries in session" {
 		t.Errorf("got %q", got)
+	}
+}
+
+// Stock pi filter semantics: default hides settings entries (model_change,
+// thinking_level_change, ...), no-tools drops toolResults, user-only keeps
+// user messages, labeled-only keeps bookmarked rows.
+func TestRenderTreeFilters(t *testing.T) {
+	nodes := []pirpc.TreeNode{
+		{Entry: pirpc.TreeEntry{Type: "model_change", ID: "m1", ModelID: "x"}},
+		{Entry: msgEntry("u1", "", "user", `"hi"`), Label: "wip"},
+		{Entry: msgEntry("a1", "", "assistant", `"ok"`)},
+	}
+	tr := pirpc.TreeEntry{Type: "message", ID: "t1"}
+	tr.Message.Role = "toolResult"
+	tr.Message.ToolName = "read"
+	nodes = append(nodes, pirpc.TreeNode{Entry: tr})
+
+	if got := renderTree(nodes, "", "default"); strings.Contains(got, "[model:") {
+		t.Errorf("default should hide settings entries:\n%s", got)
+	}
+	if got := renderTree(nodes, "", "no-tools"); strings.Contains(got, "[read]") {
+		t.Errorf("no-tools should hide toolResults:\n%s", got)
+	}
+	got := renderTree(nodes, "", "user-only")
+	if !strings.Contains(got, "user: hi") || strings.Contains(got, "assistant:") {
+		t.Errorf("user-only should keep only user rows:\n%s", got)
+	}
+	got = renderTree(nodes, "", "labeled-only")
+	if !strings.Contains(got, "[wip]") || strings.Contains(got, "assistant:") {
+		t.Errorf("labeled-only should keep only bookmarked rows:\n%s", got)
+	}
+	if got := renderTree(nodes, "", "all"); !strings.Contains(got, "[model:") {
+		t.Errorf("all should show everything:\n%s", got)
 	}
 }

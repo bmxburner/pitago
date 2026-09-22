@@ -9,6 +9,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pitago/src/app"
+	"pitago/src/components/palette"
 	"pitago/src/pirpc"
 )
 
@@ -257,28 +258,44 @@ func doOAuthLogout(m *app.Model, provider, authPath string) tea.Cmd {
 
 // respawnPi kills the old pi and respawns keeping the same session (to pick up added/removed keys).
 
-// loadSettings fetches current state to build the settings dialog.
+// loadSettings fetches live state + pi settings file + pitago prefs to
+// build the settings dialog (pi parity: the first rows are live agent
+// state, the rest mirror stock pi's settings menu).
 func loadSettings(m *app.Model) tea.Cmd {
 	return func() tea.Msg {
-		st, err := m.Pi.GetState()
+		sst, err := loadSettingsState(m)
 		if err != nil {
 			return app.SettingsMsg{Err: err}
-		}
-		if st.ThinkingLevel == "" {
-			st.ThinkingLevel = "off"
-		}
-		sst := app.SettingsState{
-			Steering:    app.OrDefault(st.SteeringMode, "one-at-a-time"),
-			FollowUp:    app.OrDefault(st.FollowUpMode, "one-at-a-time"),
-			AutoCompact: st.AutoCompaction,
-			AutoRetry:   m.AutoRetry,
-			Thinking:    st.ThinkingLevel,
-			Model:       m.ModelLbl,
-			Theme:       app.OrDefault(m.ThemeName, "default"),
 		}
 		opts, descs := settingsOptions(sst)
 		return app.SettingsMsg{St: sst, Opts: opts, Descs: descs}
 	}
+}
+
+// loadSettingsState reads RPC state, settings.json and local prefs.
+func loadSettingsState(m *app.Model) (app.SettingsState, error) {
+	var sst app.SettingsState
+	st, err := m.Pi.GetState()
+	if err != nil {
+		return sst, err
+	}
+	if st.ThinkingLevel == "" {
+		st.ThinkingLevel = "off"
+	}
+	cfg := pirpc.ReadPiSettings()
+	sst = app.SettingsState{
+		Steering:        app.OrDefault(st.SteeringMode, pirpc.PiString(cfg, "steeringMode", "one-at-a-time")),
+		FollowUp:        app.OrDefault(st.FollowUpMode, pirpc.PiString(cfg, "followUpMode", "one-at-a-time")),
+		AutoCompact:     st.AutoCompaction,
+		AutoRetry:       m.AutoRetry,
+		Thinking:        st.ThinkingLevel,
+		Model:           m.ModelLbl,
+		Theme:           app.OrDefault(m.ThemeName, "default"),
+		Vals:            fileSettingVals(cfg),
+		HideThinking:    m.HideThinking,
+		AutocompleteMax: palette.Win,
+	}
+	return sst, nil
 }
 
 func onoff(b bool) string {
@@ -286,6 +303,144 @@ func onoff(b bool) string {
 		return "on"
 	}
 	return "off"
+}
+
+// fileSetting is one settings.json-backed (or pitago-local) /settings row.
+// vals are the display values to cycle; toVal converts back to the file
+// value; local rows apply instantly without reconnecting pi.
+type fileSetting struct {
+	label string
+	path  string // dotted settings.json path ("" = pitago-local)
+	vals  []string
+	toVal func(disp string) any
+	local bool
+}
+
+var httpTimeoutVals = []string{"30 sec", "1 min", "2 min", "5 min", "disabled"}
+var httpTimeoutMs = []int{30000, 60000, 120000, 300000, 0}
+
+var trustVals = []string{"Ask", "Always trust", "Never trust"}
+var trustKeys = []string{"ask", "always", "never"}
+
+// fileSettings mirrors the applicable rows of stock pi's settings menu, in
+// pi's order (image block first, like the screenshot). Skipped as pi-TUI-only
+// or submenu: hardware cursor, editor/output padding, clear-on-shrink,
+// terminal progress, tui-mode, fullscreen×3, double-escape, mermaid,
+// changelog, tree filter, warnings + per-model thinking (submenus),
+// telemetry UI (pitago has its own updater — the key is still writable via
+// the file).
+var fileSettings = []fileSetting{
+	{label: "Skill commands", path: "enableSkillCommands", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Show images", path: "terminal.showImages", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Image width", path: "terminal.imageWidthCells", vals: []string{"60", "80", "120"},
+		toVal: func(d string) any { return atoiOr(d, 60) }},
+	{label: "Auto-resize images", path: "images.autoResize", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Block images", path: "images.blockImages", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Transport", path: "transport", vals: []string{"auto", "sse", "websocket", "websocket-cached"},
+		toVal: func(d string) any { return d }},
+	{label: "HTTP idle timeout", path: "httpIdleTimeoutMs", vals: httpTimeoutVals,
+		toVal: func(d string) any {
+			for i, l := range httpTimeoutVals {
+				if l == d {
+					return httpTimeoutMs[i]
+				}
+			}
+			return 300000
+		}},
+	{label: "Cache warming", path: "cacheWarming", vals: []string{"off", "streaming", "idle"},
+		toVal: func(d string) any { return d }},
+	{label: "Hide thinking", path: "hideThinkingBlock", vals: []string{"on", "off"}, local: true,
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Cache-miss notices", path: "showCacheMissNotices", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Default project trust", path: "defaultProjectTrust", vals: trustVals,
+		toVal: func(d string) any {
+			for i, l := range trustVals {
+				if l == d {
+					return trustKeys[i]
+				}
+			}
+			return "ask"
+		}},
+	{label: "Quiet startup", path: "quietStartup", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Install telemetry", path: "enableInstallTelemetry", vals: []string{"on", "off"},
+		toVal: func(d string) any { return d == "on" }},
+	{label: "Autocomplete max", path: "", vals: []string{"3", "5", "7", "10", "15", "20"}, local: true,
+		toVal: func(d string) any { return atoiOr(d, 10) }},
+	{label: "Tree filter mode", path: "treeFilterMode", vals: []string{"default", "no-tools", "user-only", "labeled-only", "all"}, local: true,
+		toVal: func(d string) any { return d }},
+}
+
+// fileSettingVals stringifies every file row's current value for display.
+func fileSettingVals(cfg map[string]any) map[string]string {
+	out := map[string]string{}
+	for _, fr := range fileSettings {
+		switch fr.path {
+		case "terminal.imageWidthCells":
+			out[fr.path] = itoa(pirpc.PiInt(cfg, fr.path, 60))
+		case "httpIdleTimeoutMs":
+			ms := pirpc.PiInt(cfg, fr.path, 300000)
+			disp := fmt.Sprintf("%d ms", ms)
+			for i, m := range httpTimeoutMs {
+				if m == ms {
+					disp = httpTimeoutVals[i]
+				}
+			}
+			out[fr.path] = disp
+		case "defaultProjectTrust":
+			key := pirpc.PiString(cfg, fr.path, "ask")
+			disp := key
+			for i, k := range trustKeys {
+				if k == key {
+					disp = trustVals[i]
+				}
+			}
+			out[fr.path] = disp
+		case "transport":
+			out[fr.path] = pirpc.PiString(cfg, fr.path, "auto")
+		case "cacheWarming":
+			out[fr.path] = pirpc.PiString(cfg, fr.path, "streaming")
+		case "treeFilterMode":
+			out[fr.path] = pirpc.PiString(cfg, fr.path, "default")
+		default:
+			out[fr.path] = onoff(pirpc.PiBool(cfg, fr.path, fileSettingDef(fr.path)))
+		}
+	}
+	return out
+}
+
+// fileSettingDef is pi's default for each bool row (from pi's bundle).
+func fileSettingDef(path string) bool {
+	switch path {
+	case "enableSkillCommands", "terminal.showImages", "images.autoResize":
+		return true
+	}
+	return false
+}
+
+func atoiOr(s string, def int) int {
+	var n int
+	if _, err := fmt.Sscanf(s, "%d", &n); err != nil {
+		return def
+	}
+	return n
+}
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }
+
+// nextVal cycles to the value after cur (wraps; unknown cur restarts at 0).
+func nextVal(vals []string, cur string) string {
+	for i, v := range vals {
+		if v == cur {
+			return vals[(i+1)%len(vals)]
+		}
+	}
+	return vals[0]
 }
 
 func settingsOptions(st app.SettingsState) ([]string, []string) {
@@ -307,11 +462,29 @@ func settingsOptions(st app.SettingsState) ([]string, []string) {
 		"Enter: toggle",
 		"Enter: open theme picker",
 	}
+	for _, fr := range fileSettings {
+		disp := st.Vals[fr.path]
+		if fr.path == "" { // pitago-local rows
+			if fr.label == "Hide thinking" {
+				disp = onoff(st.HideThinking)
+			} else {
+				disp = itoa(st.AutocompleteMax)
+			}
+		}
+		foot := "Enter: toggle"
+		if len(fr.vals) > 2 {
+			foot = "Enter: next"
+		}
+		if !fr.local {
+			foot += " · reconnects pi"
+		}
+		opts = append(opts, fr.label+": "+disp)
+		descs = append(descs, foot)
+	}
 	return opts, descs
 }
 
 // settingsAction handles Enter on each settings row.
-
 func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 	if len(m.Dialogs) == 0 {
 		return m, nil
@@ -319,21 +492,19 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 	d := m.Dialogs[0]
 	st := d.Settings
 	refresh := func() tea.Msg {
-		s, err := m.Pi.GetState()
+		sst, err := loadSettingsState(m)
 		if err != nil {
 			return app.SettingsMsg{Err: err}
 		}
-		sst := app.SettingsState{
-			Steering:    app.OrDefault(s.SteeringMode, st.Steering),
-			FollowUp:    app.OrDefault(s.FollowUpMode, st.FollowUp),
-			AutoCompact: s.AutoCompaction,
-			AutoRetry:   m.AutoRetry,
-			Thinking:    app.OrDefault(s.ThinkingLevel, st.Thinking),
-			Model:       m.ModelLbl,
-			Theme:       app.OrDefault(m.ThemeName, "default"),
-		}
 		opts, descs := settingsOptions(sst)
 		return app.SettingsMsg{St: sst, Opts: opts, Descs: descs}
+	}
+	// file-backed rows (index 7+): cycle the value. Local rows apply
+	// instantly; the rest write settings.json and reconnect pi (the
+	// /login stay-open pattern: rows update optimistically, respawnMsg
+	// lands behind the open dialog).
+	if ri >= 7 {
+		return settingsFileAction(m, d, st, ri-7)
 	}
 	switch ri {
 	case 0: // model picker
@@ -355,6 +526,7 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			if err := m.Pi.SetSteering(next); err != nil {
 				return app.SettingsMsg{Err: err}
 			}
+			_ = pirpc.SetPiSetting("steeringMode", next) // next start; live now via RPC
 			return refresh()
 		}
 	case 3:
@@ -368,6 +540,7 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			if err := m.Pi.SetFollowUp(next); err != nil {
 				return app.SettingsMsg{Err: err}
 			}
+			_ = pirpc.SetPiSetting("followUpMode", next)
 			return refresh()
 		}
 	case 4:
@@ -377,6 +550,7 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			if err := m.Pi.SetAutoCompact(!st.AutoCompact); err != nil {
 				return app.SettingsMsg{Err: err}
 			}
+			_ = pirpc.SetPiSetting("compaction.enabled", !st.AutoCompact)
 			return refresh()
 		}
 	case 5:
@@ -389,6 +563,7 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 				m.AutoRetry = !auto
 				return app.SettingsMsg{Err: err}
 			}
+			_ = pirpc.SetPiSetting("retry.enabled", auto)
 			return refresh()
 		}
 	case 6: // theme picker
@@ -399,12 +574,76 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// settingsFileAction cycles one fileSettings row: local rows apply instantly
+// (+ prefs.json), the rest persist to settings.json and respawn pi.
+func settingsFileAction(m *app.Model, d *app.Dialog, st app.SettingsState, fi int) (tea.Model, tea.Cmd) {
+	if fi < 0 || fi >= len(fileSettings) {
+		return m, nil
+	}
+	fr := fileSettings[fi]
+	cur := st.Vals[fr.path]
+	if fr.path == "" {
+		if fr.label == "Hide thinking" {
+			cur = onoff(st.HideThinking)
+		} else {
+			cur = itoa(st.AutocompleteMax)
+		}
+	}
+	next := nextVal(fr.vals, cur)
+	if fr.local {
+		applyLocalSetting(m, fr, next)
+		st.HideThinking = m.HideThinking
+		st.AutocompleteMax = palette.Win
+		opts, descs := settingsOptions(st)
+		d.Options, d.Descs, d.Settings = opts, descs, st
+		d.Reindex()
+		m.Refresh()
+		return m, nil
+	}
+	m.Status = "saving " + strings.ToLower(fr.label) + "…"
+	m.Refresh()
+	if err := pirpc.SetPiSetting(fr.path, fr.toVal(next)); err != nil {
+		m.Status = "ready"
+		m.AddBlock(app.Block{Kind: "notice", Text: "settings write failed: " + err.Error(), Err: true})
+		m.Refresh()
+		return m, nil
+	}
+	if st.Vals == nil {
+		st.Vals = map[string]string{}
+	}
+	st.Vals[fr.path] = next
+	opts, descs := settingsOptions(st)
+	d.Options, d.Descs, d.Settings = opts, descs, st
+	d.Reindex()
+	m.Status = "reconnecting pi…"
+	m.Refresh()
+	return m, m.RespawnPi()
+}
+
+// applyLocalSetting applies a pitago-local row instantly and persists it.
+func applyLocalSetting(m *app.Model, fr fileSetting, next string) {
+	prefs := app.LoadPrefs(m.PrefsPath())
+	switch fr.label {
+	case "Hide thinking":
+		m.HideThinking = next == "on"
+		prefs.HideThinking = m.HideThinking
+		_ = pirpc.SetPiSetting(fr.path, fr.toVal(next)) // cross-compat with stock pi
+		_ = app.SavePrefs(m.PrefsPath(), prefs)
+	case "Autocomplete max":
+		palette.Win = atoiOr(next, 10)
+		prefs.AutocompleteMax = palette.Win
+		_ = app.SavePrefs(m.PrefsPath(), prefs)
+	case "Tree filter mode":
+		_ = pirpc.SetPiSetting(fr.path, fr.toVal(next)) // /tree reads it live
+	}
+}
+
 // renderTree renders the session tree pi-style: branch connectors, a "• "
 // prefix on the active leaf path, "[label] " bookmarks, and one pi-formatted
 // row per entry (see treeRow). Usage entries are skipped like pi (their
 // children still render). Read-only: pi's RPC has no navigate_tree, so
 // branch switching stays in pi's own TUI.
-func renderTree(nodes []pirpc.TreeNode, leaf string) string {
+func renderTree(nodes []pirpc.TreeNode, leaf, filter string) string {
 	if len(nodes) == 0 {
 		return "No entries in session"
 	}
@@ -419,6 +658,10 @@ func renderTree(nodes []pirpc.TreeNode, leaf string) string {
 				return
 			}
 			if n.Entry.Type == "usage" {
+				walk(n.Children, prefix)
+				continue
+			}
+			if !treePassesFilter(n, filter) {
 				walk(n.Children, prefix)
 				continue
 			}
@@ -440,6 +683,28 @@ func renderTree(nodes []pirpc.TreeNode, leaf string) string {
 		b.WriteString("…(truncated)\n")
 	}
 	return strings.TrimRight(b.String(), "\n")
+}
+
+// treePassesFilter mirrors stock pi's tree list filter: settings entries
+// (label/model_change/...) show only in "all"; toolResults drop out in
+// "no-tools"; "user-only" keeps user messages; "labeled-only" keeps
+// bookmarked rows. Default hides the settings noise like pi.
+func treePassesFilter(n pirpc.TreeNode, filter string) bool {
+	e := n.Entry
+	isSettings := e.Type == "label" || e.Type == "context_edit" || e.Type == "custom" ||
+		e.Type == "model_change" || e.Type == "thinking_level_change" || e.Type == "session_info"
+	switch filter {
+	case "user-only":
+		return e.Type == "message" && e.Message.Role == "user"
+	case "no-tools":
+		return !isSettings && !(e.Type == "message" && e.Message.Role == "toolResult")
+	case "labeled-only":
+		return n.Label != ""
+	case "all":
+		return true
+	default:
+		return !isSettings
+	}
 }
 
 // buildToolCallMap indexes assistant toolCall blocks by id so toolResult
@@ -712,11 +977,19 @@ func All() []app.Builtin {
 		return app.Builtin{Name: name, Desc: desc, Usage: usage, Origin: OriginPi, Run: run}
 	}
 	all := []app.Builtin{
-		pi("settings", "Open settings menu", "/settings", func(m *app.Model, arg string) tea.Cmd {
+		pi("settings", "Open agent settings (model · thinking · steering · compact · retry)", "/settings", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "loading settings…"
 			m.Refresh()
 			return loadSettings(m)
 		}),
+		{
+			Name: "pitago-setting", Desc: "Open Pitago settings hub (agent · skills · plugins · MCP · tools)", Usage: "/pitago-setting",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				m.OpenPconfig()
+				return nil
+			},
+		},
 		pi("model", "<provider/model> — Select model (opens selector UI)", "/model", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "loading models…"
 			m.Refresh()
@@ -744,7 +1017,14 @@ func All() []app.Builtin {
 				if err != nil {
 					return app.TreeMsg{Err: err}
 				}
-				return app.TreeMsg{Text: renderTree(nodes, leaf)}
+				filter := pirpc.PiString(pirpc.ReadPiSettings(), "treeFilterMode", "default")
+				if a := strings.ToLower(strings.TrimSpace(arg)); a != "" {
+					switch a {
+					case "default", "no-tools", "user-only", "labeled-only", "all":
+						filter = a // one-shot override: /tree all
+					}
+				}
+				return app.TreeMsg{Text: renderTree(nodes, leaf, filter)}
 			}
 		}),
 		pi("thinking", "<level> — Set thinking level", "/thinking", func(m *app.Model, arg string) tea.Cmd {

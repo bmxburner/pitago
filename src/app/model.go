@@ -13,6 +13,7 @@ import (
 	"pitago/src/components/chat"
 	"pitago/src/components/favorite"
 	"pitago/src/components/mention"
+	"pitago/src/components/palette"
 	"pitago/src/components/recent"
 	"pitago/src/components/theme"
 	"pitago/src/pirpc"
@@ -26,7 +27,7 @@ type Block = chat.Block
 type Dialog struct {
 	ID            string
 	Method        string // select | confirm (extension UI)
-	Kind          string // "ui" | "model" | "thinking" | "settings" | "login" | "loginDone" | "secret" | "rename" | "sessions" | ...
+	Kind          string // "ui" | "model" | "thinking" | "settings" | "pconfig" | "login" | "loginDone" | "secret" | "rename" | "sessions" | ...
 	Title         string
 	Message       string
 	Options       []string
@@ -36,6 +37,7 @@ type Dialog struct {
 	ProvConn      map[string]bool // model picker: connected providers (green dot)
 	ProvCursor    int      // model picker: left-pane cursor
 	ProvFocus     bool     // model picker: true = providers focused
+	PsecIDs       []string // pitago-setting: section id parallel to Provs (left pane)
 	Paths         []string // sessions picker: parallel session file per option
 	Scope         string   // sessions picker: "current" | "all" (Tab toggles)
 	Payload       []string // yank picker: full text per option; login: raw keys ("" for action rows)
@@ -67,6 +69,9 @@ type SettingsState struct {
 	AutoCompact, AutoRetry bool
 	Thinking, Model        string
 	Theme                  string
+	Vals                   map[string]string // file-backed pi rows (dotted path → display)
+	HideThinking           bool              // pitago-local "Hide thinking" row
+	AutocompleteMax        int               // pitago-local "Autocomplete max" row
 }
 
 // RecentModel is one entry of the sidebar list (see components/recent).
@@ -121,6 +126,7 @@ type Model struct {
 	Dialogs      []*Dialog
 	connErr      string
 	AutoRetry    bool          // no RPC getter; tracked locally (default on)
+	HideThinking bool          // /settings: skip thinking blocks in chat (pi parity, pitago-local)
 	respawning   bool          // reconnecting pi: skip pi_exited notice
 	spawnOpts    pirpc.Options // for respawning pi (login)
 	KeyPath      string        // keystore API keys
@@ -151,6 +157,7 @@ type Model struct {
 	favPath      string          // persisted favorites ("" = don't persist)
 	ThemeName    string          // active TUI theme (/theme, --theme flag)
 	themePath    string          // persisted theme ("" = don't persist)
+	prefsPath    string          // persisted pitago-local prefs ("" = don't persist)
 	builtins     []Builtin
 	confirm      map[string]ConfirmFunc
 	expandTools  bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
@@ -663,6 +670,10 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	saved := theme.Load(m.themePath)
 	ApplyTheme(theme.Get(saved))
 	m.ThemeName = theme.Get(saved).Name
+	m.prefsPath = PrefsPath()
+	prefs := LoadPrefs(m.prefsPath)
+	m.HideThinking = prefs.HideThinking
+	palette.Win = prefs.EffectiveAutocompleteMax()
 }
 
 // FindBuiltin matches "/name" or "/name args" against the registry.

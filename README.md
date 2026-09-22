@@ -247,7 +247,8 @@ Type `/` to open the command popup. Two kinds:
 - `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
 - `/thinking` — toggle thinking level
 - `/tree` — session tree, pi-style rows (read-only over RPC)
-- `/settings` — open settings
+- `/settings` — agent settings, pi parity (22 rows: model · thinking · steering · follow-up · auto-compact · auto-retry · theme + skill commands · show images · image width · auto-resize · block images · transport · http timeout · cache warming · hide thinking · cache-miss notices · project trust · quiet startup · telemetry · autocomplete max · tree filter; file rows save to `~/.pi/agent/settings.json` and reconnect pi; dialog shows pi-style position `(6/33)`)
+- `/pitago-setting` — Pitago settings hub: agent, skills, prompts, extensions, plugins, MCP servers, session tool stats, theme, login
 - `/login` / `/logout` — manage logins: API keys + pi OAuth/subscriptions (`/login`: left providers, right keys + auth — `Enter` use/add, `⌫` delete/disconnect, `s` show/hide key, `r` rename, `Ctrl+P` model picker, `Esc` close; stays open, pi reconnects behind)
 - `/reload` — reload extensions
 - `/new` — new session

@@ -6,8 +6,9 @@ package palette
 import "strings"
 
 // Win is the visible row window of the command popup (the full match list
-// scrolls; the popup never grows past this).
-const Win = 10
+// scrolls; the popup never grows past this). Var (not const) so the
+// /settings "Autocomplete max" row can tune it like stock pi.
+var Win = 10
 
 // Match returns the indices of names matching query. Empty query matches
 // everything.

@@ -96,6 +96,9 @@ func (m Model) renderBlocks() string {
 		if (bl.Kind == "assistant" || bl.Kind == "thinking") && strings.TrimSpace(bl.Text) == "" {
 			continue
 		}
+		if bl.Kind == "thinking" && m.HideThinking {
+			continue // /settings "Hide thinking" (pi parity)
+		}
 		var icon, body string
 		boxed := false // bordered/full-bleed rows need the 2-cell gutter
 		switch bl.Kind {
@@ -797,6 +800,9 @@ func inputBox(title string, lines []string, innerW int, border lipgloss.Color) s
 
 func (m Model) renderDialog() string {
 	d := m.Dialogs[0]
+	if d.Kind == "pconfig" && len(d.Provs) > 0 {
+		return m.renderPconfigDialog(d)
+	}
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.renderModelDialog(d)
 	}
@@ -808,8 +814,17 @@ func (m Model) renderDialog() string {
 	if d.Message != "" {
 		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
 	}
-	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
+	if isFilterKind(d.Kind) {
 		b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
+	}
+	// Adaptive box: wide terminals get a wider dialog (settings rows
+	// carry long values), small ones keep the old 62-cell box.
+	boxW := m.winW - 10
+	if boxW < 62 {
+		boxW = 62
+	}
+	if boxW > 100 {
+		boxW = 100
 	}
 	if d.Kind == "secret" {
 		b.WriteString("\n")
@@ -821,8 +836,16 @@ func (m Model) renderDialog() string {
 		b.WriteString("\n" + toolStyle.Render("Enter rename · empty clears · Esc back to /login"))
 	} else {
 		b.WriteString("\n")
-		// 12-row scroll window following the cursor
-		const win = 12
+		rowW := boxW - 10 // cursor mark + dialog padding + border
+		// Scroll window follows the cursor; tall screens show more rows
+		// (box = title + filter + rows + footer must fit winH).
+		win := 12
+		if h := m.winH - 10; h > win {
+			win = h
+		}
+		if win > 20 {
+			win = 20
+		}
 		total := len(d.FIdx)
 		start := d.Cursor - 4
 		if start < 0 {
@@ -849,12 +872,12 @@ func (m Model) renderDialog() string {
 				cursor = "▸ "
 				style = rowHiStyle
 			}
-			row := Short(d.Options[ri], 34)
+			row := Short(d.Options[ri], 44)
 			if desc := DescOf(d, ri); desc != "" {
-				row += "  " + toolStyle.Render("— "+Short(desc, 40))
+				row += "  " + toolStyle.Render("— "+Short(desc, rowW-47))
 			}
 			if fi == d.Cursor {
-				b.WriteString(cursor + style.Width(52).Render(row) + "\n")
+				b.WriteString(cursor + style.Width(rowW).Render(row) + "\n")
 			} else {
 				b.WriteString(cursor + style.Render(row) + "\n")
 			}
@@ -867,7 +890,7 @@ func (m Model) renderDialog() string {
 		}
 	}
 	foot := "↑↓ select · Enter confirm · Esc cancel"
-	if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
+	if isFilterKind(d.Kind) {
 		foot = "type to filter · " + foot
 	}
 	if d.Kind == "sessions" {
@@ -875,9 +898,16 @@ func (m Model) renderDialog() string {
 	}
 	if d.Kind == "settings" {
 		foot = "↑↓ select · Enter change · Esc close"
+		if n := len(d.FIdx); n > 0 { // pi-style position (6/33)
+			cur := d.Cursor + 1
+			if cur > n {
+				cur = n
+			}
+			foot += fmt.Sprintf(" (%d/%d)", cur, n)
+		}
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))
-	box := dlgStyle.Width(62).Render(b.String())
+	box := dlgStyle.Width(boxW).Render(b.String())
 	hint := ""
 	if len(m.Dialogs) > 1 {
 		hint = statusBarStyle.Render(fmt.Sprintf("(%d more dialogs pending)", len(m.Dialogs)-1))

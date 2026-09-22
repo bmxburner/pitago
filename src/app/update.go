@@ -52,7 +52,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reconnect must complete without closing the picker).
 		switch msg.(type) {
 		case tea.WindowSizeMsg, pasteDoneMsg, quitDisarmMsg,
-			LoginKeyMsg, RenameKeyMsg, respawnMsg, connectedMsg, CmdsRefreshMsg:
+			LoginKeyMsg, RenameKeyMsg, respawnMsg, connectedMsg, CmdsRefreshMsg,
+			SettingsMsg, SettingsRefreshMsg:
 		default:
 			return m, nil
 		}
@@ -1081,6 +1082,9 @@ func (m Model) handleUIRequest(raw []byte) Model {
 
 func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := m.Dialogs[0]
+	if d.Kind == "pconfig" && len(d.Provs) > 0 {
+		return m.updatePconfigDialog(km, d)
+	}
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.updateModelDialog(km, d)
 	}
@@ -1110,7 +1114,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyBackspace:
-		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret" || d.Kind == "rename" || d.Kind == "login" || d.Kind == "logout") && d.Filter != "" {
+		if (isFilterKind(d.Kind) || d.Kind == "secret" || d.Kind == "rename") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
 			return m, nil
@@ -1151,7 +1155,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeyRunes {
-		if d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "login" || d.Kind == "logout" {
+		if isFilterKind(d.Kind) {
 			// type to filter the picker
 			d.Filter += km.String()
 			d.Reindex()

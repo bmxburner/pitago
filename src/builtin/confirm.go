@@ -20,6 +20,7 @@ func Confirmers() map[string]app.ConfirmFunc {
 		"thinking":    confirmThinking,
 		"theme":       confirmTheme,
 		"settings":    confirmSettings,
+		"pconfig":     confirmPconfig,
 		"login":       confirmLogin,
 		"loginMethod": confirmLoginMethod,
 		"loginOAuth":  confirmLoginOAuth,
@@ -71,6 +72,44 @@ func confirmThinking(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 
 func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	return settingsAction(m, ri)
+}
+
+// confirmPconfig runs Enter on the hub's right pane. "@..." action rows pop
+// the hub and reuse the classic single-dialog flows (settings/theme/login);
+// runnable rows (skill/prompt/extension, connected MCP) stage the /command
+// in the input; info-only rows explain where to manage them.
+func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if ri < 0 || ri >= len(d.Payload) {
+		return m, nil
+	}
+	switch p := d.Payload[ri]; {
+	case p == "@agent":
+		m.Dialogs = m.Dialogs[1:]
+		m.Status = "loading settings…"
+		m.Refresh()
+		return m, loadSettings(m)
+	case p == "@theme":
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, m.OpenTheme()
+	case p == "@login":
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, openLogin(m, "")
+	case p != "":
+		m.FillCommand(p)
+		return m, nil
+	}
+	switch d.CurPsec() {
+	case app.PsecPlugin:
+		m.AddBlock(app.Block{Kind: "notice", Text: "plugins are pi packages — run `pi config` to enable/disable, then /reload"})
+	case app.PsecMCP:
+		m.AddBlock(app.Block{Kind: "notice", Text: "edit ~/.pi/agent/mcp.json, then /reload"})
+	default:
+		m.AddBlock(app.Block{Kind: "notice", Text: "nothing to run here"})
+	}
+	m.Refresh()
+	return m, nil
 }
 
 // confirmTheme applies the picked palette (Options parallel the theme names).

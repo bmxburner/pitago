@@ -19,7 +19,7 @@ func TestAllCoversPi(t *testing.T) {
 		"export", "import", "share", "copy", "name", "session",
 		"changelog", "hotkeys", "fork", "clone", "trust",
 		"login", "logout", "new", "compact", "resume", "reload", "quit",
-		"recent", "yank", "sidebar", "update", "plugins", "mouse", "theme",
+		"recent", "yank", "sidebar", "update", "plugins", "mouse", "theme", "pitago-setting",
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("builtin /%s missing", want)
