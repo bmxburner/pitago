@@ -84,11 +84,11 @@ func TestPasteErrorNotice(t *testing.T) {
 
 	m := pasteTestModel()
 	m.applyPaste(runPasteCmd(t, m, false))
-	if len(m.blocks) != 1 || !m.blocks[0].Err {
-		t.Fatalf("blocks = %+v", m.blocks)
+	if len(m.toasts) != 1 || !m.toasts[0].Err {
+		t.Fatalf("toasts = %+v", m.toasts)
 	}
-	if !strings.Contains(m.blocks[0].Text, "Cmd+V") {
-		t.Fatalf("notice = %q", m.blocks[0].Text)
+	if !strings.Contains(m.toasts[0].Text, "Cmd+V") {
+		t.Fatalf("notice = %q", m.toasts[0].Text)
 	}
 }
 
@@ -102,8 +102,8 @@ func TestPasteEmptyNotice(t *testing.T) {
 
 	m := pasteTestModel()
 	m.applyPaste(runPasteCmd(t, m, false))
-	if len(m.blocks) != 1 || strings.Contains(m.ta.Value(), " ") {
-		t.Fatalf("blocks=%+v value=%q", m.blocks, m.ta.Value())
+	if len(m.toasts) != 1 || strings.Contains(m.ta.Value(), " ") {
+		t.Fatalf("toasts=%+v value=%q", m.toasts, m.ta.Value())
 	}
 }
 

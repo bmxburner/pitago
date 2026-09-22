@@ -152,7 +152,7 @@ func TestPluginHeaderToggleClick(t *testing.T) {
 	}
 }
 
-// /mouse flips capture at runtime: the flag follows, and a notice block
+// /mouse flips capture at runtime: the flag follows, and a toast popup
 // explains the new mode (not ready here, so no tea command is returned).
 func TestToggleMouse(t *testing.T) {
 	m := New(nil, t.TempDir())
@@ -168,8 +168,8 @@ func TestToggleMouse(t *testing.T) {
 	if cmd := m.ToggleMouse("on"); cmd != nil || !m.Mouse {
 		t.Fatal("/mouse on must turn capture on")
 	}
-	if len(m.blocks) != 3 {
-		t.Fatalf("each toggle must log a notice, got %d blocks", len(m.blocks))
+	if len(m.toasts) != 3 {
+		t.Fatalf("each toggle must log a toast, got %d toasts", len(m.toasts))
 	}
 }
 

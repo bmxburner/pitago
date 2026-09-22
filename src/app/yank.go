@@ -25,7 +25,7 @@ func (m *Model) YankLast() tea.Cmd {
 	return nil
 }
 
-// YankText copies arbitrary text to the clipboard with a notice.
+// YankText copies arbitrary text to the clipboard with a toast popup.
 
 func (m *Model) YankText(text string) {
 	if err := clipboard.WriteAll(text); err != nil {

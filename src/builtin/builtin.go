@@ -274,6 +274,7 @@ func loadSettings(m *app.Model) tea.Cmd {
 			AutoRetry:   m.AutoRetry,
 			Thinking:    st.ThinkingLevel,
 			Model:       m.ModelLbl,
+			Theme:       app.OrDefault(m.ThemeName, "default"),
 		}
 		opts, descs := settingsOptions(sst)
 		return app.SettingsMsg{St: sst, Opts: opts, Descs: descs}
@@ -295,6 +296,7 @@ func settingsOptions(st app.SettingsState) ([]string, []string) {
 		"Follow-up: " + st.FollowUp,
 		"Auto-compact: " + onoff(st.AutoCompact),
 		"Auto-retry: " + onoff(st.AutoRetry),
+		"Theme: " + st.Theme,
 	}
 	descs := []string{
 		"Enter: open model picker",
@@ -303,6 +305,7 @@ func settingsOptions(st app.SettingsState) ([]string, []string) {
 		"Enter: switch all/one-at-a-time",
 		"Enter: toggle",
 		"Enter: toggle",
+		"Enter: open theme picker",
 	}
 	return opts, descs
 }
@@ -327,6 +330,7 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			AutoRetry:   m.AutoRetry,
 			Thinking:    app.OrDefault(s.ThinkingLevel, st.Thinking),
 			Model:       m.ModelLbl,
+			Theme:       app.OrDefault(m.ThemeName, "default"),
 		}
 		opts, descs := settingsOptions(sst)
 		return app.SettingsMsg{St: sst, Opts: opts, Descs: descs}
@@ -387,6 +391,10 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			}
 			return refresh()
 		}
+	case 6: // theme picker
+		m.Dialogs = m.Dialogs[1:]
+		m.Refresh()
+		return m, m.OpenTheme()
 	}
 	return m, nil
 }
@@ -816,6 +824,17 @@ func All() []app.Builtin {
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.ToggleMouse(arg)
+			},
+		},
+		{
+			Name: "theme", Desc: "Switch TUI theme (One Dark, Gruvbox, Catppuccin… — /theme lists all)", Usage: "/theme [name]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				if arg == "" {
+					return m.OpenTheme()
+				}
+				m.SetTheme(arg)
+				return nil
 			},
 		},
 		{

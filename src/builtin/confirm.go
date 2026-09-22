@@ -18,6 +18,7 @@ func Confirmers() map[string]app.ConfirmFunc {
 		"recent":      confirmRecent,
 		"sessions":    confirmSessions,
 		"thinking":    confirmThinking,
+		"theme":       confirmTheme,
 		"settings":    confirmSettings,
 		"login":       confirmLogin,
 		"loginMethod": confirmLoginMethod,
@@ -70,6 +71,16 @@ func confirmThinking(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 
 func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	return settingsAction(m, ri)
+}
+
+// confirmTheme applies the picked palette (Options parallel the theme names).
+func confirmTheme(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if ri < 0 || ri >= len(d.Options) {
+		return m, nil
+	}
+	m.Dialogs = m.Dialogs[1:]
+	m.SetTheme(d.Options[ri])
+	return m, nil
 }
 
 func confirmLogin(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {

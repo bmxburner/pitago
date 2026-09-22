@@ -70,7 +70,7 @@ func TestOpenYankWiresDialog(t *testing.T) {
 	}
 	empty := Model{}
 	empty.OpenYank()
-	if len(empty.Dialogs) != 0 || len(empty.blocks) != 1 {
-		t.Error("empty chat should notice, not open dialog")
+	if len(empty.Dialogs) != 0 || len(empty.toasts) != 1 {
+		t.Error("empty chat should toast, not open dialog")
 	}
 }

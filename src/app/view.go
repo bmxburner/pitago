@@ -1359,11 +1359,12 @@ func (m Model) View() string {
 		parts = append(parts, m.renderInput())
 		body = lipgloss.JoinVertical(lipgloss.Left, parts...)
 	}
+	left := lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
+	left = m.overlayToasts(left) // float above chat: never shifts the frame
 	if m.showSide() {
-		left := lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
 		return lipgloss.JoinHorizontal(lipgloss.Top, left, " ", m.renderSidebar())
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
+	return left
 }
 
 // utils ------------------------------------------------------------------------

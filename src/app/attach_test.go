@@ -219,7 +219,7 @@ func TestAttachDedupeCap(t *testing.T) {
 	if len(m.imgAtts) != 5 {
 		t.Fatalf("tray capped at 5, got %+v", m.imgAtts)
 	}
-	if len(m.blocks) == 0 {
-		t.Fatal("cap overflow must leave a notice")
+	if len(m.toasts) == 0 {
+		t.Fatal("cap overflow must leave a toast")
 	}
 }

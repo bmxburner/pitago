@@ -15,6 +15,7 @@ import (
 
 	"pitago/src/app"
 	"pitago/src/builtin"
+	"pitago/src/components/theme"
 	"pitago/src/pimark"
 	"pitago/src/pirpc"
 	"pitago/src/update"
@@ -30,6 +31,7 @@ func main() {
 	modelFlag := flag.String("model", "", "pi model (default from ~/.pi)")
 	noSession := flag.Bool("no-session", false, "don't persist session")
 	mouse := flag.Bool("mouse", true, "mouse support (click sidebar, wheel scroll); --mouse=false keeps native text selection")
+	themeFlag := flag.String("theme", "", "TUI theme: one-dark, gruvbox, catppuccin-mocha… (/theme lists all)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	doUpdate := flag.Bool("update", false, "self-update to the latest GitHub release and exit")
 	flag.Parse()
@@ -79,6 +81,10 @@ func main() {
 
 	m := app.New(pi, cwd)
 	m.AppVersion = version
+	// --theme wins over the saved theme: pre-save so Configure() loads it.
+	if *themeFlag != "" {
+		_ = theme.Save(theme.ThemePath(), *themeFlag)
+	}
 	m.Configure(opts, keyPath)
 	// Preload the update cache so the welcome banner ("⬆ … pitago
 	// --update") shows on the first frame — the async auto-check in

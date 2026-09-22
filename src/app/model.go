@@ -14,6 +14,7 @@ import (
 	"pitago/src/components/favorite"
 	"pitago/src/components/mention"
 	"pitago/src/components/recent"
+	"pitago/src/components/theme"
 	"pitago/src/pirpc"
 )
 
@@ -65,6 +66,7 @@ type SettingsState struct {
 	Steering, FollowUp     string
 	AutoCompact, AutoRetry bool
 	Thinking, Model        string
+	Theme                  string
 }
 
 // RecentModel is one entry of the sidebar list (see components/recent).
@@ -79,6 +81,7 @@ type Model struct {
 	ta           textarea.Model
 	Pi           *pirpc.Client
 	blocks       []Block
+	toasts       []Toast // ephemeral popups (model switch, yank…): never in chat history
 	tools        map[string]int // toolCallId -> block index
 	curAsst      int
 	curThink     int
@@ -146,6 +149,8 @@ type Model struct {
 	favModels    []FavEntry
 	favSet       map[string]bool // starred models lookup (see components/favorite)
 	favPath      string          // persisted favorites ("" = don't persist)
+	ThemeName    string          // active TUI theme (/theme, --theme flag)
+	themePath    string          // persisted theme ("" = don't persist)
 	builtins     []Builtin
 	confirm      map[string]ConfirmFunc
 	expandTools  bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
@@ -310,6 +315,13 @@ func (m Model) fetchAll() tea.Cmd {
 }
 
 func (m *Model) AddBlock(b Block) int {
+	// Notices are transient popups, not transcript: route them to the
+	// toast stack (auto-dismissing, above the input) instead of the
+	// chat history. One interception here covers all ~30 call sites.
+	if b.Kind == "notice" {
+		m.pushToast(b.Text, b.Err)
+		return -1
+	}
 	m.blocks = append(m.blocks, b)
 	return len(m.blocks) - 1
 }
@@ -590,9 +602,9 @@ func (m *Model) CycleThinking() tea.Cmd {
 		if err := m.Pi.SetLevel(next); err != nil {
 			return SettingsRefreshMsg{Err: err}
 		}
-		// Silent: no chat notice (rapid Ctrl+T would spam one line per
-		// press) — the new level shows in the sidebar model row.
-		return SettingsRefreshMsg{Level: next}
+		// Toast, not chat: rapid Ctrl+T replaces one popup instead of
+		// spamming one line per press — same Notice path as /thinking.
+		return SettingsRefreshMsg{Notice: "thinking → " + next, Level: next}
 	}
 }
 
@@ -647,6 +659,10 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.favPath = pirpc.FavPath()
 	m.favModels = favorite.Load(m.favPath)
 	m.favSet = favorite.Set(m.favModels)
+	m.themePath = theme.ThemePath()
+	saved := theme.Load(m.themePath)
+	ApplyTheme(theme.Get(saved))
+	m.ThemeName = theme.Get(saved).Name
 }
 
 // FindBuiltin matches "/name" or "/name args" against the registry.

@@ -34,7 +34,7 @@ func TestHandleUpdateCheckAutoSilent(t *testing.T) {
 func TestHandleUpdateDone(t *testing.T) {
 	var m Model
 	m.handleUpdateDone(UpdateDoneMsg{From: "v0.0.1", To: "v0.0.2"})
-	if len(m.blocks) != 1 {
-		t.Fatalf("expected 1 notice block, got %d", len(m.blocks))
+	if len(m.toasts) != 1 {
+		t.Fatalf("expected 1 toast, got %d", len(m.toasts))
 	}
 }

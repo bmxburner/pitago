@@ -10,15 +10,23 @@
 </pre>
 </div>
 
-![pitago screenshot](resources/Screenshot.png)
+<div align="center">
 
 ![pitago demo](resources/demo.gif)
 
-![provider management](resources/provider_management.png)
+*A polished Terminal User Interface (TUI) frontend for the `pi` agent, built with Bubble Tea. `pi --mode rpc` serves as the backend (multi-provider, tools, sessions, compaction), while pitago provides a rich terminal interface communicating over JSONL.*
 
-![model management](resources/model_management.png)
+</div>
 
-A polished Terminal User Interface (TUI) frontend for the `pi` agent, built with Bubble Tea. `pi --mode rpc` serves as the backend (multi-provider, tools, sessions, compaction), while pitago provides a rich terminal interface communicating over JSONL.
+## Screenshots
+
+<div align="center">
+  <img src="resources/Screenshot.png" alt="main chat" width="49%" />
+  <img src="resources/provider_management.png" alt="provider management (/login)" width="49%" />
+  <img src="resources/model_management.png" alt="model picker" width="49%" />
+  <img src="resources/themes.png" alt="themes (/theme)" width="49%" />
+  <img src="resources/notifications.png" alt="toast notifications" width="49%" />
+</div>
 
 ## Overview
 
@@ -233,6 +241,7 @@ Type `/` to open the command popup. Two kinds:
 - `/recent` — recent models picker
 - `/yank` / `/copy` — copy last answer to clipboard
 - `/sidebar` — hide/show sidebar
+- `/theme` — switch TUI theme (`/theme` opens picker, `/theme gruvbox` applies directly; or `pitago --theme one-dark`)
 - `/plugins` — collapse/expand installed pi plugins in the sidebar
 - `/mouse` — toggle mouse (click sidebar, wheel scroll) at runtime, `[on|off]`; off for native text selection
 - `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
@@ -294,5 +303,6 @@ tests/            # integration tests (black-box, public API only).
 - `~/.config/pitago/keys.json` (0600) — saved API keys, several per provider with one active + optional name/added-date (`/login`, `/logout`; active key is also written to pi's `auth.json` so pi sees models)
 - `~/.config/pitago/pi_auth.json` (0600) — mirrored pi logins (OAuth account/expiry, no secrets) so `/login` lists + disconnects subscriptions done in stock pi
 - `~/.config/pitago/recent_models.json` — recent models (max 5)
+- `~/.config/pitago/theme.json` — active TUI theme (25 built-ins: default, one-dark, gruvbox, catppuccin-mocha, dracula… — `/theme` lists all)
 - `~/.config/pitago/update.json` — last update-check timestamp + tag (24h TTL)
 - `/tmp/pitago-pi-stderr.log` — pi child stderr

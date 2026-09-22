@@ -37,6 +37,9 @@ func sideScrollKey(t tea.KeyType) (tea.KeyType, bool) {
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Toasts expire by wall clock: prune on every message so a missed
+	// dismissal tick still clears (the tick itself just triggers repaint).
+	m.pruneToasts()
 	// dialog captures all keys while open
 	if len(m.Dialogs) > 0 {
 		if km, ok := msg.(tea.KeyMsg); ok {
@@ -191,6 +194,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.applyPaste(msg)
 		return m, nil
 
+	case toastTickMsg:
+		m.Refresh()
+		if len(m.toasts) > 0 {
+			scheduleToastTick() // countdown keeps ticking; expiry prunes
+		}
+		return m, nil
+
 	case quitDisarmMsg:
 		if msg.gen == m.quitGen {
 			m.quitArm = time.Time{}
@@ -267,6 +277,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		title := "Select model"
 		if msg.Kind == "thinking" {
 			title = "Thinking level"
+		}
+		if msg.Kind == "theme" {
+			title = "Select theme"
 		}
 		if msg.Kind == "sessions" {
 			title = "Resume session (current)"
@@ -1083,6 +1096,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d.Cursor = n - 1
 			}
+			m.previewTheme(d)
 		}
 		return m, nil
 	case tea.KeyDown:
@@ -1092,6 +1106,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d.Cursor = 0
 			}
+			m.previewTheme(d)
 		}
 		return m, nil
 	case tea.KeyBackspace:
