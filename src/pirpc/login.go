@@ -174,6 +174,15 @@ func RecentPath() string {
 	return filepath.Join(home, ".config", "pitago", "recent_models.json")
 }
 
+// FavPath is ~/.config/pitago/favorite_models.json: [{provider, id, label}].
+func FavPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".config", "pitago", "favorite_models.json")
+}
+
 // KeyItem is one saved key with optional label + creation time.
 // Stored as {"key":"...","name":"...","addedAt":...}; plain strings from
 // older files still load (name empty, addedAt 0).

@@ -9,13 +9,47 @@ import (
 	"pitago/src/components/recent"
 )
 
-// recentContentRow is the sidebar content row of the first recent model:
-// PET(0) face(1) sep(2) SESSION(3) first(4) sess(5) sep(6) model(7) ctx(8)
-// toks(9) sep(10) STATS head(11) time(12) last(13) speed(14) turns(15)
-// left(16) sep(17) RECENT MODELS(18) models(19…).
+// recentBaseRows is the fixed rows above RECENT MODELS without detail
+// extras: SESSION(3) first(4) sess(5) sep(6) model(7) ctx(8) toks(9)
+// sep(10) STATS head(11) time(12) last(13) speed(14) turns(15) left(16)
+// sep(17) RECENT MODELS(18) models(19…) — PET takes rows 0-2 (petRows),
+// the file/msgs/cached detail rows and the COST section add sideExtraRows.
+const recentBaseRows = 16
+
+// recentContentRow is the sidebar content row of the first recent model.
 // Screen y = 1 (box border) + row; recentAt must match.
-// petRows is added (not inlined) so a PET height change moves this too.
-const recentContentRow = 16 + petRows
+func (m Model) recentContentRow() int {
+	return recentBaseRows + petRows + m.sideExtraRows()
+}
+
+// sideExtraRows counts the SESSION-detail rows above RECENT MODELS: file
+// + msgs + cached (always rendered) plus the COST section (header + rows +
+// separator, only when the session spans more than one model).
+func (m Model) sideExtraRows() int {
+	n := 3
+	if c := len(m.sideCostRows()); c > 0 {
+		n += 2 + c
+	}
+	return n
+}
+
+// sideCostRows formats the sidebar COST breakdown: top-3 models by cost,
+// only when the session spans more than one model (same rule as /session).
+// Render and the click mapping both use it so the row math stays in sync.
+func (m Model) sideCostRows() []string {
+	if len(m.sessBreak) <= 1 {
+		return nil
+	}
+	n := len(m.sessBreak)
+	if n > 3 {
+		n = 3
+	}
+	rows := make([]string, 0, n)
+	for _, b := range m.sessBreak[:n] {
+		rows = append(rows, Short(Short(b.Key, sideInnerW-8)+" "+fmt.Sprintf("$%.3f", b.Cost), sideInnerW))
+	}
+	return rows
+}
 
 // pushRecent moves (provider, id) to the front, dedupes, caps, persists.
 // Ordering/cap live in components/recent; empty ids stay ignored (no write).
@@ -99,11 +133,11 @@ func (m Model) recentAt(x, y int) (int, bool) {
 	if !m.ready || !m.showSide() || len(m.Dialogs) > 0 || len(m.recentModels) == 0 {
 		return 0, false
 	}
-	if x < m.mainW()+1 || x > m.winW || y < 1+recentContentRow {
+	if x < m.mainW()+1 || x > m.winW || y < 1+m.recentContentRow() {
 		return 0, false
 	}
 	// visible rows start at YOffset when the sidebar is scrolled
-	idx := y - (1 + recentContentRow) + m.sideVp.YOffset
+	idx := y - (1 + m.recentContentRow()) + m.sideVp.YOffset
 	if idx < 0 || idx >= len(m.recentModels) {
 		return 0, false
 	}
@@ -122,7 +156,7 @@ func (m Model) pluginHeaderRow() int {
 	if len(m.queue.Steering)+len(m.queue.FollowUp) > 0 {
 		c++ // queue line
 	}
-	return recentContentRow + r + 3 + c
+	return m.recentContentRow() + r + 3 + c
 }
 
 // pluginToggleAt reports a click on the PLUGINS header (collapses/expands

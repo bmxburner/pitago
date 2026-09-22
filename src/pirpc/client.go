@@ -454,6 +454,23 @@ func (c *Client) GetTree() ([]TreeNode, string, error) {
 	return data.Tree, data.LeafID, nil
 }
 
+// GetEntries fetches all session entries (for the /session cost breakdown).
+func (c *Client) GetEntries() ([]SessionEntry, error) {
+	resp, err := c.Send(Command{Type: "get_entries"}, 15*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	var data struct {
+		Entries []SessionEntry `json:"entries"`
+	}
+	if len(resp.Data) > 0 {
+		if err := json.Unmarshal(resp.Data, &data); err != nil {
+			return nil, err
+		}
+	}
+	return data.Entries, nil
+}
+
 // SetSteering changes the steering mode ("all" | "one-at-a-time").
 func (c *Client) SetSteering(mode string) error {
 	_, err := c.Send(Command{Type: "set_steering_mode", Mode: mode}, 15*time.Second)

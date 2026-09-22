@@ -175,6 +175,60 @@ func TestModelPickerTypingSearchesAll(t *testing.T) {
 	}
 }
 
+// Starred models sort first (stable) and Ctrl+F toggles the star,
+// with the cursor following the toggled model.
+func TestModelPickerFavorites(t *testing.T) {
+	mk := func() Model {
+		m := New(nil, t.TempDir()) // favPath "" → no file writes
+		m.Dialogs = []*Dialog{{
+			Kind: "model", Title: "Select model",
+			Options: []string{"m1", "m2", "m3"},
+			Descs:   []string{"a · ollama", "b · opencode-zen", "c · ollama"},
+			Providers: []string{"ollama", "opencode-zen", "ollama"},
+			Provs:     []string{"All", "ollama", "opencode-zen"},
+			ProvFocus: false,
+		}}
+		return m
+	}
+
+	// fav-first: m3 starred lands on top, the rest keep pi's order
+	m := mk()
+	d := m.Dialogs[0]
+	d.FavSet = map[string]bool{"ollama\x00m3": true}
+	d.Reindex()
+	if len(d.FIdx) != 3 || d.FIdx[0] != 2 || d.FIdx[1] != 0 || d.FIdx[2] != 1 {
+		t.Fatalf("fav-first FIdx = %v", d.FIdx)
+	}
+
+	// Ctrl+F stars the highlighted model and moves it to the top
+	m = mk()
+	d = m.Dialogs[0]
+	d.Reindex()
+	d.Cursor = 1 // m2
+	um, _ := m.updateDialog(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = um.(Model)
+	d = m.Dialogs[0]
+	if !d.isFavIdx(1) {
+		t.Fatal("Ctrl+F must star m2")
+	}
+	if len(d.FIdx) == 0 || d.FIdx[0] != 1 {
+		t.Fatalf("starred FIdx = %v", d.FIdx)
+	}
+	if d.Cursor != 0 {
+		t.Fatalf("cursor must follow the star to 0, got %d", d.Cursor)
+	}
+	// Ctrl+F again unstars
+	um, _ = m.updateDialog(tea.KeyMsg{Type: tea.KeyCtrlF})
+	m = um.(Model)
+	d = m.Dialogs[0]
+	if d.isFavIdx(1) {
+		t.Fatal("second Ctrl+F must unstar m2")
+	}
+	if len(d.FIdx) != 3 || d.FIdx[0] != 0 {
+		t.Fatalf("unstarred FIdx = %v", d.FIdx)
+	}
+}
+
 // Ctrl+L in the model picker closes it and opens provider login.
 func TestModelPickerCtrlLLogin(t *testing.T) {
 	m := New(nil, t.TempDir())

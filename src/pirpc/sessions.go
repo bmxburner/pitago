@@ -190,6 +190,15 @@ func sessionFiles(dir string) ([]string, error) {
 	return names, nil
 }
 
+// DeleteSession removes one session file (picker delete). Only *.jsonl
+// files are removed; anything else is refused.
+func DeleteSession(path string) error {
+	if path == "" || !strings.HasSuffix(path, ".jsonl") {
+		return os.ErrInvalid
+	}
+	return os.Remove(path)
+}
+
 // Shorten renders a path like pi's All scope (~/ for home).
 func Shorten(p string) string {
 	if home, err := os.UserHomeDir(); err == nil && home != "" {

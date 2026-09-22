@@ -28,10 +28,35 @@ func (m Model) mainW() int {
 
 // blocks helpers ----------------------------------------------------------
 
-// gutter prefixes a block with a left status icon (pi-style): the first
-// non-empty line gets the icon, continuation lines get a blank 2-cell
-// gutter so the column stays aligned. Blank separator lines stay empty.
+// gutter prefixes a block with a left status icon: the first non-empty
+// line gets the icon, continuation lines stay flush-left so wrapped text
+// never looks indented (matches viewport soft-wrap, which starts at col
+// 0). Blank separator lines stay empty.
 func gutter(icon, body string) string {
+	lines := strings.Split(body, "\n")
+	out := make([]string, 0, len(lines))
+	first := true
+	for _, ln := range lines {
+		if ln == "" {
+			out = append(out, "")
+			continue
+		}
+		if first {
+			out = append(out, icon+" "+ln)
+			first = false
+		} else {
+			out = append(out, ln)
+		}
+	}
+	return strings.Join(out, "\n")
+}
+
+// gutterBox is gutter for bordered/full-bleed blocks (user box, tool
+// Box): continuation lines get a blank 2-cell gutter so every row stays
+// exactly as wide as the first ("● "+box) and the left/right borders
+// stay vertically aligned. Without it the top border sticks out 2 cells
+// past the sides (flush-left continuation = w-2 vs first line w).
+func gutterBox(icon, body string) string {
 	lines := strings.Split(body, "\n")
 	out := make([]string, 0, len(lines))
 	first := true
@@ -72,10 +97,12 @@ func (m Model) renderBlocks() string {
 			continue
 		}
 		var icon, body string
+		boxed := false // bordered/full-bleed rows need the 2-cell gutter
 		switch bl.Kind {
 		case "user":
 			icon = statusBarStyle.Render("●")
 			body = userStyle.Width(cw-2).Render(bl.Text) + "\n\n"
+			boxed = true
 		case "assistant":
 			icon = statusBarStyle.Render("●")
 			body = renderMarkdown(bl.Text, cw) + "\n\n"
@@ -133,12 +160,16 @@ func (m Model) renderBlocks() string {
 		// background spans the chat column full-bleed like pi.
 		body = lipgloss.NewStyle().Background(toolBg(bl.ToolStatus)).Width(cw).
 			Render(strings.TrimRight(body, "\n")) + "\n\n"
+		boxed = true
 		case "bash":
 			icon = statusBarStyle.Render("●")
 			body = markdown.Highlight("bash", Short(bl.Text, 400)) + "\n\n"
 		case "tree":
 			icon = statusBarStyle.Render("●")
 			body = codeStyle.Render(shortTree(bl.Text, 3000)) + "\n\n"
+		case "session":
+			icon = statusBarStyle.Render("●")
+			body = renderSession(bl.Text) + "\n\n"
 		case "notice":
 			if bl.Err {
 				icon = errStyle.Render("×")
@@ -151,7 +182,11 @@ func (m Model) renderBlocks() string {
 			icon = statusBarStyle.Render("●")
 			body = lipgloss.NewStyle().Foreground(cText).Render(bl.Text) + "\n\n"
 		}
-		b.WriteString(gutter(icon, body))
+		if boxed {
+			b.WriteString(gutterBox(icon, body))
+		} else {
+			b.WriteString(gutter(icon, body))
+		}
 	}
 	if m.thinking {
 		b.WriteString(gutter(statusBarStyle.Render("○"), statusBarStyle.Render(m.Status)+"\n"))
@@ -431,6 +466,11 @@ func (m Model) buildSidebarContent() string {
 		sess = "…"
 	}
 	b.WriteString(statusBarStyle.Render(Short(sess, inner)) + "\n")
+	file := m.sessionFile
+	if file == "" {
+		file = "In-memory"
+	}
+	b.WriteString(statusBarStyle.Render(Short(file, inner)) + "\n")
 	b.WriteString(sep() + "\n")
 
 	lvl := m.thinkLvl
@@ -496,7 +536,23 @@ func (m Model) buildSidebarContent() string {
 		left = fmt.Sprintf("%.0f%%", 100-m.Stats.ContextPct)
 	}
 	b.WriteString(statusBarStyle.Render(twoCol("left "+left, "cost "+cost, inner)) + "\n")
+	b.WriteString(statusBarStyle.Render(Short(fmt.Sprintf("msgs %s · u %s a %s",
+		fmtComma(m.Stats.TotalMessages), fmtComma(m.Stats.UserMsgs), fmtComma(m.Stats.AsstMsgs)), inner)) + "\n")
+	cached, uncached := "—", "—"
+	if m.Stats.TokensTotal > 0 {
+		cached = fmtComma(m.Stats.CacheRead)
+		uncached = fmtComma(m.Stats.In + m.Stats.CacheWrite)
+	}
+	b.WriteString(statusBarStyle.Render(Short("cached "+cached+" · uncached "+uncached, inner)) + "\n")
 	b.WriteString(sep() + "\n")
+
+	if rows := m.sideCostRows(); len(rows) > 0 {
+		b.WriteString(sideTitleStyle.Render("COST") + "\n")
+		for _, r := range rows {
+			b.WriteString(statusBarStyle.Render(r) + "\n")
+		}
+		b.WriteString(sep() + "\n")
+	}
 
 	b.WriteString(sideTitleStyle.Render("RECENT MODELS") + "\n")
 	if len(m.recentModels) == 0 {
@@ -648,9 +704,20 @@ func (m Model) renderInput() string {
 	if m.extStat != "" {
 		right = Short(m.extStat, 30) + " · " + right
 	}
+	// The footer must stay exactly one visual row: the input box is a
+	// fixed 6 rows (textarea 3 + footer 1 + border 2) and the viewport
+	// math in Update assumes it. A long model/stats line used to wrap
+	// the footer to 2 rows, growing the left column past winH and
+	// leaving a gap under the top-aligned sidebar. Hints yield to stats.
+	right = Short(right, innerW)
+	if room := innerW - lipgloss.Width(right) - 1; room <= 0 {
+		left = ""
+	} else {
+		left = Short(left, room)
+	}
 	gap := innerW - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
+	if gap < 0 {
+		gap = 0
 	}
 	foot := statusBarStyle.Render(left + strings.Repeat(" ", gap) + right)
 	lines := []string{m.ta.View()}
@@ -804,7 +871,7 @@ func (m Model) renderDialog() string {
 		foot = "type to filter · " + foot
 	}
 	if d.Kind == "sessions" {
-		foot += " · Tab scope"
+		foot += " · Tab scope · Del delete"
 	}
 	if d.Kind == "settings" {
 		foot = "↑↓ select · Enter change · Esc close"
@@ -994,9 +1061,13 @@ func (m Model) renderModelDialog(d *Dialog) string {
 		}
 		row := Short(d.Options[ri], optW)
 		if desc := DescOf(d, ri); desc != "" {
-			row += "  " + toolStyle.Render("— "+Short(desc, rightW-2-optW-3))
+			row += "  " + toolStyle.Render("— "+Short(desc, rightW-4-optW-3))
 		}
-		rightLines = append(rightLines, mark+style.Width(rightW-2).Render(row))
+		star := toolStyle.Render("☆")
+		if d.isFavIdx(ri) {
+			star = warnStyle.Render("★")
+		}
+		rightLines = append(rightLines, mark+style.Width(rightW-4).Render(row)+" "+star)
 	}
 	if rBelow {
 		rightLines = append(rightLines, "  "+toolStyle.Width(rightW-2).Render(fmt.Sprintf("…(+%d below)", total-end)))
@@ -1041,9 +1112,9 @@ func (m Model) renderModelDialog(d *Dialog) string {
 		b.WriteString(l+" "+sep+" "+r + "\n")
 	}
 
-	foot := "↑↓ providers · → models · type to search all · Enter open · ^L login · Esc close"
+	foot := "↑↓ providers · → models · type to search all · Enter open · ^F star · ^L login · Esc close"
 	if !d.ProvFocus {
-		foot = "↑↓ models · ← providers · Tab switch · type filters here · Enter select · ^L login · Esc close"
+		foot = "↑↓ models · ← providers · Tab switch · type filters here · Enter select · ^F star · ^L login · Esc close"
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))
 	box := dlgStyle.Width(boxW).Render(b.String())
@@ -1304,4 +1375,23 @@ func shortTree(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return s
+}
+
+// renderSession styles the /session block like pi: bold section headers
+// ("Session Info", "Messages", …), dim labels, plain values.
+func renderSession(text string) string {
+	valStyle := lipgloss.NewStyle().Foreground(cText)
+	headStyle := lipgloss.NewStyle().Bold(true).Foreground(cText)
+	lines := strings.Split(text, "\n")
+	for i, ln := range lines {
+		if strings.TrimSpace(ln) == "" {
+			continue
+		}
+		if j := strings.Index(ln, ":"); j >= 0 {
+			lines[i] = statusBarStyle.Render(ln[:j+1]) + " " + valStyle.Render(strings.TrimSpace(ln[j+1:]))
+		} else {
+			lines[i] = headStyle.Render(ln)
+		}
+	}
+	return strings.Join(lines, "\n")
 }

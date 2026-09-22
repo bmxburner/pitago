@@ -769,19 +769,7 @@ func All() []app.Builtin {
 		pi("session", "Show session info and stats", "/session", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "loading session info…"
 			m.Refresh()
-			return func() tea.Msg {
-				st, err := m.Pi.GetState()
-				if err != nil {
-					return app.SettingsRefreshMsg{Err: err}
-				}
-				stats, _ := m.Pi.GetStats()
-				sess := st.SessionName
-				if sess == "" {
-					sess = app.ShortID(st.SessionID)
-				}
-				return app.SettingsRefreshMsg{Notice: fmt.Sprintf("%s · %s · %d msgs · %d tools · %s · $%.2f",
-					sess, m.ModelLbl, st.MessageCount, stats.ToolCalls, app.FmtNum(stats.TokensTotal), stats.Cost)}
-			}
+			return loadSession(m)
 		}),
 		pi("resume", "Resume a session (like pi)", "/resume [path]", func(m *app.Model, arg string) tea.Cmd {
 			return m.OpenResume(arg)

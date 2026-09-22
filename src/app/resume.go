@@ -84,6 +84,61 @@ func resumePickerMsg(scope string, list []pirpc.SessionInfo, current, filter str
 	return PickerMsg{Kind: "sessions", Scope: scope, Options: opts, Descs: descs, Paths: paths, Filter: filter, Current: current, Replace: replace}
 }
 
+// DeleteResumeSession deletes the highlighted session file (Del / ⌫ with
+// empty filter / Ctrl+D). Stays on the picker; closes it when empty.
+// The current session can't be deleted — switch first.
+func (m *Model) DeleteResumeSession(d *Dialog) (tea.Model, tea.Cmd) {
+	if len(d.FIdx) == 0 || d.Cursor < 0 || d.Cursor >= len(d.FIdx) {
+		return m, nil
+	}
+	ri := d.FIdx[d.Cursor]
+	if ri < 0 || ri >= len(d.Paths) {
+		return m, nil
+	}
+	path := d.Paths[ri]
+	if path == "" {
+		return m, nil
+	}
+	if path == m.sessionFile {
+		m.Status = "can't delete the current session — switch first"
+		m.Refresh()
+		return m, nil
+	}
+	if err := pirpc.DeleteSession(path); err != nil {
+		m.Status = "delete failed: " + err.Error()
+		m.Refresh()
+		return m, nil
+	}
+	title := ""
+	if ri < len(d.Options) {
+		title = d.Options[ri]
+	}
+	d.Options = append(d.Options[:ri], d.Options[ri+1:]...)
+	if ri < len(d.Descs) {
+		d.Descs = append(d.Descs[:ri], d.Descs[ri+1:]...)
+	}
+	d.Paths = append(d.Paths[:ri], d.Paths[ri+1:]...)
+	d.Reindex()
+	if d.Cursor >= len(d.FIdx) {
+		d.Cursor = len(d.FIdx) - 1
+	}
+	if d.Cursor < 0 {
+		d.Cursor = 0
+	}
+	if len(d.Options) == 0 {
+		m.Dialogs = m.Dialogs[1:]
+		m.AddBlock(Block{Kind: "notice", Text: "deleted session — no sessions left in this scope"})
+		m.Refresh()
+		return m, nil
+	}
+	if title == "" {
+		title = path
+	}
+	m.Status = "deleted: " + Short(title, 50)
+	m.Refresh()
+	return m, nil
+}
+
 // resolveSessionArg maps "/resume <arg>" to a file: existing path as-is,
 // else a name inside the session dir (pi --session <path|id> parity).
 func resolveSessionArg(dir, arg string) string {

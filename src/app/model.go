@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"pitago/src/components/chat"
+	"pitago/src/components/favorite"
 	"pitago/src/components/mention"
 	"pitago/src/components/recent"
 	"pitago/src/pirpc"
@@ -40,6 +41,7 @@ type Dialog struct {
 	Cursor        int
 	Filter        string // picker filter / secret buffer / rename buffer
 	FIdx          []int
+	FavSet        map[string]bool // model picker: starred provider\x00id (★ column, sorted first)
 	PIdx          []int // login: filtered provider indices into Provs
 	KeyCursor     int   // login: cursor in the right (keys) pane
 	KeyActive     int   // login: active key index within keys (-1 = none)
@@ -67,6 +69,9 @@ type SettingsState struct {
 
 // RecentModel is one entry of the sidebar list (see components/recent).
 type RecentModel = recent.RecentModel
+
+// FavEntry is one starred model (see components/favorite).
+type FavEntry = favorite.Fav
 
 type Model struct {
 	vp           viewport.Model
@@ -104,6 +109,7 @@ type Model struct {
 	lastSpeed    float64 // tok/s of last turn
 	ws           wsData  // workspace git status (polled)
 	Stats        pirpc.Stats
+	sessBreak    []pirpc.CostBreak // sidebar COST section (connect + /session refresh)
 	queue        pirpc.Queue
 	Todos        []TodoItem  // tracked from todo-tool calls (sidebar)
 	MCP          []McpServer // pi agent-dir MCP snapshot (sidebar)
@@ -137,6 +143,9 @@ type Model struct {
 	pet          petState
 	recentModels []RecentModel
 	recentPath   string // persisted recent models ("" = don't persist)
+	favModels    []FavEntry
+	favSet       map[string]bool // starred models lookup (see components/favorite)
+	favPath      string          // persisted favorites ("" = don't persist)
 	builtins     []Builtin
 	confirm      map[string]ConfirmFunc
 	expandTools  bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
@@ -148,11 +157,12 @@ type Model struct {
 const quitArmWindow = 3 * time.Second
 
 type connectedMsg struct {
-	state pirpc.State
-	msgs  []pirpc.AgentMessage
-	stats pirpc.Stats
-	cmds  []pirpc.RepoCommand
-	err   error
+	state   pirpc.State
+	msgs    []pirpc.AgentMessage
+	stats   pirpc.Stats
+	cmds    []pirpc.RepoCommand
+	entries []pirpc.SessionEntry // usage attribution for the COST breakdown
+	err     error
 }
 
 type piEventMsg struct{ pirpc.Event }
@@ -210,6 +220,12 @@ type TreeMsg struct {
 	Err  error
 }
 
+type SessionMsg struct {
+	Text  string
+	Break []pirpc.CostBreak // per-model cost (sidebar COST section)
+	Err   error
+}
+
 type SettingsRefreshMsg struct {
 	Notice string
 	Level  string // thinking change: update sidebar immediately
@@ -244,6 +260,16 @@ func New(pi *pirpc.Client, cwd string) Model {
 	ta.SetHeight(3)
 	ta.ShowLineNumbers = false
 	ta.Prompt = "❯ "
+	// Prompt only on the first display line: bubbles repeats Prompt on
+	// every wrapped/new line, which looked like an indent. Continuations
+	// get blank padding instead (same width, so the text column stays
+	// straight and SetWidth math is unchanged).
+	ta.SetPromptFunc(2, func(lineIdx int) string {
+		if lineIdx == 0 {
+			return "❯ "
+		}
+		return "  "
+	})
 	ta.FocusedStyle.Prompt = lipgloss.NewStyle().Foreground(cInput)
 	ta.FocusedStyle.Placeholder = lipgloss.NewStyle().Foreground(cMuted)
 	ta.BlurredStyle.Prompt = lipgloss.NewStyle().Foreground(cMuted)
@@ -278,7 +304,8 @@ func (m Model) fetchAll() tea.Cmd {
 		msgs, _ := m.Pi.GetMessages()
 		stats, _ := m.Pi.GetStats()
 		cmds, _ := m.Pi.GetCommands()
-		return connectedMsg{state: state, msgs: msgs, stats: stats, cmds: cmds}
+		entries, _ := m.Pi.GetEntries()
+		return connectedMsg{state: state, msgs: msgs, stats: stats, cmds: cmds, entries: entries}
 	}
 }
 
@@ -617,6 +644,9 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.AuthPath = pirpc.AuthStatePath()
 	m.recentPath = pirpc.RecentPath()
 	m.recentModels = recent.Load(m.recentPath)
+	m.favPath = pirpc.FavPath()
+	m.favModels = favorite.Load(m.favPath)
+	m.favSet = favorite.Set(m.favModels)
 }
 
 // FindBuiltin matches "/name" or "/name args" against the registry.

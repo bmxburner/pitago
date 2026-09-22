@@ -101,6 +101,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.session = ShortID(msg.state.SessionID)
 		}
 		m.Stats = msg.stats
+		m.sessBreak = pirpc.UsageBreakdown(msg.entries)
 		m.Cmds = append(BuiltinRepo(m.builtins), msg.cmds...)
 		m.Todos = restoreTodos(msg.msgs)
 		m.MCP = getMcpServers()
@@ -288,6 +289,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			d.Provs = buildProvs(msg.Providers)
 			d.ProvConn = provConn(m.KeyPath, msg.Providers)
 			sortProvsConn(d.Provs, d.ProvConn)
+			d.FavSet = m.favSet
 			d.ProvCursor, d.ProvFocus = 0, true
 			for i, o := range d.Options {
 				if o == msg.Current {
@@ -358,6 +360,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.AddBlock(Block{Kind: "notice", Text: "tree error: " + msg.Err.Error(), Err: true})
 		} else {
 			m.AddBlock(Block{Kind: "tree", Text: msg.Text})
+		}
+		m.Refresh()
+		return m, nil
+
+	case SessionMsg:
+		m.Status = "ready"
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "session error: " + msg.Err.Error(), Err: true})
+		} else {
+			m.sessBreak = msg.Break
+			m.AddBlock(Block{Kind: "session", Text: msg.Text})
 		}
 		m.Refresh()
 		return m, nil
@@ -1077,6 +1090,20 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if (d.Kind == "model" || d.Kind == "thinking" || d.Kind == "sessions" || d.Kind == "secret" || d.Kind == "rename" || d.Kind == "login" || d.Kind == "logout") && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
+			return m, nil
+		}
+		if d.Kind == "sessions" {
+			return m.DeleteResumeSession(d) // ⌫ on empty filter deletes (login parity)
+		}
+		return m, nil
+	case tea.KeyDelete:
+		if d.Kind == "sessions" {
+			return m.DeleteResumeSession(d)
+		}
+		return m, nil
+	case tea.KeyCtrlD:
+		if d.Kind == "sessions" {
+			return m.DeleteResumeSession(d)
 		}
 		return m, nil
 	case tea.KeyCtrlV:
@@ -1204,6 +1231,21 @@ func (m Model) updateModelDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 		m.Dialogs = m.Dialogs[1:]
 		m.Refresh()
 		return m, m.RunBuiltin("login", "")
+	case tea.KeyCtrlF:
+		// star/unstar the highlighted model (stays in the picker)
+		if d.Cursor >= 0 && d.Cursor < len(d.FIdx) {
+			ri := d.FIdx[d.Cursor]
+			m.toggleFav(d, ri)
+			d.Reindex()
+			for i, v := range d.FIdx { // cursor follows the toggled model
+				if v == ri {
+					d.Cursor = i
+					break
+				}
+			}
+			m.Refresh()
+		}
+		return m, nil
 	case tea.KeyEnter:
 		if d.ProvFocus {
 			d.ProvFocus = false
@@ -1410,6 +1452,12 @@ func (d *Dialog) Reindex() {
 			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) {
 			d.FIdx = append(d.FIdx, i)
 		}
+	}
+	// starred models float above the rest, stable (below keeps pi's order)
+	if d.Kind == "model" && len(d.FavSet) > 0 {
+		sort.SliceStable(d.FIdx, func(a, b int) bool {
+			return d.isFavIdx(d.FIdx[a]) && !d.isFavIdx(d.FIdx[b])
+		})
 	}
 	if d.Cursor >= len(d.FIdx) {
 		d.Cursor = 0

@@ -185,25 +185,29 @@ type TreeNode struct {
 
 // Stats mirrors get_session_stats data (subset we display).
 type Stats struct {
-	SessionID   string  `json:"sessionId"`
-	UserMsgs    int     `json:"-"`
-	AsstMsgs    int     `json:"-"`
-	ToolCalls   int     `json:"toolCalls"`
-	ToolResults int     `json:"-"`
-	Cost        float64 `json:"cost"`
-	In          int     `json:"-"`
-	Out         int     `json:"-"`
-	CacheRead   int     `json:"-"`
-	CacheWrite  int     `json:"-"`
-	TokensTotal int     `json:"-"`
-	ContextPct  float64 `json:"-"`
-	ContextToks int     `json:"-"`
-	ContextWin  int     `json:"-"`
+	SessionID     string  `json:"sessionId"`
+	SessionFile   string  `json:"sessionFile"`
+	TotalMessages int     `json:"totalMessages"`
+	UserMsgs      int     `json:"-"`
+	AsstMsgs      int     `json:"-"`
+	ToolCalls     int     `json:"toolCalls"`
+	ToolResults   int     `json:"-"`
+	Cost          float64 `json:"cost"`
+	In            int     `json:"-"`
+	Out           int     `json:"-"`
+	CacheRead     int     `json:"-"`
+	CacheWrite    int     `json:"-"`
+	TokensTotal   int     `json:"-"`
+	ContextPct    float64 `json:"-"`
+	ContextToks   int     `json:"-"`
+	ContextWin    int     `json:"-"`
 }
 
 func (s *Stats) UnmarshalJSON(data []byte) error {
 	var wire struct {
 		SessionID     string  `json:"sessionId"`
+		SessionFile   string  `json:"sessionFile"`
+		TotalMessages int     `json:"totalMessages"`
 		UserMessages  int     `json:"userMessages"`
 		AssistantMsgs int     `json:"assistantMessages"`
 		ToolCalls     int     `json:"toolCalls"`
@@ -226,6 +230,8 @@ func (s *Stats) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	s.SessionID = wire.SessionID
+	s.SessionFile = wire.SessionFile
+	s.TotalMessages = wire.TotalMessages
 	s.UserMsgs = wire.UserMessages
 	s.AsstMsgs = wire.AssistantMsgs
 	s.ToolCalls = wire.ToolCalls
@@ -246,6 +252,36 @@ func (s *Stats) UnmarshalJSON(data []byte) error {
 		}
 	}
 	return nil
+}
+
+// EntryUsage is the token/cost payload on usage entries and messages.
+type EntryUsage struct {
+	Input      int `json:"input"`
+	Output     int `json:"output"`
+	CacheRead  int `json:"cacheRead"`
+	CacheWrite int `json:"cacheWrite"`
+	Cost       struct {
+		Total float64 `json:"total"`
+	} `json:"cost"`
+}
+
+// EntryMessage is the message payload of a message-type session entry.
+type EntryMessage struct {
+	Role          string      `json:"role"`
+	Provider      string      `json:"provider"`
+	Model         string      `json:"model"`
+	ResponseModel string      `json:"responseModel"`
+	Usage         *EntryUsage `json:"usage"`
+}
+
+// SessionEntry is one row of get_entries (only the fields the
+// usage/cost breakdown needs; the rest is ignored).
+type SessionEntry struct {
+	Type     string        `json:"type"`
+	Provider string        `json:"provider"`
+	Model    string        `json:"model"`
+	Usage    *EntryUsage   `json:"usage"`
+	Message  *EntryMessage `json:"message"`
 }
 
 // Delta is the assistantMessageEvent inside message_update.

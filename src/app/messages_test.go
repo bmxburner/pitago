@@ -3,6 +3,9 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/bubbles/viewport"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const dupEnd = `{"message":{"role":"assistant","content":[{"type":"text","text":"Hey there!"},{"type":"thinking","thinking":"user says hi"}]}}`
@@ -59,15 +62,53 @@ func TestUserEchoWithImages(t *testing.T) {
 		t.Fatalf("no-image passthrough = %q", got)
 	}
 }
-// Gutter: icon on the first line, blank 2-cell gutter after, separators untouched.
+// Gutter: icon on the first line, continuations flush-left (no indent),
+// separators untouched.
 func TestGutter(t *testing.T) {
 	got := gutter("●", "head\ncont\n\n")
-	want := "● head\n  cont\n\n"
+	want := "● head\ncont\n\n"
 	if got != want {
 		t.Fatalf("gutter = %q, want %q", got, want)
 	}
 	got = gutter("○", "only\n\n")
 	if !strings.HasPrefix(got, "○ only\n") {
 		t.Fatalf("single line gutter: %q", got)
+	}
+}
+
+// gutterBox: bordered blocks keep a blank 2-cell gutter so every row is
+// as wide as the first and box borders stay vertically aligned.
+func TestGutterBox(t *testing.T) {
+	got := gutterBox("●", "head\ncont\n\n")
+	want := "● head\n  cont\n\n"
+	if got != want {
+		t.Fatalf("gutterBox = %q, want %q", got, want)
+	}
+}
+
+// Regression (screenshot: "hello" vs "continue"): a user box rendered
+// through the flush-left gutter came out with the top border sticking 2
+// cells past the sides. Every rendered row must share one visual width.
+func TestUserBoxRowsAligned(t *testing.T) {
+	m := Model{blocks: []Block{{Kind: "user", Text: "hello"}}}
+	m.vp = viewport.New(100, 20)
+	rows := strings.Split(stripANSI(m.renderBlocks()), "\n")
+	var widths []int
+	for _, r := range rows {
+		if r == "" {
+			continue
+		}
+		widths = append(widths, lipgloss.Width(r))
+	}
+	if len(widths) < 3 {
+		t.Fatalf("user box rendered %d rows, want >=3: %q", len(widths), rows)
+	}
+	for _, w := range widths[1:] {
+		if w != widths[0] {
+			t.Fatalf("box rows misaligned: widths %v\n%q", widths, strings.Join(rows, "\n"))
+		}
+	}
+	if !strings.HasPrefix(rows[1], "  ") {
+		t.Fatalf("box continuation missing 2-cell gutter: %q", rows[1])
 	}
 }

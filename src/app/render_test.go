@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pitago/src/pimark"
+	"pitago/src/pirpc"
 )
 
 func TestCodeLang(t *testing.T) {
@@ -259,5 +260,25 @@ func TestRenderInputStatusTitle(t *testing.T) {
 	}
 	if !strings.HasPrefix(top, "╭") || !strings.HasSuffix(top, "╮") {
 		t.Fatalf("idle input border broken: %q", top)
+	}
+}
+
+// Regression (screenshot): a long model/stats line used to wrap the input
+// footer to 2 rows, growing the left column past winH and leaving a gap
+// under the top-aligned sidebar. The footer must stay one row so the
+// frame stays exactly winH rows.
+func TestInputFooterNeverWraps(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.Status = "ready"
+	m.ModelLbl = "cohere/north-mini-code: free"
+	m.Stats = pirpc.Stats{ContextPct: 9, TokensTotal: 64800, Cost: 1.23}
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = tm.(Model)
+	rows := strings.Split(stripANSI(m.renderInput()), "\n")
+	if len(rows) != 6 { // border 2 + textarea 3 + footer 1
+		t.Fatalf("input box is %d rows, want 6:\n%q", len(rows), strings.Join(rows, "\n"))
+	}
+	if lines := strings.Split(m.View(), "\n"); len(lines) != 24 {
+		t.Fatalf("frame is %d rows, want 24", len(lines))
 	}
 }
