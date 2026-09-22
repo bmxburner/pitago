@@ -146,11 +146,27 @@ type State struct {
 	MessageCount   int    `json:"messageCount"`
 }
 
+// ModelCost is the per-1M pricing pi reports on each model.
+type ModelCost struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+}
+
 // ModelInfo is one entry of get_available_models.
 type ModelInfo struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Provider string `json:"provider"`
+	ID               string             `json:"id"`
+	Name             string             `json:"name"`
+	Provider         string             `json:"provider"`
+	API              string             `json:"api"`
+	BaseURL          string             `json:"baseUrl"`
+	Reasoning        bool               `json:"reasoning"`
+	Input            []string           `json:"input"`
+	Cost             ModelCost          `json:"cost"`
+	ContextWindow    int                `json:"contextWindow"`
+	MaxTokens        int                `json:"maxTokens"`
+	ThinkingLevelMap map[string]*string `json:"thinkingLevelMap"`
 }
 
 // TreeEntry is one session entry; TreeNode forms the get_tree hierarchy.

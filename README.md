@@ -14,6 +14,13 @@
 
 ![pitago demo](resources/demo.gif)
 
+[![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/cavaldos/pitago/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/cavaldos/pitago/total?style=flat-square)](https://github.com/cavaldos/pitago/releases)
+[![GitHub stars](https://img.shields.io/github/stars/cavaldos/pitago?style=flat-square)](https://github.com/cavaldos/pitago/stargazers)
+[![GitHub forks](https://img.shields.io/github/forks/cavaldos/pitago?style=flat-square)](https://github.com/cavaldos/pitago/network/members)
+[![License](https://img.shields.io/github/license/cavaldos/pitago?style=flat-square)](LICENSE)
+[![Sponsor](https://img.shields.io/badge/Sponsor%20%E2%9D%A4%EF%B8%8F-8A2BE2?style=flat-square)](https://ko-fi.com/calvados)
+
 *A polished Terminal User Interface (TUI) frontend for the `pi` agent, built with Bubble Tea. `pi --mode rpc` serves as the backend (multi-provider, tools, sessions, compaction), while pitago provides a rich terminal interface communicating over JSONL.*
 
 </div>

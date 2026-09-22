@@ -350,7 +350,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Refresh()
 			return m, nil
 		}
-		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Paths: msg.Paths, Filter: msg.Filter, Scope: msg.Scope}
+		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Models: msg.Models, Paths: msg.Paths, Filter: msg.Filter, Scope: msg.Scope}
 		if msg.Kind == "model" {
 			// two-pane picker: left = providers, right = their models
 			d.Provs = buildProvs(msg.Providers)
@@ -1551,7 +1551,8 @@ func (d *Dialog) Reindex() {
 		}
 		if f == "" || strings.Contains(strings.ToLower(d.Options[i]), f) ||
 			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) ||
-			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) {
+			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) ||
+			strings.Contains(d.specHay(i), f) {
 			d.FIdx = append(d.FIdx, i)
 		}
 	}

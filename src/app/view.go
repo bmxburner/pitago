@@ -969,9 +969,11 @@ func fixedWin(cursor, total, win int) (start, end int, above, below bool) {
 	return start, end, above, below
 }
 
-// renderModelDialog draws the two-pane model picker: left = providers,
-// right = their models (oh-my-pi style). ↑↓ moves in the focused pane,
-// ←/→/Tab switches pane, typing filters, Enter selects.
+// renderModelDialog draws the model picker: left = providers, middle =
+// their models (name only), right = the highlighted model's specs
+// (oh-my-pi style; narrow terminals fold the specs into a footer panel).
+// ↑↓ moves in the focused pane, ←/→/Tab switches pane, typing filters,
+// Enter selects.
 func (m Model) renderModelDialog(d *Dialog) string {
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
@@ -995,8 +997,18 @@ func (m Model) renderModelDialog(d *Dialog) string {
 	if boxW < 100 {
 		leftW = 28
 	}
+	// Three columns when the specs fit: providers | model names |
+	// details. Narrow terminals keep the classic two panes with the
+	// specs as a footer panel instead.
+	detW := 40
+	detailCol := len(d.Models) > 0 && boxW >= 110
 	rightW := boxW - 8 - leftW - 3
-	if rightW < 30 {
+	if detailCol {
+		rightW -= detW + 3
+		if rightW < 16 {
+			rightW = 16
+		}
+	} else if rightW < 30 {
 		rightW = 30
 	}
 	win := m.winH - 14
@@ -1006,12 +1018,26 @@ func (m Model) renderModelDialog(d *Dialog) string {
 	if win > 24 {
 		win = 24
 	}
+	if !detailCol {
+		// The footer spec panel costs ~14 rows: steal from the panes
+		// so the whole box still fits short terminals instead of
+		// overflowing them.
+		if len(d.FIdx) > 0 && d.Cursor >= 0 && d.Cursor < len(d.FIdx) {
+			if _, ok := d.modelAt(d.FIdx[d.Cursor]); ok && win > m.winH-25 {
+				win = m.winH - 25
+				if win < 6 {
+					win = 6
+				}
+			}
+		}
+	}
 
 	f := strings.ToLower(d.Filter)
 	matchText := func(i int) bool {
 		return f == "" || strings.Contains(strings.ToLower(d.Options[i]), f) ||
 			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) ||
-			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f)
+			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) ||
+			strings.Contains(d.specHay(i), f)
 	}
 	provCount := func(prov string) int {
 		n := 0
@@ -1102,8 +1128,12 @@ func (m Model) renderModelDialog(d *Dialog) string {
 			}
 		}
 		row := Short(d.Options[ri], optW)
-		if desc := DescOf(d, ri); desc != "" {
-			row += "  " + toolStyle.Render("— "+Short(desc, rightW-4-optW-3))
+		if !detailCol {
+			// Wide layout shows the specs in the details column, so
+			// the middle column stays a clean name-only list.
+			if desc := DescOf(d, ri); desc != "" {
+				row += "  " + toolStyle.Render("— "+Short(desc, rightW-4-optW-3))
+			}
 		}
 		star := toolStyle.Render("☆")
 		if d.isFavIdx(ri) {
@@ -1131,34 +1161,76 @@ func (m Model) renderModelDialog(d *Dialog) string {
 	if p := d.selProv(); p != "" && (d.Filter == "" || !d.ProvFocus) {
 		sel = p
 	}
-	b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
-		"  " + sideTitleStyle.Width(rightW-2).Render(sel+" · "+fmt.Sprintf("%d", total)) + "\n")
-
-	n := len(leftLines)
-	if len(rightLines) > n {
-		n = len(rightLines)
-	}
 	sep := sepStyle.Render("│")
-	for i := 0; i < n; i++ {
-		l, r := "", ""
-		if i < len(leftLines) {
-			l = leftLines[i]
-		} else {
-			l = "  " + statusBarStyle.Width(leftW-2).Render("")
+	if !detailCol {
+		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
+			"  " + sideTitleStyle.Width(rightW-2).Render(sel+" · "+fmt.Sprintf("%d", total)) + "\n")
+
+		n := len(leftLines)
+		if len(rightLines) > n {
+			n = len(rightLines)
 		}
-		if i < len(rightLines) {
-			r = rightLines[i]
-		} else {
-			r = "  " + statusBarStyle.Width(rightW-2).Render("")
+		for i := 0; i < n; i++ {
+			l, r := "", ""
+			if i < len(leftLines) {
+				l = leftLines[i]
+			} else {
+				l = "  " + statusBarStyle.Width(leftW-2).Render("")
+			}
+			if i < len(rightLines) {
+				r = rightLines[i]
+			} else {
+				r = "  " + statusBarStyle.Width(rightW-2).Render("")
+			}
+			b.WriteString(l+" "+sep+" "+r + "\n")
 		}
-		b.WriteString(l+" "+sep+" "+r + "\n")
+	} else {
+		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("PROVIDERS") + " │ " +
+			"  " + sideTitleStyle.Width(rightW-2).Render(sel+" · "+fmt.Sprintf("%d", total)) + " │ " +
+			"  " + sideTitleStyle.Width(detW-2).Render("DETAILS") + "\n")
+
+		detLines := d.detailLines(detW)
+		for len(detLines) < win {
+			detLines = append(detLines, "  "+statusBarStyle.Width(detW-2).Render(""))
+		}
+		n := len(leftLines)
+		if len(rightLines) > n {
+			n = len(rightLines)
+		}
+		if len(detLines) > n {
+			n = len(detLines)
+		}
+		for i := 0; i < n; i++ {
+			l, r, dt := "", "", ""
+			if i < len(leftLines) {
+				l = leftLines[i]
+			} else {
+				l = "  " + statusBarStyle.Width(leftW-2).Render("")
+			}
+			if i < len(rightLines) {
+				r = rightLines[i]
+			} else {
+				r = "  " + statusBarStyle.Width(rightW-2).Render("")
+			}
+			if i < len(detLines) {
+				dt = detLines[i]
+			} else {
+				dt = "  " + statusBarStyle.Width(detW-2).Render("")
+			}
+			b.WriteString(l+" "+sep+" "+r+" "+sep+" "+dt + "\n")
+		}
 	}
 
 	foot := "↑↓ providers · → models · type to search all · Enter open · ^F star · ^L login · Esc close"
 	if !d.ProvFocus {
 		foot = "↑↓ models · ← providers · Tab switch · type filters here · Enter select · ^F star · ^L login · Esc close"
 	}
-	b.WriteString("\n" + toolStyle.Render(foot))
+	if !detailCol && len(d.Models) > 0 {
+		b.WriteString("\n" + strings.Join(d.detailLines(boxW-4), "\n") + "\n\n")
+	} else {
+		b.WriteString("\n")
+	}
+	b.WriteString(toolStyle.Render(foot))
 	box := dlgStyle.Width(boxW).Render(b.String())
 	hint := ""
 	if len(m.Dialogs) > 1 {

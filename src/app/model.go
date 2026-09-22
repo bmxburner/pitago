@@ -33,6 +33,7 @@ type Dialog struct {
 	Options       []string
 	Descs         []string
 	Providers     []string // model picker: parallel provider per option
+	Models        []pirpc.ModelInfo // model picker: full specs parallel to Options
 	Provs         []string // model picker: left pane (unique providers, [0]="All")
 	ProvConn      map[string]bool // model picker: connected providers (green dot)
 	ProvCursor    int      // model picker: left-pane cursor
@@ -223,6 +224,7 @@ type ModelCycleMsg struct {
 type PickerMsg struct {
 	Kind                      string
 	Options, Descs, Providers []string
+	Models                    []pirpc.ModelInfo // model picker: full specs parallel to Options
 	Paths                     []string // sessions picker: parallel session file per option
 	Filter                    string   // sessions picker: pre-typed filter (/resume <arg>)
 	Scope                     string   // sessions picker: "current" | "all"

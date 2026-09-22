@@ -1006,7 +1006,7 @@ func All() []app.Builtin {
 					descs = append(descs, mi.Name+" · "+mi.Provider)
 					provs = append(provs, mi.Provider)
 				}
-				return app.PickerMsg{Kind: "model", Options: opts, Descs: descs, Providers: provs, Current: m.ModelLbl}
+				return app.PickerMsg{Kind: "model", Options: opts, Descs: descs, Providers: provs, Models: models, Current: m.ModelLbl}
 			}
 		}),
 		pi("tree", "Navigate session tree (switch branches)", "/tree", func(m *app.Model, arg string) tea.Cmd {
