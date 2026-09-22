@@ -110,6 +110,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Stats = msg.stats
 		m.sessBreak = pirpc.UsageBreakdown(msg.entries)
 		m.Cmds = append(BuiltinRepo(m.builtins), msg.cmds...)
+		m.refreshCmds() // reconnect can replace Cmds under an open / popup (stale indices panic render)
 		m.Todos = restoreTodos(msg.msgs)
 		m.MCP = getMcpServers()
 		m.Plugins = getPlugins()

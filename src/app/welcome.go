@@ -24,6 +24,7 @@ var brandLogo = buildBrandLogo()
 
 // brandGlyphs are the 5x5 block glyphs for P I T A G O.
 var brandGlyphs = [][5]string{
+	{"\n     ", "     ", "     ", "     ", "     "}, // empty
 	{"█████", "█   █", "█████", "█    ", "█    "}, // P
 	{"█████", "  █  ", "  █  ", "  █  ", "█████"}, // I
 	{"█████", "  █  ", "  █  ", "  █  ", "  █  "}, // T
@@ -61,8 +62,8 @@ func (m Model) welcomeView(w int) string {
 		logo[i] = lipgloss.NewStyle().Foreground(cText).Render(ln)
 	}
 	title := sideTitleStyle.Render("Pitago")
-	if m.AppVersion != "" && m.AppVersion != "dev" {
-		title += statusBarStyle.Render(" v"+m.AppVersion)
+	if v := strings.TrimPrefix(m.AppVersion, "v"); v != "" && v != "dev" {
+		title += statusBarStyle.Render(" v" + v)
 	}
 	hints := statusBarStyle.Render("/ commands · ! bash · ctrl+o more")
 	ready := okStyle.Render("●") + " " + sideTitleStyle.Render("ready")
@@ -86,9 +87,19 @@ func (m Model) welcomeView(w int) string {
 	newSess := okStyle.Render("✓") + " " + statusBarStyle.Render("New session started")
 
 	logoW := lipgloss.Width(brandLogo[0])
-	if w >= logoW+30 {
-		// side-by-side like pi: details vertically centered on the logo
-		start := (len(logo) - len(details)) / 2
+	detailW := 0
+	for _, d := range details {
+		if dw := lipgloss.Width(d); dw > detailW {
+			detailW = dw
+		}
+	}
+	// Side-by-side only when the joined rows truly fit: the old fixed
+	// +30 guess was narrower than the hints line, so medium terminals
+	// wrapped mid-logo and the block letters came out garbled.
+	if w >= logoW+3+detailW {
+		// side-by-side like pi, details bottom-aligned with the logo so
+		// the title sits one row down with a blank lead-in above it
+		start := len(logo) - len(details)
 		if start < 0 {
 			start = 0
 		}
@@ -103,7 +114,7 @@ func (m Model) welcomeView(w int) string {
 		rows = append(rows, "", res, "", newSess)
 		return gutter(statusBarStyle.Render("●"), strings.Join(rows, "\n")+"\n")
 	}
-	rows := append(append(append([]string{}, logo...), details...), "", res, "", newSess)
+	rows := append(append(append(append([]string{}, logo...), ""), details...), "", res, "", newSess)
 	return gutter(statusBarStyle.Render("●"), strings.Join(rows, "\n")+"\n")
 }
 

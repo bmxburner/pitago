@@ -191,3 +191,64 @@ func TestCmdPopupHugsContent(t *testing.T) {
 		t.Fatalf("wide popup width %d must cap at chat width %d", w, mw)
 	}
 }
+
+// Regression (crash): reconnect/respawn replaced m.Cmds under an open /
+// popup — stale cmdItems indices panicked renderCmdPopup. connectedMsg
+// must rebuild the match list.
+func TestCmdPopupSurvivesReconnect(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.Status = "ready"
+	m.ModelLbl = "test"
+	for i := 0; i < 20; i++ {
+		m.Cmds = append(m.Cmds, pirpc.RepoCommand{Name: fmt.Sprintf("cmd%02d", i), Description: "d", Source: "builtin"})
+	}
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = tm.(Model)
+	m.ta.SetValue("/")
+	m.refreshCmds()
+	if !m.cmdOpen || len(m.cmdItems) != 20 {
+		t.Fatalf("popup must list 20 cmds, got %d", len(m.cmdItems))
+	}
+	// reconnect with a shorter list, then render (panics before the fix)
+	tm, _ = m.Update(connectedMsg{cmds: []pirpc.RepoCommand{{Name: "new", Description: "d", Source: "builtin"}}})
+	m = tm.(Model)
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("View panicked after reconnect: %v", r)
+			}
+		}()
+		_ = m.View()
+	}()
+	if len(m.cmdItems) != 1 {
+		t.Fatalf("popup must rebuild to 1 cmd, got %d", len(m.cmdItems))
+	}
+}
+
+// Regression (crash): the width pass fed match VALUES into plain() as if
+// they were POSITIONS (double index) — any filtered subset where values
+// diverge from positions panicked renderCmdPopup.
+func TestCmdPopupFilteredWidth(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.Status = "ready"
+	m.ModelLbl = "test"
+	for i := 0; i < 83; i++ {
+		m.Cmds = append(m.Cmds, pirpc.RepoCommand{Name: fmt.Sprintf("cmd%02d", i), Description: "d", Source: "builtin"})
+	}
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 120, Height: 24})
+	m = tm.(Model)
+	m.ta.SetValue("/cmd8") // matches cmd08, cmd80-82: values != positions
+	m.refreshCmds()
+	if n := len(m.cmdItems); n == 0 || n >= len(m.Cmds) {
+		t.Fatalf("expected a filtered subset, got %d of %d", n, len(m.Cmds))
+	}
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				t.Fatalf("renderCmdPopup panicked on filtered matches: %v", r)
+			}
+		}()
+		_ = m.renderCmdPopup()
+		_ = m.View()
+	}()
+}

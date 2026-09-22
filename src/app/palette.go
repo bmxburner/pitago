@@ -206,8 +206,8 @@ func (m Model) renderCmdPopup() string {
 			contentW = w
 		}
 	}
-	for _, i := range m.cmdItems {
-		name, rest := plain(i)
+	for pos := range m.cmdItems {
+		name, rest := plain(pos)
 		if w := 2 + lipgloss.Width(Short(name+rest, mainW)); w > contentW {
 			contentW = w
 		}
