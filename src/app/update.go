@@ -628,6 +628,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetchStateOnce()
 		}
 
+	case reviewDoneMsg:
+		// restoreMouseCmd rides along on every exit path: bubbletea restores
+		// alt screen, bracketed paste, and focus reporting after an exec, but
+		// never re-emits the mouse-enable sequence.
+		return m, tea.Batch(m.handleReviewDone(msg), m.restoreMouseCmd())
+
+	case reviewDeliveredMsg:
+		m.handleReviewDelivered(msg)
+		return m, nil
+
 	case PickerMsg:
 		m.Status = "ready"
 		if msg.Err != nil {
