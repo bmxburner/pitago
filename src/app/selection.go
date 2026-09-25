@@ -114,6 +114,7 @@ func (m Model) updateSelection(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 		if m.sel.HadDrag {
 			text := selectionText(m.chatLines, m.sel.Anchor, m.sel.Focus)
 			if strings.TrimSpace(text) != "" {
+				m.LastSelection = text
 				m.YankText(text)
 			}
 		}
