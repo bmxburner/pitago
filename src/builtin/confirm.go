@@ -14,22 +14,30 @@ import (
 // Wired into app via UseBuiltins; app's confirmDialog only dispatches.
 func Confirmers() map[string]app.ConfirmFunc {
 	return map[string]app.ConfirmFunc{
-		"model":       confirmModel,
-		"recent":      confirmRecent,
-		"sessions":    confirmSessions,
-		"thinking":    confirmThinking,
-		"theme":       confirmTheme,
-		"settings":    confirmSettings,
-		"pconfig":     confirmPconfig,
-		"login":       confirmLogin,
-		"loginMethod": confirmLoginMethod,
-		"loginOAuth":  confirmLoginOAuth,
-		"logout":      confirmLogout,
-		"secret":      confirmSecret,
-		"yank":        confirmYank,
-		"update":      confirmUpdate,
-		"trajectory":  confirmTrajectory,
+		"model":        confirmModel,
+		"recent":       confirmRecent,
+		"sessions":     confirmSessions,
+		"thinking":     confirmThinking,
+		"theme":        confirmTheme,
+		"settings":     confirmSettings,
+		"pconfig":      confirmPconfig,
+		"login":        confirmLogin,
+		"loginMethod":  confirmLoginMethod,
+		"loginOAuth":   confirmLoginOAuth,
+		"logout":       confirmLogout,
+		"secret":       confirmSecret,
+		"yank":         confirmYank,
+		"blockactions": confirmBlockActions,
+		"update":       confirmUpdate,
+		"trajectory":   confirmTrajectory,
 	}
+}
+
+// confirmBlockActions runs the picked semantic copy action (markdown /
+// tables / code / plain / preview) for a BlockActionsDialog.
+func confirmBlockActions(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	return m, m.RunBlockAction(d, ri)
 }
 
 func confirmModel(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {

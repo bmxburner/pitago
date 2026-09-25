@@ -220,14 +220,16 @@ script/release.sh v0.0.1
 | `Alt+↑↓ PgUp PgDn Home End` or `Ctrl+↑↓ PgUp PgDn Home End` | Scroll sidebar (keyboard, always works)                                                                                       |
 | `Mouse wheel`                                               | On by default: hover sidebar to scroll it, chat otherwise; `--mouse=false` disables                                           |
 
-### Copying text
+### Copying text and messages
 
-- With mouse on (default): hold `Option`/`Shift` (terminal-dependent) to select
-- Or toggle it at runtime with `/mouse` (`/mouse off` for plain highlight-to-copy), or start with `--mouse=false`
-- To copy only chat content (without sidebar): hide the sidebar with `/sidebar` or `Ctrl+B`, then select
-- Or use `Ctrl+Y` / `/yank` (`/copy`) to copy the last assistant answer directly to clipboard
-- Or press `Ctrl+O` to pick any message to copy — sidebar stays visible
-- With mouse on: hold `Option`/`Shift` (terminal-dependent) to select
+- **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls.
+- **Double-click** a chat line to select the whole rendered line.
+- **Right-click** an assistant block for `Copy markdown`, `Copy tables`, `Copy code blocks`, `Copy plain text`, and `Preview as markdown`.
+- With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse off`.
+- `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker.
+- `/copy-md`, `/copy-tables`, and `/copy-code` copy semantic content from the last assistant message.
+- Whole-message copy preserves raw Markdown, tables, fenced-code languages, and links; partial drag selection copies ANSI/OSC-free visible text.
+- In Orca-hosted sessions, Pitago emits OSC 52 to the embedded terminal. Delivery depends on the terminal's OSC 52 support; if it is unavailable or the payload exceeds the safe cap, Pitago reports the copy failure instead of claiming success. Other sessions use the local system clipboard with platform fallbacks.
 
 ## Commands
 
@@ -240,10 +242,11 @@ Type `/` to open the command popup. Two kinds:
 - `/model` — change model
 - `/recent` — recent models picker
 - `/yank` / `/copy` — copy last answer to clipboard
+- `/copy-md` / `/copy-tables` / `/copy-code` — semantic copy from the last assistant message
 - `/sidebar` — hide/show sidebar
 - `/theme` — switch TUI theme (`/theme` opens picker, `/theme gruvbox` applies directly; or `pitago --theme one-dark`)
 - `/plugins` — collapse/expand installed pi plugins in the sidebar
-- `/mouse` — toggle mouse (click sidebar, wheel scroll) at runtime, `[on|off]`; off for native text selection
+- `/mouse` — toggle mouse at runtime, `[on|off]`; on enables chat drag-selection, right-click copy menu, sidebar clicks and hover-aware wheel scrolling; off restores native terminal selection
 - `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
 - `/thinking` — toggle thinking level
 - `/tree` — session tree, pi-style rows (read-only over RPC)
@@ -285,7 +288,7 @@ src/app/          # TUI shell: Model, update, view, dialogs, sidepanels;
                   # thin wiring over src/components (no pure logic here)
 src/components/  # feature components (pure, testable without TUI state):
                    # chat (Block), mention (@file lookup), image (@image vision),
-                   # palette (/ match),
+                   # palette (/ match), clipboard (local + OSC 52),
                   # pet (status core), recent (models store), yank (copy),
                   # format (shared string/number helpers)
 src/builtin/      # pi builtin features re-implemented over RPC

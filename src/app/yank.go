@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/atotto/clipboard"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"pitago/src/components/clipboard"
 	"pitago/src/components/yank"
 )
 
@@ -25,13 +25,22 @@ func (m *Model) YankLast() tea.Cmd {
 	return nil
 }
 
-// YankText copies arbitrary text to the clipboard with a toast popup.
-
+// YankText copies arbitrary text to the clipboard with a toast popup. The
+// transport (local system clipboard vs OSC 52 for Orca-hosted sessions) is
+// chosen by components/clipboard and surfaced honestly in the toast.
 func (m *Model) YankText(text string) {
-	if err := clipboard.WriteAll(text); err != nil {
-		m.AddBlock(Block{Kind: "notice", Text: "yank failed: " + err.Error(), Err: true})
-	} else {
-		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("yanked (%d chars) to clipboard", len([]rune(text)))})
+	st := clipboard.Write(text)
+	switch st.Channel {
+	case clipboard.Atoto:
+		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("yanked %d chars to clipboard", st.Chars)})
+	case clipboard.Osc52:
+		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("yanked %d chars (osc52 — terminal-handled)", st.Chars)})
+	default:
+		msg := "copy unavailable — try /yank picker"
+		if st.Err != nil {
+			msg += " · " + st.Err.Error()
+		}
+		m.AddBlock(Block{Kind: "notice", Text: msg, Err: true})
 	}
 	m.Refresh()
 }

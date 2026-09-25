@@ -42,6 +42,7 @@ type Dialog struct {
 	Paths          []string          // sessions picker: parallel session file per option
 	Scope          string            // sessions picker: "current" | "all" (Tab toggles)
 	Payload        []string          // yank picker: full text per option; login: raw keys ("" for action rows)
+	BlockIdx       int               // blockactions: target chat block index (for Payload kinds)
 	Cursor         int
 	Filter         string // picker filter / secret buffer / rename buffer
 	FIdx           []int
@@ -160,14 +161,14 @@ type Model struct {
 	recentModels   []RecentModel
 	recentPath     string // persisted recent models ("" = don't persist)
 	favModels      []FavEntry
-	favSet         map[string]bool // starred models lookup (see components/favorite)
-	favPath        string          // persisted favorites ("" = don't persist)
-	hist           []string        // sent messages, oldest→newest (↑↓ recall when input empty)
-	histIdx        int             // -1 = live input, else index into hist while browsing
+	favSet         map[string]bool   // starred models lookup (see components/favorite)
+	favPath        string            // persisted favorites ("" = don't persist)
+	hist           []string          // sent messages, oldest→newest (↑↓ recall when input empty)
+	histIdx        int               // -1 = live input, else index into hist while browsing
 	CmdShortcuts   map[string]string // /command → "alt+x" (hub-assigned Alt shortcuts, persisted in prefs)
-	ThemeName      string          // active TUI theme (/theme, --theme flag)
-	themePath      string          // persisted theme ("" = don't persist)
-	prefsPath      string          // persisted pitago-local prefs ("" = don't persist)
+	ThemeName      string            // active TUI theme (/theme, --theme flag)
+	themePath      string            // persisted theme ("" = don't persist)
+	prefsPath      string            // persisted pitago-local prefs ("" = don't persist)
 	builtins       []Builtin
 	confirm        map[string]ConfirmFunc
 	expandTools    bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
@@ -182,6 +183,11 @@ type Model struct {
 	plugAt         time.Time // first press timestamp for the pending plugin op
 	renderCache    []string  // per-block rendered output (renderBlocks reuses clean history)
 	renderCacheKey []uint64  // fingerprint parallel to renderCache (see blockKey)
+	blockRows      []int     // rendered start line of each block (mouse hit-testing)
+	chatLines      []string  // absolute rendered chat content lines (selection source)
+	sel            Selection // chat-column drag selection state
+	LastPressAt    time.Time // last single-click timestamp (double-click detection)
+	LastPressLine  int       // line of last single-click
 	sideCache      string    // last built sidebar content (streaming reuses within sideThrottle)
 	sideCacheAt    time.Time // last sidebar rebuild
 	lastPaint      time.Time // last chat viewport paint (streaming coalesces to streamFrame)
@@ -659,7 +665,7 @@ func (m *Model) ToggleMouse(arg string) tea.Cmd {
 	}
 	m.Mouse = on
 	if on {
-		m.AddBlock(Block{Kind: "notice", Text: "mouse on — click sidebar · wheel scrolls · hold Option/Shift to select text"})
+		m.AddBlock(Block{Kind: "notice", Text: "mouse on — drag chat to select+copy (sidebar excluded) · right-click copy menu · sidebar click/wheel"})
 	} else {
 		m.AddBlock(Block{Kind: "notice", Text: "mouse off — native text selection · ↑↓ scrolls · Shift+↑↓ recalls history · sidebar scrolls with Ctrl+↑↓"})
 	}
