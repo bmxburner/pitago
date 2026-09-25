@@ -45,8 +45,10 @@ func TestSubagentToolClassification(t *testing.T) {
 	}
 }
 
-// A backend with its own argument schema still gets a usable row: the name falls
-// back to the tool plus its id rather than rendering blank.
+// A backend with its own argument schema still gets a usable row. pi's fork tool
+// sends {task, effort, mode} with no name, so the row is named after the task
+// rather than an opaque toolCallId; when there is no usable name at all the
+// toolCallId is the last resort.
 func TestTrackSubagentStartTolerantOfForeignArgSchemas(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -55,10 +57,11 @@ func TestTrackSubagentStartTolerantOfForeignArgSchemas(t *testing.T) {
 		wantSub string
 	}{
 		{"pi-agents schema", "subagent", `{"name":"scout","agent":"scout","task":"find bugs","interactive":true}`, "scout"},
-		{"run_agent with prompt", "run_agent", `{"agent":"explore","prompt":"look at the parser"}`, ""},
-		{"unknown shape falls back to tool id", "run_workflow", `{"weird":[1,2,3]}`, ""},
-		{"no args at all", "fork", ``, ""},
-		{"malformed json", "subagent", `{not json`, ""},
+		{"run_agent with prompt", "run_agent", `{"agent":"explore","prompt":"look at the parser"}`, "look at the parser"},
+		{"fork tool shape names the row after the task", "fork", `{"task":"map the auth flow","effort":"fast","mode":"research"}`, "map the auth flow"},
+		{"unknown shape falls back to tool id", "run_workflow", `{"weird":[1,2,3]}`, "run_workflow-abcdef12"},
+		{"no args at all", "fork", ``, "fork-abcdef12"},
+		{"malformed json", "subagent", `{not json`, "subagent-abcdef12"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

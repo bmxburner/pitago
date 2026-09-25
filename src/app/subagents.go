@@ -760,6 +760,15 @@ func (m *Model) trackSubagentStart(toolCallID, toolName string, args json.RawMes
 		return
 	}
 	name, agent, task, interactive, _ := parseSubagentArgs(args)
+	// Name preference: an explicit name, then the task's first line, then the
+	// toolCallId. Backends that send only a task (pi's own fork tool sends
+	// {task, effort, mode}) would otherwise show an opaque "fork-a1b2c3d4" in
+	// the sidebar with the useful text pushed to the right-hand description.
+	if strings.TrimSpace(name) == "" {
+		if fromTask := firstLine(strings.TrimSpace(task), 40); fromTask != "" {
+			name = fromTask
+		}
+	}
 	if strings.TrimSpace(name) == "" {
 		name = toolName + "-" + toolCallID
 		if len(toolCallID) > 8 {
