@@ -257,9 +257,15 @@ const (
 // (subagent_interrupt, subagent_wait, subagents_list, subagent_resume) act
 // on existing rows and never create one. Exact match only — unlike
 // isTodoTool, substring matching would false-positive on unrelated names.
+//
+// "fork" is accepted as a family member for forward compatibility. It does not
+// fire today: pi's own /fork is a session command rather than a tool and so
+// never reaches the toolcall stream, and pi-fork finds its children by scanning
+// os.tmpdir()/pi-fork-*/fork.jsonl instead of emitting a tool call. Supporting
+// those children needs that scan, not this list.
 func isSubagentRowTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "subagent", "run_agent", "run_workflow":
+	case "subagent", "run_agent", "run_workflow", "fork":
 		return true
 	}
 	return false
@@ -270,7 +276,7 @@ func isSubagentRowTool(name string) bool {
 func isSubagentTool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
 	case "subagent", "subagent_interrupt", "subagent_wait",
-		"subagents_list", "subagent_resume", "run_agent", "run_workflow":
+		"subagents_list", "subagent_resume", "run_agent", "run_workflow", "fork":
 		return true
 	}
 	return false

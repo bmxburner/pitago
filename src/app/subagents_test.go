@@ -470,12 +470,13 @@ func TestOpenSubagentsOff(t *testing.T) {
 }
 
 func TestIsSubagentRowTool(t *testing.T) {
-	for _, name := range []string{"subagent", "run_agent", "run_workflow", "SubAgent", " RUN_AGENT "} {
+	for _, name := range []string{"subagent", "run_agent", "run_workflow", "fork", "SubAgent", " RUN_AGENT "} {
 		if !isSubagentRowTool(name) {
 			t.Errorf("%q should create rows", name)
 		}
 	}
-	for _, name := range []string{"subagent_wait", "subagent_interrupt", "subagents_list", "subagent_resume", "read", "fork", "forklift", "", "my-subagent-tool"} {
+	// "forklift" must not match: the match is exact, not a prefix.
+	for _, name := range []string{"subagent_wait", "subagent_interrupt", "subagents_list", "subagent_resume", "read", "forklift", "fork_session", "", "my-subagent-tool"} {
 		if isSubagentRowTool(name) {
 			t.Errorf("%q should not create rows", name)
 		}
@@ -483,12 +484,14 @@ func TestIsSubagentRowTool(t *testing.T) {
 }
 
 func TestIsSubagentTool(t *testing.T) {
-	for _, name := range []string{"subagent", "subagent_interrupt", "subagent_wait", "subagents_list", "subagent_resume", "run_agent", "run_workflow"} {
+	for _, name := range []string{"subagent", "subagent_interrupt", "subagent_wait", "subagents_list", "subagent_resume", "run_agent", "run_workflow", "fork"} {
 		if !isSubagentTool(name) {
 			t.Errorf("%q should be a subagent-family tool", name)
 		}
 	}
-	if isSubagentTool("read") || isSubagentTool("fork") {
+	// "fork" is accepted for forward compatibility even though nothing emits it
+	// today; unrelated tools still must not match.
+	if isSubagentTool("read") || isSubagentTool("fork_session") {
 		t.Error("unrelated tools must not match")
 	}
 }
