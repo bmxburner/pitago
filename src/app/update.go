@@ -278,6 +278,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// 33 ms edge-scroll pulse while a drag is held at the viewport edge.
 		return m.updateSelectionTick()
 
+	case subagentsTickMsg:
+		m.refreshSubagents(false)
+		m.Refresh()
+		return m, subagentsTickCmd()
+
 	case connectedMsg:
 		if m.followRemote {
 			return m, nil // an in-flight owned fetch must not replace remote history

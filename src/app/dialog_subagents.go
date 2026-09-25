@@ -219,6 +219,11 @@ func (m Model) runSubagentAction(d *Dialog, row SubagentRow, action string) (tea
 		m.Refresh()
 		return m, m.ReconcileTurnCmd()
 	case "s":
+		if !subagentSteerable(row) {
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("%s is not a live steerable subagent", row.Name)})
+			m.Refresh()
+			return m, nil
+		}
 		sd := &Dialog{
 			Kind:   "subagents-steer",
 			Title:  fmt.Sprintf("Steer %s", row.Name),
