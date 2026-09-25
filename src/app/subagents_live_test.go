@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"pitago/src/pirpc"
 )
 
@@ -55,5 +57,39 @@ func TestSubagentLiveTracking(t *testing.T) {
 		if r.ID == "tc2" && r.Status != SubagentActive {
 			t.Fatalf("interactive row should stay active: %+v", r)
 		}
+	}
+}
+
+func TestSubagentsTickSeededInInit(t *testing.T) {
+	m := New(nil, t.TempDir())
+	cmd := m.Init()
+	if cmd == nil {
+		t.Fatal("Init should return a batch including the subagents tick")
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("Init batch returned %T, want tea.BatchMsg", msg)
+	}
+	if len(batch) < 5 {
+		t.Fatalf("Init batch has %d cmds, want >=5 (fetchAll/pollCmds/pollWs/updates/tick)", len(batch))
+	}
+}
+
+func TestSubagentsTickRoundTrip(t *testing.T) {
+	t.Setenv("PI_AGENT_DIR", t.TempDir())
+	t.Setenv("PI_CODING_AGENT_DIR", "")
+	m := New(nil, t.TempDir())
+	m.Subagents = []SubagentRow{{ID: "a", Name: "scout", Status: SubagentActive, StartedAt: time.Now()}}
+	tm, cmd := m.Update(subagentsTickMsg{})
+	if cmd == nil {
+		t.Fatal("tick handler should re-arm via subagentsTickCmd")
+	}
+	mm, ok := tm.(Model)
+	if !ok {
+		t.Fatalf("Update returned %T, want Model", tm)
+	}
+	if len(mm.Subagents) != 1 || mm.Subagents[0].ID != "a" {
+		t.Fatalf("tick should preserve live rows: %+v", mm.Subagents)
 	}
 }

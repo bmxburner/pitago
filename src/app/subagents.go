@@ -731,6 +731,8 @@ func mergeSubagentDisk(live []SubagentRow, disk []SubagentRow) []SubagentRow {
 
 // refreshSubagents re-scans disk state (TTL-gated unless force) and merges
 // into m.Subagents, preserving live rows (which carry the real names).
+// X-dismissed rows stay dismissed: filtered here so the 2s tick rescan
+// cannot re-add them.
 func (m *Model) refreshSubagents(force bool) {
 	now := time.Now()
 	if !force && now.Sub(m.subagentsAt) < subagentScanTTL {
@@ -739,6 +741,46 @@ func (m *Model) refreshSubagents(force bool) {
 	m.subagentsAt = now
 	disk := scanSubagentArtifacts(m.sessionFile, piAgentDir(), now)
 	m.Subagents = mergeSubagentDisk(m.Subagents, disk)
+	if len(m.dismissed) > 0 && len(m.Subagents) > 0 {
+		kept := m.Subagents[:0]
+		for _, r := range m.Subagents {
+			if m.dismissed[r.ID] {
+				continue
+			}
+			if r.SessionFile != "" && m.dismissed[r.SessionFile] {
+				continue
+			}
+			kept = append(kept, r)
+		}
+		m.Subagents = kept
+	}
+}
+
+// dismissSubagentRow removes a row from the sidebar/overlay and records it
+// so refreshSubagents will not resurrect it via disk rescan. Both the row
+// ID and session file are recorded: disk rows are keyed "disk-<hex>" while
+// live rows carry the toolCallId for the same session file.
+func (m *Model) dismissSubagentRow(row SubagentRow) {
+	if m.dismissed == nil {
+		m.dismissed = make(map[string]bool)
+	}
+	if row.ID != "" {
+		m.dismissed[row.ID] = true
+	}
+	if row.SessionFile != "" {
+		m.dismissed[row.SessionFile] = true
+	}
+	kept := m.Subagents[:0]
+	for _, r := range m.Subagents {
+		if r.ID == row.ID {
+			continue
+		}
+		if row.SessionFile != "" && r.SessionFile == row.SessionFile {
+			continue
+		}
+		kept = append(kept, r)
+	}
+	m.Subagents = kept
 }
 
 // subagentsTickMsg keeps file-backed lifecycle statuses live without relying

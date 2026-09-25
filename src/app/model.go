@@ -189,8 +189,9 @@ type Model struct {
 	trayRet             int         // input offset to restore on Esc
 	pet                 petState
 	task                taskRuntime
-	Subagents           []SubagentRow // subagent presence (sidebar SUBAGENTS + /subagent-herd overlay)
-	subagentsAt         time.Time     // last subagent disk scan (throttled by subagentScanTTL)
+	Subagents           []SubagentRow   // subagent presence (sidebar SUBAGENTS + /subagent-herd overlay)
+	subagentsAt         time.Time       // last subagent disk scan (throttled by subagentScanTTL)
+	dismissed           map[string]bool // X-dismissed row IDs + session files (blocks disk rescan re-add)
 	recentModels        []RecentModel
 	recentPath          string // persisted recent models ("" = don't persist)
 	favModels           []FavEntry
@@ -409,6 +410,7 @@ func New(pi *pirpc.Client, cwd string) Model {
 		Pi:            pi,
 		liveBridge:    &live.Bridge{CWD: cwd, OwnPID: pi.PID()},
 		tools:         make(map[string]int),
+		dismissed:     make(map[string]bool),
 		progressByKey: make(map[string]int),
 		curAsst:       -1,
 		curThink:      -1,
@@ -422,7 +424,7 @@ func New(pi *pirpc.Client, cwd string) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true), m.runLiveBridge())
+	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true), m.runLiveBridge(), subagentsTickCmd())
 }
 
 // fetchAll loads state/messages/stats/commands after (re)connect.

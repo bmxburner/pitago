@@ -214,8 +214,9 @@ func (m Model) runSubagentAction(d *Dialog, row SubagentRow, action string) (tea
 		m.Refresh()
 		return m, m.ReconcileTurnCmd()
 	case "X":
+		m.dismissSubagentRow(row)
 		m.Dialogs = m.Dialogs[1:]
-		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("%s dismissed here; pi-agents clears finished rows on your next message", row.Name)})
+		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("%s dismissed — will not rescan", row.Name)})
 		m.Refresh()
 		return m, m.ReconcileTurnCmd()
 	case "s":
@@ -409,13 +410,8 @@ func (m Model) updateSubagentsDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.C
 		}
 		return m, nil
 	case tea.KeyRunes:
-		if d.Filter == "" && string(km.Runes) == "x" {
-			if row, ok := focusedSubagentRow(m, d); ok {
-				return m.runSubagentAction(d, row, "x")
-			}
-		}
-		// With an active filter, letters remain filter text (for example "x"
-		// in "explore"). Use Enter to reach the action-only detail view.
+		// List mode is filter-only: action letters live in detail view.
+		// ("x" in "explore" must filter, not interrupt.)
 		d.Filter += string(km.Runes)
 		d.Reindex()
 		m.applyPopupH()
@@ -512,7 +508,7 @@ func (m Model) renderSubagentsDialog(d *Dialog) string {
 		if end < total {
 			b.WriteString(toolStyle.Render(fmt.Sprintf("…(+%d below)", total-end)) + "\n")
 		}
-		b.WriteString("\n" + toolStyle.Render("↑↓/PgUp/PgDn scroll · ^O size · x stop · w wait · R resume · s steer · Esc back"))
+		b.WriteString("\n" + toolStyle.Render("↑↓/PgUp/PgDn scroll · ^O size · x stop · w wait · R resume · X dismiss · f surface · s steer · Esc back"))
 	} else {
 		active := subagentsInScope(m.Subagents, subagentsScopeActive)
 		finished := subagentsInScope(m.Subagents, subagentsScopeFinished)

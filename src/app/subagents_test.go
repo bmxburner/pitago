@@ -770,3 +770,24 @@ func TestUpsertSubagentRow(t *testing.T) {
 		t.Fatalf("rows = %+v", rows)
 	}
 }
+
+func TestDismissSubagentRowSticks(t *testing.T) {
+	m := New(nil, t.TempDir())
+	row := SubagentRow{ID: "disk-x", Name: "subagent-x", SessionFile: "/a/subagent-x.jsonl", Status: SubagentStalled}
+	m.Subagents = []SubagentRow{row}
+	m.dismissSubagentRow(row)
+	if len(m.Subagents) != 0 {
+		t.Fatalf("dismiss should remove the row, got %+v", m.Subagents)
+	}
+	// Disk rescan must not resurrect it: same session file under a
+	// fresh disk ID is still filtered via the recorded session file.
+	m.Subagents = mergeSubagentDisk(m.Subagents, []SubagentRow{
+		{ID: "disk-x", Name: "subagent-x", SessionFile: "/a/subagent-x.jsonl"},
+	})
+	m.refreshSubagents(true)
+	for _, r := range m.Subagents {
+		if r.SessionFile == "/a/subagent-x.jsonl" {
+			t.Fatalf("rescan resurrected dismissed row: %+v", m.Subagents)
+		}
+	}
+}
