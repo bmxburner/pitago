@@ -64,12 +64,36 @@ func TitleFor(method, title string) string {
 // OptionsFor fills the option defaults per method.
 func OptionsFor(req pirpc.UIRequest) []string {
 	if len(req.Options) > 0 {
-		return req.Options
+		out := make([]string, len(req.Options))
+		for i, value := range req.Options {
+			if option, ok := pirpc.DecodeSelectOption(value); ok {
+				out[i] = option.Title
+			} else {
+				out[i] = value
+			}
+		}
+		return out
 	}
 	if req.Method == "confirm" {
 		return []string{"Allow", "Decline"}
 	}
 	return []string{"Agree", "Decline"}
+}
+
+// DescriptionsFor returns rich select descriptions parallel to OptionsFor.
+// Legacy strings, confirms, and malformed private values deliberately get no
+// description and therefore keep the generic dialog behavior.
+func DescriptionsFor(req pirpc.UIRequest) []string {
+	if !pirpc.IsAskUserSelect(req) {
+		return nil
+	}
+	descs := make([]string, len(req.Options))
+	for i, value := range req.Options {
+		if option, ok := pirpc.DecodeSelectOption(value); ok {
+			descs[i] = option.Description
+		}
+	}
+	return descs
 }
 
 func boolPtr(b bool) *bool { return &b }
@@ -92,6 +116,37 @@ func Response(id, method string, choice int, opts []string) pirpc.Command {
 		cmd.Confirmed = boolPtr(choice == 0)
 	}
 	return cmd
+}
+
+// IsDialogMethod reports extension_ui_request methods that block for an
+// extension_ui_response (select/confirm/input/editor, per pi's RPC
+// extension-UI subprotocol). Fire-and-forget methods
+// (notify/setStatus/setWidget/setTitle/set_editor_text) never expect one.
+func IsDialogMethod(method string) bool {
+	switch method {
+	case "select", "confirm", "input", "editor":
+		return true
+	}
+	return false
+}
+
+// IsFireAndForget reports extension_ui_request methods pi never waits on:
+// the client may display the info or ignore it, no response is expected.
+func IsFireAndForget(method string) bool {
+	switch method {
+	case "notify", "setStatus", "setWidget", "setTitle", "set_editor_text":
+		return true
+	}
+	return false
+}
+
+// FallbackResponse builds a safe cancellation for an extension_ui_request
+// pitago cannot render (unknown future method, custom widget payload).
+// Dialog callers receive undefined/false and fall back to defaults; pi
+// ignores responses with no pending request, so sending this for a
+// fire-and-forget-like method is a harmless no-op instead of a hang.
+func FallbackResponse(id string) pirpc.Command {
+	return pirpc.Command{Type: "extension_ui_response", ID: id, Cancelled: boolPtr(true)}
 }
 
 // IsDialogRequest reports extension_ui_request methods that open a dialog

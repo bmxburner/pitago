@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"pitago/src/ext"
 	"pitago/src/pirpc"
 )
 
@@ -31,13 +32,14 @@ const (
 	SidePlugins   = "plugins"
 	SideMCP       = "mcp"
 	SideTodos     = "todos"
+	SideTools     = "tools"
 	SideWorkspace = "workspace"
 )
 
 // sideOrder is the Sidebar tab row order (top-to-bottom like the sidebar).
 var sideOrder = []string{
 	SidePet, SideSession, SideModel, SideStats, SideCost, SideRecent,
-	SideCommands, SidePlugins, SideMCP, SideTodos, SideWorkspace,
+	SideCommands, SidePlugins, SideMCP, SideTodos, SideTools, SideWorkspace,
 }
 
 // sideLabel is the Sidebar tab display name per section key.
@@ -63,6 +65,8 @@ func sideLabel(key string) string {
 		return "MCP servers"
 	case SideTodos:
 		return "Todos"
+	case SideTools:
+		return "Tools"
 	case SideWorkspace:
 		return "Workspace"
 	}
@@ -104,20 +108,15 @@ func (m *Model) ToggleSideSection(key string) {
 	}
 }
 
-type TodoStatus string
+type TodoStatus = ext.TodoStatus
 
 const (
-	TodoPending    TodoStatus = "pending"
-	TodoInProgress TodoStatus = "in_progress"
-	TodoCompleted  TodoStatus = "completed"
+	TodoPending    = ext.TodoPending
+	TodoInProgress = ext.TodoInProgress
+	TodoCompleted  = ext.TodoCompleted
 )
 
-type TodoItem struct {
-	ID       string
-	Content  string
-	Status   TodoStatus
-	SubAct   string // optional sub-action shown after in-progress items
-}
+type TodoItem = ext.TodoItem
 
 type McpServer struct {
 	Name      string
@@ -138,190 +137,26 @@ type Plugin struct {
 
 const todosShowMax = 10 // cap like pi-sidebar-tui's default todosMax
 
-func isTodoTool(name string) bool {
-	l := strings.ToLower(name)
-	return strings.Contains(l, "todo") || strings.Contains(l, "task")
-}
+func isTodoTool(name string) bool { return ext.IsTodoTool(name) }
 
 // isPiTaskStoreTool reports the Task* family whose state lives in the
-// pi-tasks store file (manage_todo_list keeps message-only state, so live
-// file refreshes apply to Task* events only).
-func isPiTaskStoreTool(name string) bool {
-	return strings.Contains(strings.ToLower(name), "task")
-}
+// pi-tasks store file. Canonical impl in ext.
+func isPiTaskStoreTool(name string) bool { return ext.IsPiTaskStoreTool(name) }
 
-// todoContent picks the display text across todo shapes:
-// pi-sidebar-tui (content/text), manage_todo_list (title), pi-tasks (subject).
-func todoContent(m map[string]any) string {
-	for _, k := range []string{"content", "text", "title", "subject", "name", "label"} {
-		if s, ok := m[k].(string); ok && strings.TrimSpace(s) != "" {
-			return s
-		}
-	}
-	return ""
-}
+// todoContent picks the display text across todo shapes.
+// Canonical impl in ext.
+func todoContent(m map[string]any) string { return ext.TodoContent(m) }
 
-// parseTodos extracts a todo list from a todo tool's payload. Handles the
-// full list in the tool input (bare array, or object with
-// todos/todoList/items/list/tasks key) and the list in the tool result
-// details (e.g. {todos:[{text,done}]} or manage_todo_list's
-// {todos:[{title,status}]}). Returns ok=false when no todo array is present
-// (action-only payloads), so callers can tell "no list" apart from an
-// empty list.
-func parseTodos(raw json.RawMessage) ([]TodoItem, bool) {
-	t := strings.TrimSpace(string(raw))
-	if t == "" || t == "null" {
-		return nil, false
-	}
-	var v any
-	if err := json.Unmarshal(raw, &v); err != nil {
-		// pi-tasks TaskList returns plain text ("#1 [pending] subject"):
-		// fall back to line parsing so the sidebar still shows something.
-		if out, ok := parseTodoLines(t); ok {
-			return out, true
-		}
-		return nil, false
-	}
-	var arr []any
-	switch x := v.(type) {
-	case []any:
-		arr = x
-	case map[string]any:
-		for _, k := range []string{"todos", "todoList", "items", "list", "tasks"} {
-			if a, ok := x[k].([]any); ok {
-				arr = a
-				break
-			}
-		}
-		if arr == nil {
-			return nil, false
-		}
-	default:
-		return nil, false
-	}
-	out := make([]TodoItem, 0, len(arr))
-	for i, e := range arr {
-		m, ok := e.(map[string]any)
-		if !ok {
-			continue
-		}
-		// Content-block envelopes ({"type":"text","text":...}) share the
-		// "text" key with todo items — never read them as todos.
-		if t, _ := m["type"].(string); t != "" {
-			switch strings.ToLower(strings.ReplaceAll(t, "_", "")) {
-			case "text", "thinking", "image", "toolcall", "toolresult":
-				continue
-			}
-		}
-		content := todoContent(m)
-		if content == "" {
-			continue
-		}
-		id := fmt.Sprint(i)
-		if s, ok := m["id"].(string); ok && s != "" {
-			id = s
-		} else if f, ok := m["id"].(float64); ok {
-			id = strings.TrimSuffix(fmt.Sprintf("%v", f), ".0")
-		}
-		sub, _ := m["subAction"].(string)
-		if sub == "" {
-			sub, _ = m["activeForm"].(string)
-		}
-		out = append(out, TodoItem{ID: id, Content: content, Status: normTodoStatus(m), SubAct: sub})
-	}
-	// A non-empty array with zero todo-like entries is not a todo list
-	// (e.g. a content-block envelope) — report "no list" so callers don't
-	// wipe the sidebar. A truly empty array is a valid empty list.
-	if len(arr) > 0 && len(out) == 0 {
-		return nil, false
-	}
-	return out, true
-}
+// parseTodos — canonical impl in ext (pi-extension tasks domain).
+func parseTodos(raw json.RawMessage) ([]TodoItem, bool) { return ext.ParseTodos(raw) }
 
-// parseTodoLines parses pi-tasks TaskList text ("#1 [pending] subject",
-// one per line) into items. ok=false when no line matches. Only lines
-// starting with an id marker ("#1", "1.", "1:") count, so single-task
-// confirmations ("Task #1 created...", "Updated task #1 ...") don't parse.
-func parseTodoLines(t string) ([]TodoItem, bool) {
-	var out []TodoItem
-	for _, line := range strings.Split(t, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// strip leading "#1", "1.", "1:" markers (required: TaskList rows
-		// always carry one; confirmations like "Task #1 created" don't
-		// start with one and must not match)
-		rest := line
-		if strings.HasPrefix(rest, "#") {
-			rest = strings.TrimSpace(rest[1:])
-		}
-		i := 0
-		for i < len(rest) && rest[i] >= '0' && rest[i] <= '9' {
-			i++
-		}
-		if i == 0 {
-			continue
-		}
-		id := rest[:i]
-		rest = strings.TrimSpace(rest[i:])
-		rest = strings.TrimLeft(rest, ".):")
-		rest = strings.TrimSpace(rest)
-		status := TodoPending
-		content := rest
-		if j := strings.Index(content, "["); j >= 0 {
-			if k := strings.Index(content[j:], "]"); k >= 0 {
-				status = normTodoStatusStr(content[j+1 : j+k])
-				after := strings.TrimSpace(content[j+k+1:])
-				if after != "" {
-					content = after
-				}
-			}
-		}
-		// drop trailing "[blocked by ...]" notes, keep the subject
-		if j := strings.Index(content, " [blocked by"); j >= 0 {
-			content = strings.TrimSpace(content[:j])
-		}
-		if content == "" {
-			continue
-		}
-		out = append(out, TodoItem{ID: id, Content: content, Status: status})
-	}
-	if out == nil {
-		return nil, false
-	}
-	return out, true
-}
+// parseTodoLines — canonical impl in ext.
+func parseTodoLines(t string) ([]TodoItem, bool) { return ext.ParseTodoLines(t) }
 
-func normTodoStatus(m map[string]any) TodoStatus {
-	if s, ok := m["status"].(string); ok {
-		return normTodoStatusStr(s)
-	}
-	for _, k := range []string{"done", "completed"} {
-		if b, ok := m[k].(bool); ok && b {
-			return TodoCompleted
-		}
-	}
-	for _, k := range []string{"in_progress", "in-progress", "active"} {
-		if b, ok := m[k].(bool); ok && b {
-			return TodoInProgress
-		}
-	}
-	return TodoPending
-}
+func normTodoStatus(m map[string]any) TodoStatus { return ext.NormTodoStatus(m) }
 
-// normTodoStatusStr unifies status spellings across extensions:
-// in_progress/in-progress/active, completed/done, pending/not-started/...
-func normTodoStatusStr(s string) TodoStatus {
-	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(s), "-", "_")) {
-	case "in_progress", "active", "inprogress", "working", "started":
-		return TodoInProgress
-	case "completed", "done", "complete", "finished":
-		return TodoCompleted
-	default:
-		return TodoPending
-	}
-}
+// normTodoStatusStr — canonical impl in ext.
+func normTodoStatusStr(s string) TodoStatus { return ext.NormTodoStatusStr(s) }
 
 // restoreTodos rebuilds the todo list from get_messages history.
 // manage_todo_list carries a FULL snapshot in each result details (last one
@@ -429,6 +264,7 @@ func (m *Model) updateTodosFromRaw(cands ...json.RawMessage) {
 		}
 		if t, ok := parseTodos(c); ok {
 			m.Todos = t
+			m.syncTaskRuntime()
 			return
 		}
 	}
@@ -461,6 +297,9 @@ func parseTaskID(text string) string {
 // argsRaw is the tool-call arguments JSON, resultText the tool result text.
 // Returns true when the tool was a single-task op (handled or no-op).
 func (m *Model) applyPiTaskResult(toolName, argsRaw, resultText string) bool {
+	// Store-backed fields are refreshed immediately; RPC-only transitions
+	// still drive the active marker between disk refreshes.
+	defer m.syncTaskRuntime()
 	switch {
 	case piTaskName(toolName, "TaskCreate"):
 		var args struct {
@@ -839,7 +678,26 @@ func loadPiTaskFile(path string) ([]TodoItem, bool) {
 		if sub == "" {
 			sub, _ = m["subAction"].(string)
 		}
-		out = append(out, TodoItem{ID: id, Content: subj, Status: normTodoStatus(m), SubAct: strings.TrimSpace(sub)})
+		var blocked []string
+		if raw, ok := m["blockedBy"].([]any); ok {
+			for _, b := range raw {
+				if s, ok := b.(string); ok && s != "" {
+					blocked = append(blocked, s)
+				}
+			}
+		}
+		millis := func(key string) int64 {
+			switch n := m[key].(type) {
+			case float64:
+				return int64(n)
+			case int64:
+				return n
+			case int:
+				return int64(n)
+			}
+			return 0
+		}
+		out = append(out, TodoItem{ID: id, Content: subj, Status: normTodoStatus(m), SubAct: strings.TrimSpace(sub), BlockedBy: blocked, CreatedAt: millis("createdAt"), UpdatedAt: millis("updatedAt")})
 	}
 	return out, true
 }
@@ -902,6 +760,7 @@ func readPiTasks(cwd, sessionFile string) ([]TodoItem, bool) {
 func (m *Model) refreshPiTasks() {
 	if t, ok := readPiTasks(m.cwd, m.sessionFile); ok {
 		m.Todos = t
+		m.syncTaskRuntime()
 	}
 }
 
@@ -938,7 +797,7 @@ func readJSONFile(path string) map[string]any {
 }
 
 func estimateMcpTokens(name, desc string, schemaLen int) int {
-	return (len(name) + len(desc) + schemaLen) / 4 + 10
+	return (len(name)+len(desc)+schemaLen)/4 + 10
 }
 
 // readMcpServers lists configured MCP servers with tool counts, same source
@@ -1202,35 +1061,7 @@ func (m Model) renderMcpSection(inner int) string {
 	return b.String()
 }
 
-func selectTodos(todos []TodoItem, max int) []TodoItem {
-	if max <= 0 || len(todos) <= max {
-		return todos
-	}
-	var chosen []TodoItem
-	for _, t := range todos {
-		if t.Status == TodoInProgress {
-			chosen = append(chosen, t)
-			if len(chosen) >= max {
-				return chosen
-			}
-		}
-	}
-	// most recent (highest list position) fill the rest
-	need := max - len(chosen)
-	if need > 0 {
-		var rest []TodoItem
-		for _, t := range todos {
-			if t.Status != TodoInProgress {
-				rest = append(rest, t)
-			}
-		}
-		if len(rest) > need {
-			rest = rest[len(rest)-need:]
-		}
-		chosen = append(chosen, rest...)
-	}
-	return chosen
-}
+func selectTodos(todos []TodoItem, max int) []TodoItem { return ext.SelectTodos(todos, max) }
 
 func (m Model) renderTodosSection(inner int) string {
 	var b strings.Builder
@@ -1259,9 +1090,9 @@ func (m Model) renderTodosSection(inner int) string {
 			if t.Status == TodoInProgress && t.SubAct != "" {
 				full := t.Content + " (" + t.SubAct + ")"
 				if lipgloss.Width(full) <= inner-3 {
-					b.WriteString(statusBarStyle.Render(" ")+glyph+" "+
-						lipgloss.NewStyle().Foreground(cText).Render(t.Content)+
-						toolStyle.Render(" ("+Short(t.SubAct, inner)+")")+"\n")
+					b.WriteString(statusBarStyle.Render(" ") + glyph + " " +
+						lipgloss.NewStyle().Foreground(cText).Render(t.Content) +
+						toolStyle.Render(" ("+Short(t.SubAct, inner)+")") + "\n")
 					continue
 				}
 				line = Short(t.Content, inner-7)

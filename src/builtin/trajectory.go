@@ -8,7 +8,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pitago/src/app"
+	componentformat "pitago/src/components/format"
 	"pitago/src/pirpc"
+	"pitago/src/pitago"
 )
 
 // Trajectory is pitago's harness-style run trace (deepseek-harness-like):
@@ -17,20 +19,9 @@ import (
 // /trajectory opens it as a filterable window; Enter posts the full step
 // detail into the chat. Rows reuse treeRow so text matches /tree.
 
-// trajScopeOf maps the /trajectory arg to a step tab. Unknown args become
-// free-text pre-filter (the /login pattern), never an error.
-func trajScopeOf(arg string) (scope, filter string) {
-	switch a := strings.ToLower(strings.TrimSpace(arg)); a {
-	case "", "all":
-		return "all", ""
-	case "tools", "tool":
-		return "tools", ""
-	case "messages", "message", "user-only", "user":
-		return "messages", ""
-	default:
-		return "all", strings.TrimSpace(arg)
-	}
-}
+// trajScopeOf — canonical impl lives in pitago (pitago-only feature);
+// kept here so existing tests/callers don't move.
+func trajScopeOf(arg string) (scope, filter string) { return pitago.ScopeOf(arg) }
 
 // loadTrajectory fetches the session tree and builds the dialog rows.
 func loadTrajectory(m *app.Model, arg string) tea.Cmd {
@@ -183,8 +174,17 @@ func trajBody(e pirpc.TreeEntry, tcm map[string]pirpc.ContentBlock) string {
 		}
 		for _, b := range pirpc.BlocksOf(msg.Content) {
 			if b.Type == "toolCall" && b.Name != "" {
+				call := "tool: " + treeTool(b.Name, b.Arguments)
+				if diff := trajEditDiff(b.Name, string(b.Arguments)); diff != "" {
+					parts = append(parts, call+"\ndiff:\n"+trajCap(diff, 2000))
+					continue
+				}
 				args := strings.TrimSpace(string(b.Arguments))
-				parts = append(parts, "tool: "+treeTool(b.Name, b.Arguments)+"\n"+trajCap(args, 1000))
+				if b.Name == "edit" && args != "" {
+					parts = append(parts, call+"\nargs: "+trajCap(args, 1000))
+				} else {
+					parts = append(parts, call+"\n"+trajCap(args, 1000))
+				}
 			}
 		}
 		if msg.StopReason == "aborted" {
@@ -199,7 +199,13 @@ func trajBody(e pirpc.TreeEntry, tcm map[string]pirpc.ContentBlock) string {
 		if msg.ToolCallID != "" {
 			if tc, ok := tcm[msg.ToolCallID]; ok {
 				parts = append(parts, "call: "+treeTool(tc.Name, tc.Arguments))
-				if args := strings.TrimSpace(string(tc.Arguments)); args != "" {
+				if tc.Name == "edit" {
+					if diff := trajEditDiff(tc.Name, string(tc.Arguments)); diff != "" {
+						parts = append(parts, "diff:\n"+trajCap(diff, 2000))
+					} else if args := strings.TrimSpace(string(tc.Arguments)); args != "" {
+						parts = append(parts, "args: "+trajCap(args, 1000))
+					}
+				} else if args := strings.TrimSpace(string(tc.Arguments)); args != "" {
 					parts = append(parts, "args: "+trajCap(args, 1000))
 				}
 			}
@@ -227,6 +233,13 @@ func trajBody(e pirpc.TreeEntry, tcm map[string]pirpc.ContentBlock) string {
 	default:
 		return trajCap(pirpc.TextOf(msg.Content), 2000)
 	}
+}
+
+func trajEditDiff(tool, args string) string {
+	if tool == "edit" {
+		return componentformat.EditDiffFallback(args)
+	}
+	return ""
 }
 
 // trajCap trims to n runes (no flattening: detail keeps newlines).

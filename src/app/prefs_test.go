@@ -6,6 +6,9 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	terminal_image "pitago/src/components/terminal_image"
+	"pitago/src/pirpc"
 )
 
 func TestPrefsRoundTrip(t *testing.T) {
@@ -43,6 +46,26 @@ func TestSideDefaults(t *testing.T) {
 	}
 }
 
+func TestImageSettingsLoadAndInvalidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	t.Setenv("PI_CODING_AGENT_DIR", filepath.Dir(path))
+	if err := pirpc.SetPiSettingAt(path, "terminal.showImages", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := pirpc.SetPiSettingAt(path, "terminal.imageWidthCells", 80); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PITAGO_IMAGE_PROTOCOL", "kitty")
+	m := Model{renderCache: []string{"old"}, renderCacheKey: []uint64{1}}
+	m.ApplyImageSettings()
+	if m.ShowImages || m.ImageWidthCells != 80 || m.ImageProtocol != terminal_image.Kitty {
+		t.Fatalf("settings = %+v", m)
+	}
+	if m.renderCache != nil || m.renderCacheKey != nil {
+		t.Fatal("image settings must invalidate rendered image cache")
+	}
+}
+
 func TestHideThinkingSkipsBlocks(t *testing.T) {
 	m := &Model{}
 	m.AddBlock(Block{Kind: "thinking", Text: "hmm"})
@@ -73,8 +96,8 @@ func TestSettingsMsgPassesDialog(t *testing.T) {
 // Typing in /settings filters rows by label, description, or section.
 func TestSettingsFilter(t *testing.T) {
 	d := &Dialog{Kind: "settings", Title: "Agent settings",
-		Options: []string{"Model: m", "Theme: default", "Transport: auto"},
-		Descs:   []string{"Enter: open model picker", "Enter: open theme picker", "Enter: next · reconnects pi"},
+		Options:   []string{"Model: m", "Theme: default", "Transport: auto"},
+		Descs:     []string{"Enter: open model picker", "Enter: open theme picker", "Enter: next · reconnects pi"},
 		Providers: []string{"Agent", "Display", "Network"},
 	}
 	d.Reindex()
@@ -266,5 +289,39 @@ func TestSettingsTwoPaneRenders(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("no All line\n%s", outAll)
+	}
+}
+
+func TestRememberModelRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "prefs.json")
+	m := &Model{prefsPath: path}
+	m.recentModels = []RecentModel{{Provider: "anthropic", ID: "claude-sonnet", Label: "Sonnet"}}
+	m.rememberModel("anthropic", "claude-sonnet", "Sonnet")
+	if prov, id := m.savedModel(); prov != "anthropic" || id != "claude-sonnet" {
+		t.Errorf("savedModel = (%q,%q), want (anthropic,claude-sonnet)", prov, id)
+	}
+	// Label-only (cycle path) resolves provider/id via recents.
+	m2 := &Model{prefsPath: filepath.Join(t.TempDir(), "prefs.json")}
+	m2.recentModels = m.recentModels
+	m2.rememberModel("", "", "Sonnet")
+	if prov, id := m2.savedModel(); prov != "anthropic" || id != "claude-sonnet" {
+		t.Errorf("label-only savedModel = (%q,%q), want resolved pair", prov, id)
+	}
+	// Empty id never persists.
+	m3 := &Model{prefsPath: filepath.Join(t.TempDir(), "prefs.json")}
+	m3.rememberModel("", "", "")
+	if prov, id := m3.savedModel(); prov != "" || id != "" {
+		t.Errorf("empty remember must not persist, got (%q,%q)", prov, id)
+	}
+}
+
+func TestApplySavedModelEmpty(t *testing.T) {
+	// Nothing persisted and no Pi: silent no-op, never panics.
+	m := &Model{prefsPath: filepath.Join(t.TempDir(), "prefs.json")}
+	if got := m.ApplySavedModel(); got != "" {
+		t.Errorf("empty ApplySavedModel = %q, want \"\"", got)
+	}
+	if prov, id := m.resolveSavedModel("", "x"); prov != "" || id != "x" {
+		t.Errorf("nil-Pi resolve = (%q,%q), want input unchanged", prov, id)
 	}
 }
