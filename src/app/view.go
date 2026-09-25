@@ -2307,7 +2307,12 @@ func (m Model) View() string {
 		reserved += lipgloss.Height(taskPanel)
 	}
 	chatVp.Height = max(0, chatVp.Height-reserved)
-	chatView := func() string { return padToHeight(chatVp.View(), chatVp.Height) }
+	// The selection overlay runs on the rendered viewport, not on m.vp: this is a
+	// local copy with a reserved height, so highlighting m.vp instead would be
+	// highlighting different pixels than the ones being drawn.
+	chatView := func() string {
+		return padToHeight(overlaySelection(chatVp.View(), chatVp.YOffset, m.sel), chatVp.Height)
+	}
 	bodyParts := []string{chatView()}
 	if teamAbove {
 		bodyParts = append(bodyParts, teamPanel)

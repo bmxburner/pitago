@@ -251,17 +251,19 @@ func highlightLine(line string, start, end int) string {
 	return sliceColumns(plain, 0, start) + "\x1b[7m" + sliceColumns(plain, start, end) + "\x1b[27m" + sliceColumns(plain, end, visibleWidth(plain))
 }
 
-// renderChatViewport overlays the active selection on the viewport's visible
-// lines. No-op when no selection is active.
-func (m Model) renderChatViewport() string {
-	view := m.vp.View()
-	if !m.sel.Active {
+// overlaySelection highlights the active selection on already-rendered viewport
+// lines. It takes the rendered string and the offset rather than reading m.vp so
+// it composes with whatever produces the viewport: the panel layout renders a
+// local copy of the viewport with a reserved height, so the selection has to
+// land on that output instead of on a second, independent render.
+func overlaySelection(view string, yOffset int, sel Selection) string {
+	if !sel.Active {
 		return view
 	}
 	lines := strings.Split(view, "\n")
-	a, b := normalizePoints(m.sel.Anchor, m.sel.Focus)
+	a, b := normalizePoints(sel.Anchor, sel.Focus)
 	for rel := range lines {
-		abs := m.vp.YOffset + rel
+		abs := yOffset + rel
 		if abs < a.Line || abs > b.Line {
 			continue
 		}
