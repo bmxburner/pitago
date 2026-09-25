@@ -111,7 +111,16 @@ func (m *Model) renderBlocks() string {
 		m.renderCache, m.renderCacheKey = nc, nk
 	}
 	hide, expand, theme := m.HideThinking, m.expandTools, m.ThemeName
+	// Track each block's rendered start line so mouse hit-tests (right-click
+	// copy menu, drag selection) can map a screen row back to a block.
+	if len(m.blockRows) != len(m.blocks) {
+		m.blockRows = make([]int, len(m.blocks))
+	}
+	// Use the same trailing-newline-aware line count for the preamble as
+	// for each rendered block, so hit-testing stays aligned with connErr.
+	cursor := ly(b.String())
 	for i, bl := range m.blocks {
+		m.blockRows[i] = cursor
 		// Image-bearing transcript blocks are always rebuilt as safe squares.
 		// This purges any cache entry created by an older image-render path
 		// before scroll/repaint can re-emit Kitty/iTerm placement escapes.
@@ -119,22 +128,63 @@ func (m *Model) renderBlocks() string {
 			m.renderCache[i], m.renderCacheKey[i] = "", 0
 		}
 		key := blockKey(bl, cw, hide, expand, theme)
+		var s string
+		var skip bool
 		if m.renderCacheKey[i] == key {
-			b.WriteString(m.renderCache[i])
+			s = m.renderCache[i]
+		} else {
+			s, skip = m.renderOneBlock(bl, cw)
+			if skip {
+				s = ""
+			}
+			m.renderCacheKey[i] = key
+			m.renderCache[i] = s
+		}
+		b.WriteString(s)
+		if s == "" {
 			continue
 		}
-		s, skip := m.renderOneBlock(bl, cw)
-		if skip {
-			s = ""
-		}
-		m.renderCacheKey[i] = key
-		m.renderCache[i] = s
-		b.WriteString(s)
+		cursor += ly(s)
 	}
 	if m.thinking {
 		b.WriteString(gutter(statusBarStyle.Render("○"), statusBarStyle.Render(m.Status)+"\n"))
 	}
-	return b.String()
+	out := b.String()
+	m.chatLines = strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+	return out
+}
+
+// ly counts rendered lines for a block string (trailing-newline aware).
+func ly(s string) int {
+	n := strings.Count(s, "\n")
+	if n == 0 {
+		if s == "" {
+			return 0
+		}
+		return 1
+	}
+	if strings.HasSuffix(s, "\n") {
+		return n
+	}
+	return n + 1
+}
+
+// chatRowToBlock maps a screen y (chat column, 0-indexed absolute row
+// AFTER the header) to the block index under it, or -1. y is the mouse row;
+// the header occupies row 0 (renderHeader), the viewport starts at row 1.
+func (m *Model) chatRowToBlock(screenY int) int {
+	abs := m.vp.YOffset + (screenY - 1)
+	if abs < 0 {
+		return -1
+	}
+	idx := -1
+	for i, start := range m.blockRows {
+		if start > abs {
+			break
+		}
+		idx = i
+	}
+	return idx
 }
 
 // blockKey fingerprints one block's rendered output: every field
@@ -200,7 +250,7 @@ func (m *Model) renderOneBlock(bl Block, cw int) (string, bool) {
 		boxed = true
 	case "assistant":
 		icon = statusBarStyle.Render("●")
-		body = renderMarkdown(bl.Text, cw) + "\n\n"
+		body = renderMarkdown(m, bl.Text, cw) + "\n\n"
 		// Table/fence-led replies render as aligned rows: keep the 2-cell
 		// gutter so "● " doesn't push the first row 2 cells past the rest.
 		boxed = startsPreformatted(bl.Text)
@@ -288,9 +338,9 @@ func (m *Model) renderOneBlock(bl Block, cw int) (string, bool) {
 
 // renderMarkdown renders assistant output with the Go renderer (Glamour
 // tables/lists/bold, Chroma fenced code) wrapped to the chat width. Plain text comes back unchanged from markdown.Render and keeps the
-// old unstyled render.
-func renderMarkdown(src string, width int) string {
-	if out := markdown.Render(src, width); out != src {
+// old unstyled render. File paths linkify against the session cwd.
+func renderMarkdown(m *Model, src string, width int) string {
+	if out := markdown.RenderCwd(src, width, m.cwd); out != src {
 		return out
 	}
 	return lipgloss.NewStyle().Foreground(cText).Width(width).Render(src)
