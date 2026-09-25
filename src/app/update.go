@@ -539,6 +539,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.fetchStateOnce()
 		}
 
+	case reviewDoneMsg:
+		return m, m.handleReviewDone(msg)
+
+	case reviewDeliveredMsg:
+		m.handleReviewDelivered(msg)
+		return m, nil
+
 	case PickerMsg:
 		m.Status = "ready"
 		if msg.Err != nil {

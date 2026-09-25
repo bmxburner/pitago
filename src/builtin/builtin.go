@@ -1001,6 +1001,27 @@ func All() []app.Builtin {
 				return nil
 			},
 		},
+		{
+			Name: "annotate", Desc: "Review a file, folder, or latest reply with plannotator-tui (doctor · surface auto|tui|clipboard)", Usage: "/annotate [path|last|doctor|surface <surface>]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				return m.OpenAnnotate(arg)
+			},
+		},
+		{
+			Name: "annotate-selection", Desc: "Annotate the last non-empty Pitago chat selection with Plannotator", Usage: "/annotate-selection",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				return m.OpenAnnotateSelection()
+			},
+		},
+		{
+			Name: "annotate-retry", Desc: "Send Plannotator review feedback that could not be delivered to Pi", Usage: "/annotate-retry",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				return m.RetryReview()
+			},
+		},
 		pi("model", "<provider/model> — Select model (opens selector UI)", "/model", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "loading models…"
 			m.Refresh()

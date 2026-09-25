@@ -21,6 +21,7 @@ func TestAllCoversPi(t *testing.T) {
 		"login", "logout", "new", "compact", "resume", "reload", "quit",
 		"recent", "yank", "sidebar", "update", "plugins", "mouse", "theme", "pitago-setting",
 		"trajectory", "notification", "subagents", "team", "subagent-herd",
+		"annotate", "annotate-selection", "annotate-retry",
 	} {
 		if _, ok := got[want]; !ok {
 			t.Errorf("builtin /%s missing", want)

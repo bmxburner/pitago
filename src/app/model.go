@@ -208,6 +208,8 @@ type Model struct {
 	sel                 Selection         // chat-column drag selection state
 	LastPressAt         time.Time         // last single-click timestamp (double-click detection)
 	LastPressLine       int               // line of last single-click
+	LastSelection       string            // last non-empty app-owned chat selection for /annotate-selection
+	PendingReview       *ReviewCapture    // captured Plannotator feedback awaiting Pi delivery (/annotate retry)
 	builtins            []Builtin
 	confirm             map[string]ConfirmFunc
 	expandTools         bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
