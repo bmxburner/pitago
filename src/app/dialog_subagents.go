@@ -168,13 +168,11 @@ func openSubagentsDetail(m Model, d *Dialog, row SubagentRow) {
 		lines = append(lines, "result: "+firstLine(row.Result, 300))
 	}
 	if row.SessionFile != "" {
-		if tail := readSubagentTail(row.SessionFile, subagentTailBytes); strings.TrimSpace(tail) != "" {
-			raw := strings.Split(tail, "\n")
-			if len(raw) > 150 {
-				raw = raw[len(raw)-150:]
-			}
+		if transcript := readSubagentTranscript(row.SessionFile, subagentTailBytes); len(transcript) > 0 {
 			lines = append(lines, "─ transcript ─")
-			lines = append(lines, raw...)
+			lines = append(lines, transcript...)
+		} else {
+			lines = append(lines, "─ transcript ─", "(no readable transcript yet)")
 		}
 	}
 	if len(lines) == 0 {
@@ -406,9 +404,13 @@ func (m Model) updateSubagentsDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.C
 		}
 		return m, nil
 	case tea.KeyRunes:
-		// List mode is navigation + filter only (pitago-native): letter
-		// actions live in detail mode, where typing can't collide with
-		// filter text (names like "explore" contain action letters).
+		if d.Filter == "" && string(km.Runes) == "x" {
+			if row, ok := focusedSubagentRow(m, d); ok {
+				return m.runSubagentAction(d, row, "x")
+			}
+		}
+		// With an active filter, letters remain filter text (for example "x"
+		// in "explore"). Use Enter to reach the action-only detail view.
 		d.Filter += string(km.Runes)
 		d.Reindex()
 		m.applyPopupH()

@@ -439,6 +439,72 @@ func readSubagentTail(path string, maxBytes int64) string {
 	return string(buf[:n])
 }
 
+// readSubagentTranscript converts the JSONL tail into readable user-visible
+// messages. Session metadata and custom events are intentionally omitted.
+func readSubagentTranscript(path string, maxBytes int64) []string {
+	tail := readSubagentTail(path, maxBytes)
+	if strings.TrimSpace(tail) == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(tail, "\n") {
+		var event struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal([]byte(line), &event) != nil || event.Type != "message" {
+			continue
+		}
+		role := event.Message.Role
+		if role != "user" && role != "assistant" && role != "toolResult" {
+			continue
+		}
+		var blocks []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		}
+		if json.Unmarshal(event.Message.Content, &blocks) != nil {
+			continue
+		}
+		for _, block := range blocks {
+			text := strings.TrimSpace(block.Text)
+			if text == "" || (block.Type != "text" && role != "toolResult") {
+				continue
+			}
+			label := role
+			if role == "toolResult" {
+				label = "tool"
+			}
+			out = append(out, label+": "+firstLine(text, 500))
+		}
+	}
+	if len(out) > 150 {
+		out = out[len(out)-150:]
+	}
+	return out
+}
+
+// subagentSessionStartedAt returns the session header timestamp when present.
+func subagentSessionStartedAt(path string, fallback time.Time) time.Time {
+	f, err := os.Open(path)
+	if err != nil {
+		return fallback
+	}
+	defer f.Close()
+	var event struct {
+		Timestamp string `json:"timestamp"`
+	}
+	if json.NewDecoder(f).Decode(&event) == nil {
+		if t, err := time.Parse(time.RFC3339Nano, event.Timestamp); err == nil {
+			return t
+		}
+	}
+	return fallback
+}
+
 // subagentArtifactDir derives pi-agents' per-parent-session artifact dir:
 // <dir(sessionFile)>/artifacts/<sessionId>, where sessionId comes from the
 // <timestamp>_<id>.jsonl basename (same parse as piTaskSessionID).
@@ -591,7 +657,8 @@ func scanSubagentArtifacts(sessionFile, agentDir string, now time.Time) []Subage
 		if err != nil {
 			continue
 		}
-		startMs := st.ModTime().UnixMilli()
+		started := subagentSessionStartedAt(f, st.ModTime())
+		startMs := started.UnixMilli()
 		nowMs := now.UnixMilli()
 		// Activity sibling: <artifactDir>/subagent-activity/<id>.json.
 		actPath := filepath.Join(filepath.Dir(f), "subagent-activity", id+".json")
@@ -612,7 +679,7 @@ func scanSubagentArtifacts(sessionFile, agentDir string, now time.Time) []Subage
 			StatusLabel: label,
 			SessionFile: f,
 			ArtifactDir: filepath.Dir(f),
-			StartedAt:   st.ModTime(),
+			StartedAt:   started,
 		}
 		if act.ToolName != "" {
 			row.StatusLabel = act.ToolName
