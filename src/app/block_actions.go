@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"pitago/src/components/markdown"
 )
 
 // Semantic content of one chat block, parallel to pi-compositor's
@@ -156,8 +154,6 @@ func buildBlockOptions(c BlockContent) ([]string, []string) {
 		opts = append(opts, "Copy plain text")
 		payload = append(payload, "plain")
 	}
-	opts = append(opts, "Preview as markdown")
-	payload = append(payload, "preview")
 	return opts, payload
 }
 
@@ -213,21 +209,8 @@ func (m *Model) RunBlockAction(d *Dialog, ri int) tea.Cmd {
 		m.YankText(strings.Join(c.CodeBlocks, "\n\n"))
 	case "plain":
 		m.YankText(c.Plain)
-	case "preview":
-		m.PreviewMarkdown(c.Markdown)
 	}
 	return nil
-}
-
-// PreviewMarkdown opens the markdown preview launcher and reports the host.
-func (m *Model) PreviewMarkdown(md string) {
-	host, ok := markdown.Preview(md, m.mainW())
-	if ok {
-		m.AddBlock(Block{Kind: "notice", Text: "preview launch requested in " + host})
-	} else {
-		m.AddBlock(Block{Kind: "notice", Text: "preview unavailable — install glow (brew install glow)", Err: true})
-	}
-	m.Refresh()
 }
 
 // CopyLastAs copies the last assistant message as a specific semantic kind

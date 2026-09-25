@@ -89,21 +89,32 @@ func TestBuildBlockOptionsPresence(t *testing.T) {
 		Plain:      "hi",
 	}
 	opts, payload := buildBlockOptions(c)
-	if len(opts) != 5 || len(payload) != 5 {
-		t.Fatalf("want 5 options/5 payloads, got %d/%d", len(opts), len(payload))
+	// Four copy actions: markdown, code, tables, plain. There is no "launch it in
+	// an external viewer" action — that needed an external binary and opened a
+	// window outside the app, and /annotate renders markdown in the TUI instead.
+	want := []string{"md", "code", "tables", "plain"}
+	if len(opts) != len(want) || len(payload) != len(want) {
+		t.Fatalf("want %d options/payloads, got %d/%d: %v", len(want), len(opts), len(payload), opts)
 	}
-	if payload[0] != "md" || payload[len(payload)-1] != "preview" {
-		t.Fatalf("payload order wrong: %v", payload)
+	for i := range want {
+		if payload[i] != want[i] {
+			t.Fatalf("payload order wrong: got %v want %v", payload, want)
+		}
+	}
+	for _, o := range opts {
+		if strings.Contains(strings.ToLower(o), "preview") {
+			t.Fatalf("the external preview action is gone, found %q", o)
+		}
 	}
 }
 
+// A block with no content has nothing to copy, so there is no menu to open.
+// Before the preview action was removed, an empty block still offered
+// "Preview as markdown" and that was the only way to get a dialog at all.
 func TestBuildBlockOptionsEmptyBlock(t *testing.T) {
 	opts, payload := buildBlockOptions(BlockContent{})
-	if len(opts) != 1 || opts[0] != "Preview as markdown" {
-		t.Fatalf("empty block must offer only preview, got %v", opts)
-	}
-	if payload[0] != "preview" {
-		t.Fatalf("payload mismatch: %v", payload)
+	if len(opts) != 0 || len(payload) != 0 {
+		t.Fatalf("an empty block has nothing to copy, got %v", opts)
 	}
 }
 
@@ -116,7 +127,7 @@ func TestNewBlockActionsDialog(t *testing.T) {
 	if d.Kind != "blockactions" || d.BlockIdx != 0 {
 		t.Fatalf("bad dialog identity: %+v", d)
 	}
-	want := []string{"Copy markdown", "Copy 1 code block", "Copy 1 table", "Copy plain text", "Preview as markdown"}
+	want := []string{"Copy markdown", "Copy 1 code block", "Copy 1 table", "Copy plain text"}
 	if len(d.Options) != len(want) {
 		t.Fatalf("options=%v want=%v", d.Options, want)
 	}

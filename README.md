@@ -240,7 +240,7 @@ script/release.sh v0.0.1
 
 - **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls.
 - **Double-click** a chat line to select the whole rendered line.
-- **Right-click** an assistant block for `Copy markdown`, `Copy tables`, `Copy code blocks`, `Copy plain text`, and `Preview as markdown`.
+- **Right-click** an assistant block for `Copy markdown`, `Copy tables`, `Copy code blocks`, or `Copy plain text`. To read markdown rendered instead of pasted, use `/annotate <file>`.
 - With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse off`.
 - `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker.
 - `/copy-md`, `/copy-tables`, and `/copy-code` copy semantic content from the last assistant message.
