@@ -14,24 +14,24 @@ import (
 // Wired into app via UseBuiltins; app's confirmDialog only dispatches.
 func Confirmers() map[string]app.ConfirmFunc {
 	return map[string]app.ConfirmFunc{
-		"model":       confirmModel,
-		"recent":      confirmRecent,
-		"sessions":    confirmSessions,
-		"thinking":    confirmThinking,
-		"theme":       confirmTheme,
-		"settings":    confirmSettings,
-		"pconfig":     confirmPconfig,
-		"login":       confirmLogin,
-		"loginMethod": confirmLoginMethod,
-		"loginOAuth":  confirmLoginOAuth,
-		"logout":      confirmLogout,
-		"secret":      confirmSecret,
-		"yank":        confirmYank,
-		"update":      confirmUpdate,
-		"trajectory":  confirmTrajectory,
-		"tree":        confirmTree,
-		"subagents":   confirmSubagents,
-	}
+		"model":        confirmModel,
+		"recent":       confirmRecent,
+		"sessions":     confirmSessions,
+		"thinking":     confirmThinking,
+		"theme":        confirmTheme,
+		"settings":     confirmSettings,
+		"pconfig":      confirmPconfig,
+		"login":        confirmLogin,
+		"loginMethod":  confirmLoginMethod,
+		"loginOAuth":   confirmLoginOAuth,
+		"logout":       confirmLogout,
+		"secret":       confirmSecret,
+		"yank":         confirmYank,
+		"update":       confirmUpdate,
+		"trajectory":   confirmTrajectory,
+		"blockactions": confirmBlockActions,
+		"tree":         confirmTree,
+		"subagents":    confirmSubagents}
 }
 
 // confirmSubagents selects the highlighted subagent: persists it as current
@@ -312,4 +312,13 @@ func confirmYank(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	}
 	m.YankText(text)
 	return m, nil
+}
+
+// confirmBlockActions runs the picked semantic copy action (markdown / tables /
+// code / plain / preview) for a BlockActionsDialog. The app owns the work; this
+// only closes the dialog and dispatches, so the copy logic stays testable
+// without a picker.
+func confirmBlockActions(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	return m, m.RunBlockAction(d, ri)
 }
