@@ -19,6 +19,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"pitago/src/pirpc"
 )
 
@@ -549,6 +550,19 @@ func (m *Model) refreshSubagents(force bool) {
 	m.subagentsAt = now
 	disk := scanSubagentArtifacts(m.sessionFile, piAgentDir(), now)
 	m.Subagents = mergeSubagentDisk(m.Subagents, disk)
+}
+
+// subagentsTickMsg keeps file-backed lifecycle statuses live without relying
+// on a user event to trigger refreshSubagents.
+type subagentsTickMsg struct{}
+
+func subagentsTickCmd() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return subagentsTickMsg{} })
+}
+
+func subagentSteerable(row SubagentRow) bool {
+	return !strings.HasPrefix(row.ID, "disk-") &&
+		(row.Status == SubagentStarting || row.Status == SubagentActive || row.Status == SubagentWaiting)
 }
 
 // trackSubagentStart upserts a live row on tool_execution_start.
