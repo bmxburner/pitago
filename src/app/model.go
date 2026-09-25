@@ -41,8 +41,14 @@ type Dialog struct {
 	PsecIDs        []string          // pitago-setting: section id parallel to Provs (left pane)
 	Paths          []string          // sessions picker: parallel session file per option
 	Scope          string            // sessions picker: "current" | "all" (Tab toggles)
-	Payload        []string          // yank picker: full text per option; login: raw keys ("" for action rows)
+	Payload        []string          // yank picker: full text per option; login: raw keys ("" for action rows); subagents: row ID per option
 	BlockIdx       int               // blockactions: target chat block index (for Payload kinds)
+	SubDetail      bool              // subagents overlay: detail pane open
+	SubID          string            // subagents overlay: focused row ID (detail + steer target)
+	SubSize        int               // subagents overlay: detail size preset (^O cycles)
+	SubLines       []string          // subagents overlay: cached detail transcript lines
+	SubOffset      int               // subagents overlay: detail scroll offset from tail
+	SubHeader      string            // subagents overlay: detail activity header
 	Cursor         int
 	Filter         string // picker filter / secret buffer / rename buffer
 	FIdx           []int
@@ -125,6 +131,8 @@ type Model struct {
 	sessBreak      []pirpc.CostBreak // sidebar COST section (connect + /session refresh)
 	queue          pirpc.Queue
 	Todos          []TodoItem      // tracked from todo-tool calls (sidebar)
+	Subagents      []SubagentRow   // subagent presence (sidebar SUBAGENTS + /subagents overlay)
+	subagentsAt    time.Time       // last disk/activity re-scan (subagentScanTTL gate)
 	MCP            []McpServer     // pi agent-dir MCP snapshot (sidebar)
 	Plugins        []Plugin        // installed pi packages (sidebar PLUGINS toggle)
 	Market         []MarketEntry   // npm registry pi-package list (marketplace tab)

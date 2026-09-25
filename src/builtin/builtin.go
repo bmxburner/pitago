@@ -1081,6 +1081,14 @@ func All() []app.Builtin {
 			return m.OpenResume(arg)
 		}),
 		{
+			Name: "subagents", Desc: "View and manage subagents (list · inspect · steer · stop)", Usage: "/subagents",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				m.OpenSubagents()
+				return nil
+			},
+		},
+		{
 			Name: "recent", Desc: "Switch recent model (pitago)", Usage: "/recent",
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
