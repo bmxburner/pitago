@@ -33,13 +33,14 @@ const (
 	SideMCP       = "mcp"
 	SideTodos     = "todos"
 	SideTools     = "tools"
+	SideSubagents = "subagents"
 	SideWorkspace = "workspace"
 )
 
 // sideOrder is the Sidebar tab row order (top-to-bottom like the sidebar).
 var sideOrder = []string{
 	SidePet, SideSession, SideModel, SideStats, SideCost, SideRecent,
-	SideCommands, SidePlugins, SideMCP, SideTodos, SideTools, SideWorkspace,
+	SideCommands, SidePlugins, SideMCP, SideTodos, SideTools, SideSubagents, SideWorkspace,
 }
 
 // sideLabel is the Sidebar tab display name per section key.
@@ -67,6 +68,8 @@ func sideLabel(key string) string {
 		return "Todos"
 	case SideTools:
 		return "Tools"
+	case SideSubagents:
+		return "Subagents"
 	case SideWorkspace:
 		return "Workspace"
 	}
@@ -81,6 +84,12 @@ func (m Model) SideVisible(key string) bool {
 		if v, ok := m.Side[key]; ok {
 			return v
 		}
+	}
+	if key == SideSubagents {
+		// Auto-visibility (no explicit toggle): hidden when zero,
+		// shown while any row exists. Rows persist for the session,
+		// so the first spawn reveals the section.
+		return len(m.Subagents) > 0
 	}
 	return DefaultSideVisible(key)
 }
@@ -1105,6 +1114,66 @@ func (m Model) renderTodosSection(inner int) string {
 		if hidden := len(m.Todos) - len(shown); hidden > 0 {
 			b.WriteString(toolStyle.Render(fmt.Sprintf(" … +%d more", hidden)) + "\n")
 		}
+	}
+	b.WriteString(sep() + "\n")
+	return b.String()
+}
+
+// renderSubagentsSection draws the SUBAGENTS presence list: one row per
+// agent with a status glyph, display name, and activity/elapsed suffix.
+// Shown only while rows exist (see SideVisible auto-visibility).
+func (m Model) renderSubagentsSection(inner int) string {
+	var b strings.Builder
+	active := 0
+	for _, r := range m.Subagents {
+		if r.Status == SubagentActive || r.Status == SubagentStarting || r.Status == SubagentWaiting {
+			active++
+		}
+	}
+	title := fmt.Sprintf("Subagents (%d)", len(m.Subagents))
+	if active > 0 {
+		title = fmt.Sprintf("Subagents (%d active)", active)
+	}
+	b.WriteString(sideTitleStyle.Render(title) + "\n")
+	shown := m.Subagents
+	if len(shown) > subagentsShowMax {
+		shown = shown[:subagentsShowMax]
+	}
+	for _, r := range shown {
+		g, alert := subagentGlyph(r.Status)
+		var glyph string
+		if alert {
+			glyph = warnStyle.Render(g)
+		} else if r.Status == SubagentDone {
+			glyph = okStyle.Render(g)
+		} else if r.Status == SubagentActive {
+			glyph = lipgloss.NewStyle().Foreground(cText).Render(g)
+		} else {
+			glyph = statusBarStyle.Render(g)
+		}
+		end := time.Now()
+		if r.DoneAt != nil {
+			end = *r.DoneAt
+		}
+		suffix := formatSubagentElapsed(end.Sub(r.StartedAt).Milliseconds())
+		if strings.TrimSpace(r.StatusLabel) != "" {
+			suffix = r.StatusLabel + " · " + suffix
+		}
+		suffix = "  " + suffix
+		nameMax := inner - 3 - len(suffix)
+		if nameMax < 0 {
+			nameMax = 0
+		}
+		name := Short(r.Name, nameMax)
+		if name == "" {
+			name = Short(string(r.Status), nameMax)
+		}
+		b.WriteString(statusBarStyle.Render(" ") + glyph + " " +
+			lipgloss.NewStyle().Foreground(cText).Render(name) +
+			toolStyle.Render(Short(suffix, inner-lipgloss.Width(name)-3)) + "\n")
+	}
+	if hidden := len(m.Subagents) - len(shown); hidden > 0 {
+		b.WriteString(toolStyle.Render(fmt.Sprintf(" … +%d more · /subagents", hidden)) + "\n")
 	}
 	b.WriteString(sep() + "\n")
 	return b.String()

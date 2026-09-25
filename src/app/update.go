@@ -311,6 +311,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Plugins = getPlugins()
 		m.sessionFile = msg.state.SessionFile
 		m.refreshPiTasks() // store file covers /tasks-menu edits (no RPC)
+		m.Subagents = restoreSubagentsFromMessages(msg.msgs)
+		m.refreshSubagents(true)
 		m.blocks = nil
 		m.tools = make(map[string]int)
 		m.progressByKey = make(map[string]int)
@@ -380,6 +382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// sidebar keeps the old session's list until the next tool
 				// event or menu step (looks like a "delayed" update).
 				m.refreshPiTasks()
+				m.refreshSubagents(true)
 			}
 			if !msg.state.IsStreaming && m.thinking {
 				// A settle swallowed behind an open dialog: the turn really
@@ -1228,6 +1231,9 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 		if isTodoTool(p.ToolName) {
 			m.updateTodosFromRaw(p.Args, p.Details, p.Input)
 		}
+		if isSubagentTool(p.ToolName) {
+			m.trackSubagentStart(p.ToolCallID, p.ToolName, p.Args)
+		}
 		pcmd = m.petSet(petWorking)
 	case "tool_execution_update":
 		var p struct {
@@ -1271,6 +1277,11 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 				m.refreshPiTasks() // store file is fresh on disk by now
 			}
 		}
+		if isSubagentTool(p.ToolName) {
+			m.trackSubagentEnd(p.ToolCallID, p.ToolName,
+				json.RawMessage(m.blocks[i].ToolArgsRaw), joinText(p.Result.Content), p.IsError)
+			m.refreshSubagents(false)
+		}
 	case "agent_settled":
 		m.thinking = false
 		m.escArm = time.Time{} // turn over: cancel arm no longer applies
@@ -1279,6 +1290,7 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 		m.MCP = getMcpServers()
 		m.Plugins = getPlugins()
 		m.refreshPiTasks()
+		m.refreshSubagents(false)
 		m.Refresh()
 		return m, tea.Batch(m.queryStats(), m.fetchCmdsOnce(), m.fetchStateOnce(), m.wsRefresh(), m.petSettled())
 	case "agent_end":
@@ -1755,6 +1767,9 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	if d.Kind == shortcutKind {
 		return m.updateShortcutDialog(km, d)
+	}
+	if d.Kind == "subagent-herd" || d.Kind == "subagents-steer" {
+		return m.updateSubagentsDialog(km, d)
 	}
 	n := len(d.FIdx)
 	switch km.Type {

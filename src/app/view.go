@@ -774,6 +774,9 @@ func (m Model) buildSidebarContent() string {
 			b.WriteString(sep() + "\n")
 		}
 	}
+	if m.SideVisible(SideSubagents) {
+		b.WriteString(m.renderSubagentsSection(inner))
+	}
 	if m.SideVisible(SideWorkspace) {
 		if m.ws.ok {
 			b.WriteString(sideTitleStyle.Render(Short("WORKSPACE · "+m.ws.branch, inner)) + "\n")
@@ -1071,6 +1074,9 @@ func (m Model) renderDialog() string {
 	}
 	if d.Kind == shortcutKind {
 		return m.renderShortcutDialog(d)
+	}
+	if d.Kind == "subagent-herd" || d.Kind == "subagents-steer" {
+		return m.renderSubagentsDialog(d)
 	}
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
