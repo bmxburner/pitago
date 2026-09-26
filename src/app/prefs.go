@@ -38,7 +38,15 @@ type Prefs struct {
 	AnnotateSurface       string            `json:"annotateSurface,omitempty"`       // auto | tui | clipboard
 	AnnotatePlacement     string            `json:"annotatePlacement,omitempty"`     // native TUI placement
 	AnnotateTUIExecutable string            `json:"annotateTUIExecutable,omitempty"` // optional explicit plannotator-tui path
+	TaskWidgetOff         bool              `json:"taskWidgetOff,omitempty"`         // hide the above-editor task widget
 }
+
+// TaskWidgetVisible reports whether the above-editor task widget should paint.
+// Default is on: that is upstream behaviour, and the widget carries live
+// elapsed time and token counts per task that the sidebar Todos panel does
+// not. Off is opt-in because the same todos are already mirrored into the
+// sidebar, and the widget takes chat rows right above the input.
+func (p Prefs) TaskWidgetVisible() bool { return !p.TaskWidgetOff }
 
 // TUIExecutablePref is the effective plannotator-tui path for capability detection.
 //
