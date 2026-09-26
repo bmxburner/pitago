@@ -39,6 +39,25 @@ pitago wraps the `pi` agent in a beautiful terminal interface with:
 - Image send via `@photo.png` or dropping/pasting file paths — or `Ctrl+V` on a copied screenshot (macOS needs `pngpaste`, Linux uses `wl-paste`/`xclip`). Vision over RPC, max 5 × 8MB. Paths collapse into `[Image N]` chips; `↓` moves into the tray, `←→` picks a chip, `⌫` deletes it, `Esc` back
 - Recent models picker
 - Clipboard integration (`Ctrl+Y` to yank last answer)
+- Optional Plannotator review surfaces via `/annotate`:
+  - native `plannotator-tui` when installed (`/annotate <path>`, `/annotate last`, `/annotate-selection`),
+  - a clipboard fallback when no review UI is available.
+  Plannotator is not a required Pitago dependency. Use `/annotate doctor` to inspect capability detection, or `/annotate surface auto|tui|clipboard` to choose a supported surface. Set `PITAGO_ANNOTATE_TUI=off` to disable the native surface entirely (or to a path to pin a specific binary).
+
+For a browser-based review, run the Plannotator extension's own command (`/plannotator-annotate <file>`,
+`/plannotator-last`); those are already in the command palette and Pitago does not intercept them.
+
+### Review feedback delivery
+
+`plannotator-tui` owns review state: every annotation is written to a per-document record under the
+Plannotator data directory, and every send appends a delivery entry naming the annotation ids it
+covered. When the TUI exits, Pitago reads that record, so it learns exactly what was sent without
+scraping the terminal and without any change to `plannotator-tui`. The Markdown handed to the agent
+is the same text `plannotator-tui --export` produces.
+
+A finished review is normalized to one outcome — `approved`, `annotated`, or `dismissed` — and
+delivered to the agent as its next turn through the active Pi RPC client. If delivery fails, the
+feedback is kept and `/annotate-retry` re-sends it.
 
 ## Requirements
 
