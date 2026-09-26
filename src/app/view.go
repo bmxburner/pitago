@@ -155,6 +155,8 @@ func blockKey(bl Block, cw int, hide, expand bool, theme string) uint64 {
 	h.Write([]byte{0})
 	h.Write([]byte(bl.ToolResult))
 	h.Write([]byte{0})
+	h.Write([]byte(bl.ToolDiff))
+	h.Write([]byte{0})
 	h.Write([]byte(bl.ToolCallID))
 	h.Write([]byte{0})
 	if bl.Err {
@@ -212,56 +214,23 @@ func (m *Model) renderOneBlock(bl Block, cw int) (string, bool) {
 		icon = statusBarStyle.Render("○")
 		body = toolStyle.Render(Short(t, 160)) + "\n\n"
 	case "tool":
-		switch bl.ToolStatus {
-		case "done":
-			icon = okStyle.Render("●")
-		case "error":
-			icon = errStyle.Render("×")
-		default:
-			icon = statusBarStyle.Render("○")
-		}
-		head := bl.ToolName
-		switch strings.ToLower(bl.ToolName) {
-		case "bash":
-			head = "$"
-			if bl.ToolArgs != "" {
-				head += " " + bl.ToolArgs
-			}
-		case "powershell":
-			head = "PS>"
-			if bl.ToolArgs != "" {
-				head += " " + bl.ToolArgs
-			}
-		default:
-			if bl.ToolArgs != "" {
-				head += " " + bl.ToolArgs
-			}
-		}
-		// pi suffixes the write header with the added line count
-		// ("write game.js +211").
-		if strings.ToLower(bl.ToolName) == "write" {
-			if content, ok := format.WriteContent(bl.ToolArgsRaw); ok {
-				if n := countLines(content); n > 0 {
-					head += fmt.Sprintf(" +%d", n)
-				}
-			}
-		}
-		if strings.TrimSpace(head) == "" {
-			head = "tool"
-		}
-		body = lipgloss.NewStyle().Foreground(cText).Render(Short(head, 140)) + "\n"
-		if r := m.renderToolBody(bl); r != "" {
-			body += r
-		}
-		// pi wraps every tool execution in a status-colored Box
-		// (pending → green → red). Width(cw) pads short lines so the
-		// background spans the chat column full-bleed like pi.
-		body = lipgloss.NewStyle().Background(toolBg(bl.ToolStatus)).Width(cw).
-			Render(strings.TrimRight(body, "\n")) + "\n\n"
-		boxed = true
+		// Every tool call is one bounded block: header, detail line and
+		// body preview inside a rounded frame with a background fill, so
+		// a tool execution never bleeds into the assistant prose around
+		// it. renderToolBlock owns the frame; the status bullet stays on
+		// the header row as a color-free fallback for terminals that
+		// drop the fill entirely.
+		return m.renderToolBlock(bl, cw) + "\n\n", false
 	case "bash":
-		icon = statusBarStyle.Render("●")
-		body = markdown.Highlight("bash", Short(bl.Text, 400)) + "\n\n"
+		// A local shell echo (!cmd) is output without an agent tool call,
+		// so it has no execution state: quiet neutral block, reddened
+		// when the command failed.
+		class := format.StatusNeutral
+		if bl.Err {
+			class = format.StatusError
+		}
+		rows := strings.Split(markdown.Highlight("bash", Short(bl.Text, 400)), "\n")
+		return framedBlock(rows, cw, blockThemeFor(class)) + "\n\n", false
 	case "tree":
 		icon = statusBarStyle.Render("●")
 		body = codeStyle.Render(shortTree(bl.Text, 3000)) + "\n\n"
@@ -321,8 +290,352 @@ func codeLang(s string) (lang string, ok bool) {
 	return "", false
 }
 
+// isShell reports whether a tool's output is command output, which gets
+// the bordered "── Output ──" section instead of a result tree.
+func isShell(tool string) bool {
+	switch strings.ToLower(tool) {
+	case "bash", "powershell":
+		return true
+	}
+	return false
+}
+
+// toolDetail is the dim line under a tool header: a live marker while the
+// call is still running, and an explicit "no output" when a finished call
+// has nothing to show (read hides its payload on success by design).
+//
+// The state comes from format.ToolStatusClass, the same classifier the frame
+// fill uses, so the label can never contradict the tint: an upstream rename
+// to "ok"/"success" would otherwise paint a finished-green block that still
+// claims to be running.
+func toolDetail(bl Block) string {
+	switch format.ToolStatusClass(bl.ToolStatus) {
+	case format.StatusRunning, format.StatusNeutral:
+		return "running…"
+	}
+	if strings.TrimSpace(bl.ToolResult) == "" && strings.TrimSpace(bl.ToolDiff) == "" {
+		return "no output"
+	}
+	return ""
+}
+
+// tool bullet: the status glyph a block header carries as a color-free
+// fallback. Inside the frame it is the only part of the block that still
+// reads when the terminal drops the background fill.
+func toolBullet(bl Block) string {
+	switch format.ToolStatusClass(bl.ToolStatus) {
+	case format.StatusSuccess:
+		return okStyle.Render("●")
+	case format.StatusError:
+		return errStyle.Render("×")
+	case format.StatusNeutral:
+		return toolStyle.Render("·")
+	}
+	return statusBarStyle.Render("○")
+}
+
+// renderToolBlock frames one tool call — header row, detail line, body
+// preview — as a single bounded block, pi style. The frame is flush
+// left: the gutter bullet that used to indent a tool block is gone,
+// because the border is now the left edge and an extra 2 cells would
+// push the frame past its column.
+//
+// A shell call is the same block in a different shape (see
+// renderShellBlock): command line, divider, output.
+func (m Model) renderToolBlock(bl Block, w int) string {
+	if isShell(bl.ToolName) {
+		return m.renderShellBlock(bl, w)
+	}
+	inner := blockInner(w)
+	rows := []string{toolHeaderRow(bl, toolHead(bl), inner)}
+	if d := toolDetail(bl); d != "" {
+		rows = append(rows, toolStyle.Render(d))
+	}
+	if r := m.renderToolBody(bl); r != "" {
+		rows = append(rows, r)
+	}
+	return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+}
+
+// toolHead is the header text after the tool name: the pretty args, plus
+// pi's added-line-count suffix on a write ("write game.js +211").
+func toolHead(bl Block) string {
+	head := bl.ToolArgs
+	if strings.ToLower(bl.ToolName) == "write" {
+		if content, ok := format.WriteContent(bl.ToolArgsRaw); ok {
+			if n := countLines(content); n > 0 {
+				head += fmt.Sprintf(" +%d", n)
+			}
+		}
+	}
+	return head
+}
+
+// toolHeaderRow is one header row: the status bullet, the tool name in
+// its kind accent (bold, so the name is the block's title), and the
+// args — dim, and truncated to whatever the frame's inner column has
+// left so the row can never wrap out of the box.
+func toolHeaderRow(bl Block, head string, inner int) string {
+	name := bl.ToolName
+	if strings.TrimSpace(name) == "" {
+		name = "tool"
+	}
+	name = Short(name, max(inner-6, 8))
+	if strings.TrimSpace(head) == "" {
+		head = "tool"
+	}
+	row := toolBullet(bl) + " " + toolNameStyleFor(bl.ToolName).Render(name)
+	// Measure the unstyled text: the row is built before the accent is
+	// applied, and ANSI must not eat into the args budget.
+	avail := inner - lipgloss.Width(name) - len(" ● ") - 1
+	if avail < 8 {
+		avail = 8
+	}
+	return row + " " + toolStyle.Render(Short(head, avail))
+}
+
+// renderShellBlock frames one whole shell call — command, then a divider,
+// then output — as one block. It stays bullet-free: the line already
+// opens with the shell prompt, which is the row's own title. The box is
+// still rendered while the call runs, holding just the command, so a
+// long command does not pop into existence with its output.
+func (m Model) renderShellBlock(bl Block, w int) string {
+	rows := []string{shellCommandRow(bl)}
+	inner := blockInner(w) // clamped to the same floor framedBlock uses
+	if out := m.shellOutput(bl); out != "" {
+		label := "Output"
+		if bl.ToolStatus == "error" {
+			label = "Error"
+		}
+		rows = append(rows, dividerRow(inner, label), out)
+	}
+	return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+}
+
+// shellCommandRow is the box's first row: the bare prompt plus the
+// chroma-highlighted command, so it reads like a shell line rather than
+// a header. Falls back to dim text when chroma does not know the lexer.
+func shellCommandRow(bl Block) string {
+	row := codeStyle.Render(shellPrompt(bl.ToolName))
+	args := strings.TrimSpace(bl.ToolArgs)
+	if args == "" {
+		return row
+	}
+	hl := markdown.Highlight(shellLang(bl.ToolName), args)
+	if hl == args {
+		hl = toolStyle.Render(args)
+	}
+	return row + " " + hl
+}
+
+// shellOutput is the framed output section, empty while the call is still
+// running. The skip hint leads the section (so it is read before the
+// windowed lines) and the collapse offer closes it, both inside the box.
+func (m Model) shellOutput(bl Block) string {
+	if bl.ToolStatus != "done" && bl.ToolStatus != "error" {
+		return ""
+	}
+	p := format.ToolResultPreviewExpanded(strings.ToLower(bl.ToolName), bl.ToolStatus, bl.ToolResult, m.expandTools)
+	if p.Hidden || (len(p.Lines) == 0 && p.Skipped == 0) {
+		return ""
+	}
+	var rows []string
+	if p.Skipped > 0 && !m.expandTools {
+		rows = append(rows, toolStyle.Render("… ("+skipHint(p)+", "+expandHint+")"))
+	}
+	body := strings.Join(p.Lines, "\n")
+	if lang, ok := codeLang(body); ok && len(p.Lines) > 1 {
+		if out := markdown.Highlight(lang, body); out != body {
+			body = out
+		}
+	}
+	rows = append(rows, body)
+	if m.expandTools && p.Total > 0 {
+		rows = append(rows, toolStyle.Render("("+collapseHint+")"))
+	}
+	return strings.Join(rows, "\n")
+}
+
+// shellPrompt is the leading sigil for a shell tool's command line.
+func shellPrompt(tool string) string {
+	if strings.ToLower(tool) == "powershell" {
+		return "PS>"
+	}
+	return "$"
+}
+
+// shellLang is the chroma lexer for a shell command. The highlighter has no
+// powerShell lexer to match, so those fall through and render dim.
+func shellLang(tool string) string {
+	if strings.ToLower(tool) == "powershell" {
+		return ""
+	}
+	return "bash"
+}
+
+// toolBorder colors a tool block's frame by raw execution status. It is
+// the status-keyed shorthand over toolFrame; a shell block has no header
+// bullet to carry the state, so its frame is the only signal.
+func toolBorder(status string) lipgloss.Color {
+	return toolFrame(format.ToolStatusClass(status))
+}
+
+// blockTheme is the palette one block paints with: the frame (border)
+// color and the background fill, both resolved from theme tokens, so a
+// /theme switch recolors every block and nothing is hardcoded here.
+type blockTheme struct {
+	frame lipgloss.Color
+	fill  lipgloss.Color
+}
+
+// blockThemeFor resolves the frame/fill pair for one execution state
+// (format.Status*). Status drives the block; the tool kind drives the
+// header accent inside it (see toolNameStyleFor).
+func blockThemeFor(class string) blockTheme {
+	return blockTheme{frame: toolFrame(class), fill: toolFill(class)}
+}
+
+// Block geometry. A block is border (2 cells) + padding (1 per side), so
+// a content row may use w-4 cells. 20 is the narrowest frame that still
+// fits a header row and a "─── Output ──" divider without wrapping.
+const (
+	blockMinW   = 20
+	blockChrome = 4
+)
+
+// blockInner is the usable content width inside a block of width w,
+// clamped to the same floor framedBlock applies, so a divider row and
+// the box that wraps it are always measured the same.
+func blockInner(w int) int {
+	if w < blockMinW {
+		w = blockMinW
+	}
+	return w - blockChrome
+}
+
+// framedBlock is the one bordered renderer for the chat stream, and the
+// only place a tool block turns into a box: a rounded frame exactly w
+// cells wide, a low-contrast background fill, content inset one cell per
+// side, and a hard width clamp so a block can never overflow its column
+// and never break a border mid-line.
+//
+// Padding insets the content so it never touches the border; lipgloss
+// counts padding inside Width, hence w-2 (the border adds the other 2
+// back). MaxWidth is the backstop for a row that arrives wider than the
+// column — a long unbreakable token, say: lipgloss wraps at the column
+// first, and the clamp guarantees the invariant even if it ever does not.
+func framedBlock(rows []string, w int, t blockTheme) string {
+	if w < blockMinW {
+		w = blockMinW
+	}
+	seq := fillSeq(t.fill)
+	// Copy before painting: the caller's rows (a previews slice, a
+	// highlight result) must come back unchanged for the next repaint.
+	painted := make([]string, len(rows))
+	for i, r := range rows {
+		painted[i] = fillRow(r, seq)
+	}
+	st := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(t.frame).
+		Padding(0, 1).
+		Width(w - 2).
+		MaxWidth(w)
+	if t.fill != "" {
+		// Background colors the content block and its padding;
+		// BorderBackground colors the frame glyphs themselves, so the
+		// fill reaches the frame instead of stopping at the content.
+		st = st.Background(t.fill).BorderBackground(t.fill)
+	}
+	return st.Render(strings.Join(painted, "\n"))
+}
+
+// fillSeq is the escape lipgloss emits for a background color under the
+// active color profile, or "" when that profile has no color at all (a
+// truecolor-less terminal, and the test binary). It is derived from
+// lipgloss rather than termenv so the profile decision stays in one
+// place: wherever lipgloss would drop the fill, the re-arm is a no-op
+// too and the block degrades to a plain outline.
+func fillSeq(c lipgloss.Color) string {
+	if c == "" {
+		return ""
+	}
+	s := lipgloss.NewStyle().Background(c).Render(" ")
+	i := strings.IndexByte(s, ' ')
+	if i <= 0 {
+		return ""
+	}
+	return s[:i]
+}
+
+// fillRow paints one content row with the block's fill. lipgloss sets
+// the fill once per line, but every styled span inside a row ends with
+// a full reset — a syntax-highlighted token, a dim hint, a border color
+// — which would switch the fill off for the rest of the line and leave
+// transparent gaps between tokens. Re-arming after each reset is what
+// makes the fill continuous under highlighted output.
+func fillRow(row, seq string) string {
+	if seq == "" || row == "" {
+		return row
+	}
+	return seq + strings.ReplaceAll(row, "\x1b[0m", "\x1b[0m"+seq) + "\x1b[0m"
+}
+
+// dividerRow is a full-width section rule with an inline label, the
+// "─── Output ──────" rule from oh-my-pi. lipgloss v1's border renderer
+// only repeats a single rune, so a labelled rule has to be a content row.
+func dividerRow(inner int, label string) string {
+	head := "─── " + label + " "
+	if n := inner - lipgloss.Width(head); n > 0 {
+		head += strings.Repeat("─", n)
+	}
+	return sepStyle.Render(head)
+}
+
+// renderResultRows renders result rows with or without tree glyphs: every
+// row but the last is prefixed "├── " and the last "└── " when tree is set,
+// so a file-list-shaped result reads as one block instead of a ragged list.
+// st styles each row (pass an empty style for already-colored ANSI rows).
+// Blank rows stay blank so a gap never grows a phantom branch.
+//
+// Rows carry no leading indent of their own: every tool block is wrapped
+// in a frame whose padding is the single source of indentation. Indenting
+// here too would push the tree two cells past the block edge.
+func renderResultRows(rows []string, st lipgloss.Style, tree bool) string {
+	out := make([]string, 0, len(rows))
+	for i, r := range rows {
+		if strings.TrimSpace(r) == "" {
+			out = append(out, "")
+			continue
+		}
+		if tree {
+			pre := "├── "
+			if i == len(rows)-1 {
+				pre = "└── "
+			}
+			r = pre + r
+		}
+		out = append(out, st.Render(r))
+	}
+	return strings.Join(out, "\n")
+}
+
+// skipHint is the shared "N earlier/more lines" clause for a truncated
+// tool result. The caller owns the surrounding parens and the ctrl+g key
+// hint, so this returns only the clause.
+func skipHint(p format.ToolPreview) string {
+	if p.Tail {
+		return fmt.Sprintf("%d earlier lines", p.Skipped)
+	}
+	return fmt.Sprintf("%d more lines", p.Skipped)
+}
+
 // toolBg is pi's tool Box background by execution status: pending while
-// running, green on success, red on error.
+// running, green on success, red on error. framedBlock paints it as the
+// block fill (via toolFill), and on a terminal whose color profile has no
+// background the fill is dropped by lipgloss while the frame, the header
+// bullet and all text stay — so a block degrades to a plain outline
+// rather than to raw rows.
 func toolBg(status string) lipgloss.Color {
 	switch status {
 	case "done":
@@ -348,33 +661,91 @@ func (m Model) renderToolBody(bl Block) string {
 	case "write":
 		if content, ok := format.WriteContent(bl.ToolArgsRaw); ok && strings.TrimSpace(content) != "" {
 			p := format.CallPreview(content, true)
-			return renderPreview(p, format.LangFromPath(toolPath(bl)), false)
+			return renderPreview(p, format.LangFromPath(toolPath(bl)), false, false)
 		}
 		return renderToolResultFull(tool, bl.ToolResult)
 	case "edit":
-		text := strings.TrimSpace(bl.ToolResult)
-		lang := ""
-		if text == "" {
-			// no details.diff reported: reconstruct - old / + new from args
-			text = format.EditDiffFallback(bl.ToolArgsRaw)
-			lang = "diff"
+		// pi's edit tool always reports a one-line "Successfully replaced
+		// ..." receipt, so the real change only lives in details.diff. Prefer
+		// it; then a result that is itself a real diff, because the args
+		// reconstruction below is a 2-line guess and must never mask
+		// authoritative diff text; then the guess, then the bare receipt.
+		if bl.ToolDiff != "" {
+			return renderEditDiff(bl.ToolDiff)
 		}
+		if resultDiff := strings.TrimSpace(bl.ToolResult); codeLangIsDiff(resultDiff) {
+			return renderPreview(format.CallPreview(resultDiff, true), "diff", false, false)
+		}
+		if fb := format.EditDiffFallback(bl.ToolArgsRaw); fb != "" {
+			// The reconstructed diff is a bare -/+ pair, so the chroma `diff`
+			// lexer still applies here (no gutter, no "..." markers).
+			return renderPreview(format.CallPreview(fb, true), "diff", false, false)
+		}
+		text := strings.TrimSpace(bl.ToolResult)
 		if text == "" {
 			return ""
 		}
 		p := format.CallPreview(text, true)
-		if lang == "" {
-			lang = format.LangFromPath(toolPath(bl))
-			if _, ok := codeLang(text); ok {
-				lang = "diff"
-			}
+		lang := format.LangFromPath(toolPath(bl))
+		if _, ok := codeLang(text); ok {
+			lang = "diff"
 		}
 		// The preview is already complete, so pass expanded=false only to
 		// suppress the generic ctrl+g-to-collapse affordance.
-		return renderPreview(p, lang, false)
+		return renderPreview(p, lang, false, false)
 	default:
 		return renderToolResultCompact(tool, bl.ToolStatus, bl.ToolResult, m.expandTools)
 	}
+}
+
+// codeLangIsDiff reports whether s is itself a unified diff. codeLang also
+// accepts JSON and fenced blocks, so match on the returned lang rather than on
+// ok — a fenced edit result must not be mistaken for diff text.
+func codeLangIsDiff(s string) bool {
+	lang, ok := codeLang(s)
+	return ok && lang == "diff"
+}
+
+// renderEditDiff renders pi's details.diff for an edit tool. That payload is
+// display-oriented — line-number gutter, -/+ rows, "..." elision markers — and
+// carries no ANSI of its own, so it must not go through the chroma `diff`
+// lexer, which only understands unified patches (---/+++/@@) and would color
+// it wrong. Rows are tinted by their marker here instead, and the gutter is
+// left intact.
+func renderEditDiff(text string) string {
+	p := format.CallPreview(text, true) // expanded: never collapse a diff
+	if p.Hidden || len(p.Lines) == 0 {
+		return ""
+	}
+	rows := make([]string, len(p.Lines))
+	for i, ln := range p.Lines {
+		rows[i] = colorEditDiffLine(ln)
+	}
+	p.Lines = rows
+	// lang "" keeps renderPreview off the highlighter; expanded=false only
+	// suppresses the ctrl+g-to-collapse hint (CallPreview already returned
+	// every line, so there is nothing to collapse). tree=false: a diff
+	// already has its own +/- and line-number gutter, so branch glyphs on
+	// top of it would just be noise.
+	return renderPreview(p, "", false, false)
+}
+
+// colorEditDiffLine tints one diff row by its leading marker: removed lines
+// red, added lines green, "..." elision markers dim, everything else (the
+// gutter and context rows) normal. The marker sits after the gutter indent,
+// so compare against the left-trimmed row; context rows start with the line
+// number, which keeps a leading "-" inside the code itself from misfiring.
+func colorEditDiffLine(ln string) string {
+	body := strings.TrimLeft(ln, " ")
+	switch {
+	case strings.HasPrefix(body, "-"):
+		return errStyle.Render(ln)
+	case strings.HasPrefix(body, "+"):
+		return okStyle.Render(ln)
+	case body == "..." || body == "…":
+		return toolStyle.Render(ln)
+	}
+	return codeStyle.Render(ln)
 }
 
 // renderToolResultCompact shows no partial output while a generic tool is
@@ -390,16 +761,17 @@ func renderToolResultCompact(tool, status, result string, expanded bool) string 
 		return renderToolResultExpanded(tool, status, result, true)
 	}
 	if n == 1 {
-		return toolStyle.Render("  └ " + strings.TrimSpace(result))
+		return renderResultRows([]string{strings.TrimSpace(result)}, toolStyle, status != "error")
 	}
-	return toolStyle.Render(fmt.Sprintf("  … (%d lines, %s)", n, expandHint))
+	return toolStyle.Render(fmt.Sprintf("… (%d lines, %s)", n, expandHint))
 }
 
 // renderToolResultFull keeps errors and edit/write receipts visible without
 // advertising a collapse action that would not change their rendering.
+// tree=false: an error is one logical unit, not a list of siblings.
 func renderToolResultFull(tool, result string) string {
 	p := format.ToolResultPreviewExpanded(tool, "error", result, true)
-	return renderPreview(p, "", false)
+	return renderPreview(p, "", false, false)
 }
 
 // toolPath is the file path for highlight-language detection: raw args
@@ -436,49 +808,43 @@ func countLines(s string) int {
 
 // renderPreview renders one collapsed/expanded preview: code blocks go
 // through pi's highlighter (falling back to dim rows), other lines keep
-// the dim └-tree style, and the matching pi-style hint closes the block.
-func renderPreview(p format.ToolPreview, lang string, expanded bool) string {
+// the dim result style, and the matching pi-style hint closes the block.
+// tree selects box-drawing branch glyphs, which belong to file-list-shaped
+// results only — a diff already carries its own +/−/line-number gutter and
+// an error is one logical unit, so both render as flat indented rows.
+func renderPreview(p format.ToolPreview, lang string, expanded, tree bool) string {
 	if p.Hidden || len(p.Lines) == 0 {
 		return ""
 	}
+	plain := lipgloss.NewStyle()
 	if lang != "" && len(p.Lines) > 1 {
 		if out := markdown.Highlight(lang, strings.Join(p.Lines, "\n")); out != strings.Join(p.Lines, "\n") {
-			rows := strings.Split(out, "\n")
-			for i := range rows {
-				rows[i] = "  " + rows[i]
-			}
+			body := renderResultRows(strings.Split(out, "\n"), plain, tree)
 			if hint := previewHint(p, expanded); hint != "" {
-				rows = append(rows, toolStyle.Render(hint))
+				body += "\n" + toolStyle.Render(hint)
 			}
-			return strings.Join(rows, "\n")
+			return body
 		}
 	}
-	rows := make([]string, 0, len(p.Lines)+1)
-	for i, ln := range p.Lines {
-		pre := "    "
-		if i == 0 {
-			pre = "  └ "
-		}
-		rows = append(rows, toolStyle.Render(pre+ln))
-	}
+	body := renderResultRows(p.Lines, toolStyle, tree)
 	if hint := previewHint(p, expanded); hint != "" {
-		rows = append(rows, toolStyle.Render(hint))
+		body += "\n" + toolStyle.Render(hint)
 	}
-	return strings.Join(rows, "\n")
+	return body
 }
 
 // previewHint is pi's trailing hint: collapsed shows what is hidden,
 // expanded offers to collapse back (only when lines were hidden).
 func previewHint(p format.ToolPreview, expanded bool) string {
 	if p.Skipped > 0 && !expanded {
-		hint := fmt.Sprintf("  ... (%d more lines", p.Skipped)
+		hint := "... (" + skipHint(p)
 		if p.Total > 0 {
 			hint += fmt.Sprintf(", %d total", p.Total)
 		}
 		return hint + ", " + expandHint + ")"
 	}
 	if expanded && p.Total > 0 {
-		return "  (" + collapseHint + ")"
+		return "(" + collapseHint + ")"
 	}
 	return ""
 }
@@ -500,29 +866,24 @@ func renderToolResultExpanded(tool, status, s string, expanded bool) string {
 	if p.Hidden || len(p.Lines) == 0 {
 		return ""
 	}
+	// Branch glyphs mean "these are sibling results". An error is one
+	// logical unit, so it stays a flat block.
+	tree := status != "error"
 	if len(p.Lines) == 1 && p.Skipped == 0 {
 		line := p.Lines[0]
 		if lang, ok := codeLang(line); ok {
 			if out := markdown.Highlight(lang, line); out != line {
-				return "  └ " + out
+				return renderResultRows([]string{out}, lipgloss.NewStyle(), tree)
 			}
 		}
-		return toolStyle.Render("  └ " + line)
+		return renderResultRows([]string{line}, toolStyle, tree)
 	}
-	rows := make([]string, 0, len(p.Lines)+1)
+	var rows []string
 	if p.Skipped > 0 && !expanded {
-		hint := fmt.Sprintf("... (%d more lines)", p.Skipped)
-		if p.Tail {
-			hint = fmt.Sprintf("... (%d earlier lines)", p.Skipped)
-		}
-		rows = append(rows, toolStyle.Render("  "+hint+", "+expandHint+")"))
+		rows = append(rows, toolStyle.Render("... ("+skipHint(p)+", "+expandHint+")"))
 	}
-	for i, ln := range p.Lines {
-		pre := "    "
-		if i == 0 {
-			pre = "  └ "
-		}
-		rows = append(rows, toolStyle.Render(pre+ln))
+	if body := renderResultRows(p.Lines, toolStyle, tree); body != "" {
+		rows = append(rows, body)
 	}
 	if hint := previewHint(p, expanded); hint != "" {
 		// previewHint duplicates the collapsed top hint at the bottom —
@@ -705,6 +1066,9 @@ func (m Model) buildSidebarContent() string {
 	if m.SideVisible(SideTodos) {
 		b.WriteString(m.renderTodosSection(inner))
 	}
+	if m.SideVisible(SideLSP) {
+		b.WriteString(m.renderLspSection(inner))
+	}
 	if m.SideVisible(SideTools) {
 		if tools := m.invokedTools(); len(tools) > 0 {
 			b.WriteString(sideTitleStyle.Render("TOOLS") + "\n")
@@ -860,7 +1224,7 @@ func (m Model) renderInput() string {
 	if m.followRemote {
 		border = cInputDim
 		title = "EXTERNAL · READ-ONLY"
-		left = "Ctrl+D detach · remote events only"
+		left = "Ctrl+D detach · read-only"
 		if m.thinking {
 			border = cGreen
 			title = "EXTERNAL · " + spinFrame(m.pet.tick) + " " + m.inputStatus()
@@ -876,7 +1240,7 @@ func (m Model) renderInput() string {
 		if m.escArmed() {
 			left = "press Esc again to cancel"
 		} else {
-			left = "↵ steer · Esc×2 cancel"
+			left = "↵ steer · ⌥↵ follow-up · Esc×2 cancel"
 		}
 	} else if plan {
 		border = cPlan
@@ -1027,7 +1391,7 @@ func (m Model) renderDialog() string {
 	if d.Message != "" {
 		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
 	}
-	if isFilterKind(d.Kind) {
+	if filterableDialog(d) {
 		b.WriteString(statusBarStyle.Render("filter: "+d.Filter+"▌") + "\n")
 	}
 	// Adaptive box: wide terminals get a wider dialog (settings rows
@@ -1053,7 +1417,13 @@ func (m Model) renderDialog() string {
 		b.WriteString("\n" + toolStyle.Render("Enter rename · empty clears · Esc back to /login"))
 	} else if d.Kind == "input" {
 		b.WriteString("\n")
-		b.WriteString(cmdHiStyle.Render(d.Filter+"▌") + "\n")
+		// pi's ui.input placeholder: a dim hint while the buffer is empty,
+		// so the offered context is visible instead of a bare cursor.
+		if d.Filter == "" && d.Placeholder != "" {
+			b.WriteString(toolStyle.Render(d.Placeholder) + cmdHiStyle.Render("▌") + "\n")
+		} else {
+			b.WriteString(cmdHiStyle.Render(d.Filter+"▌") + "\n")
+		}
 		b.WriteString("\n" + toolStyle.Render("Enter save · Esc cancel"))
 	} else {
 		b.WriteString("\n")
@@ -1100,9 +1470,23 @@ func (m Model) renderDialog() string {
 				cursor = "▸ "
 				style = rowHiStyle
 			}
-			row := Short(d.Options[ri], 44)
+			// Extension option labels are plugin-authored and routinely
+			// longer than 44 columns, which the old constant silently ate.
+			// Bound them by the box instead, and hand the description only
+			// the room that is actually left so a row can never wrap.
+			labelW := 44
+			if d.Kind == "ui" || d.Kind == "askUser" {
+				labelW = rowW - 2
+			}
+			row := Short(d.Options[ri], labelW)
 			if desc := DescOf(d, ri); desc != "" {
-				row += "  " + toolStyle.Render("— "+Short(desc, rowW-47))
+				room := rowW - 47
+				if d.Kind == "ui" || d.Kind == "askUser" {
+					room = rowW - 2 - lipgloss.Width(row) - 3
+				}
+				if room > 4 {
+					row += "  " + toolStyle.Render("— "+Short(desc, room))
+				}
 			}
 			if fi == d.Cursor {
 				b.WriteString(cursor + style.Width(rowW).Render(row) + "\n")
@@ -1120,7 +1504,7 @@ func (m Model) renderDialog() string {
 	foot := "↑↓ select · Enter confirm · Esc cancel"
 	if d.Kind == "input" {
 		foot = "type · Enter save · Esc cancel"
-	} else if isFilterKind(d.Kind) {
+	} else if filterableDialog(d) {
 		foot = "type to filter · " + foot
 	}
 	if d.Kind == "sessions" {
@@ -2040,11 +2424,132 @@ func (m Model) teamWidgetHeightLimit() int {
 	return max(0, m.winH-fixed-popup-3)
 }
 
+// teamPanelMaxRows is the hard ceiling on the compact live panel. The /command
+// popup shows at most palette.Win rows, so the team dashboard gets the same
+// popup-sized class: bounded, predictable, and never able to claim the rows
+// the transcript needs. /team is unchanged and still renders the full
+// dashboard, so nothing is lost by capping the live surface.
+const teamPanelMaxRows = 8
+
+// teamPanelHeightLimit is the pool the compact panel may draw from: the
+// frame's own reserve (header, input, task widget, every popup, and at least
+// three chat rows) intersected with the popup-sized cap. Both bounds matter —
+// the cap keeps the panel small on tall terminals, the reserve keeps it from
+// eating the chat on short ones.
+func (m Model) teamPanelHeightLimit() int {
+	return max(0, min(m.teamWidgetHeightLimit(), teamPanelMaxRows))
+}
+
+// teamPanelH is how many rows the compact panel actually paints. Zero means
+// "no panel", which is what keeps the frame arithmetic in View exact.
+func (m Model) teamPanelH() int { return panelHeight(m.renderTeamWidget()) }
+
+// teamPanelActive reports whether the live panel is eligible to paint, so a
+// window resize syncs the viewport for it exactly like an open popup does.
+func (m Model) teamPanelActive() bool {
+	return len(m.TeamWidgetLines) > 0 && m.TeamWidgetSeen && m.TeamWidgetVisible
+}
+
+// chatFrameRows is the chat's share of the frame. Everything the frame paints
+// outside the chat — header, input, live panels, popups — is measured here so
+// the parts sum to exactly winH. alloc is what m.vp already holds after
+// applyTeamPanelH/applyPopupH; the min() is the backstop for state that
+// changed without a sync (a raw field write, a resize that skipped it), where
+// the chat gives rows back instead of letting the frame overflow.
+func (m Model) chatFrameRows(alloc, panels int, inlineUI bool) int {
+	if m.winH <= 0 {
+		return alloc
+	}
+	overhead := lipgloss.Height(m.renderHeader()) + lipgloss.Height(m.renderInput()) + panels
+	if inlineUI || m.cmdOpen || m.atOpen || m.inputOpen() {
+		overhead += m.popupH() + m.atPopupH() + m.uiPopupH() + m.inputPopupH()
+	}
+	return max(0, min(alloc, m.winH-overhead))
+}
+
 func boolInt(value bool) int {
 	if value {
 		return 1
 	}
 	return 0
+}
+
+// panelHeight is lipgloss.Height with the empty-string-is-one-row trap
+// handled. A panel that rendered "" must cost zero rows, not one — the
+// View() reserve/join math below is only exact if this holds.
+func panelHeight(s string) int {
+	if s == "" {
+		return 0
+	}
+	return lipgloss.Height(s)
+}
+
+// extPanelBudget is the row pool the generic plugin panels may draw from.
+// It mirrors teamWidgetHeightLimit (which already reserves the header, the
+// input box, the task widget, every popup and three chat rows) and subtracts
+// what the team dashboard already took, so the two panel families can never
+// each claim the full budget and overflow the frame.
+func (m Model) extPanelBudget(teamH int) int {
+	return max(0, m.teamWidgetHeightLimit()-teamH)
+}
+
+// renderExtWidgets draws every generic (non-team) extension panel for one
+// placement, in m.extWidgetKeys() order. This is what makes pi-lens,
+// plan-mode, web-activity and any other setWidget plugin visible as a live
+// surface instead of a one-shot notice that scrolled away.
+//
+// Constraints mirror the team panel: the frame budget is never exceeded, the
+// real terminal width is never painted past (mainW has a small-terminal
+// floor the widget must not inherit), every line is clipped with truncANSI
+// so ANSI survives, and "" is returned when there is no room so the viewport
+// math in View() stays valid.
+func (m Model) renderExtWidgets(placement string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	// mainW has a small-terminal floor for the main layout; a panel must
+	// never inherit that floor and paint past the actual terminal width.
+	width := max(1, min(m.winW, m.mainW()))
+	var keys []string
+	for _, key := range m.extWidgetKeys() {
+		if p := m.extWidgetPanel(key); p != nil && p.Placement == placement && len(p.Lines) > 0 {
+			keys = append(keys, key)
+		}
+	}
+	if len(keys) == 0 {
+		return ""
+	}
+	var out []string
+	rows, dropped := 0, 0
+	for _, key := range keys {
+		p := m.extWidgetPanel(key)
+		room := budget - rows - 1 // one row for this panel's owner tag
+		if room <= 0 {
+			dropped += 1 + len(p.Lines)
+			continue
+		}
+		lines := p.Lines
+		if len(lines) > room {
+			// A panel's tail is the live part, so overflow drops from the
+			// head — but the head is the plugin's own summary, so say so
+			// rather than silently swapping one for the other.
+			dropped += len(lines) - room
+			lines = lines[len(lines)-room:]
+		}
+		out = append(out, truncANSI(sideTitleStyle.Render("["+key+"]"), width))
+		for _, line := range lines {
+			out = append(out, truncANSI(line, width))
+		}
+		rows += 1 + len(lines)
+	}
+	if dropped > 0 && rows < budget {
+		out = append(out, truncANSI(toolStyle.Render(fmt.Sprintf("… +%d plugin rows hidden", dropped)), width))
+		rows++
+	}
+	if len(out) > budget {
+		out = out[:budget]
+	}
+	return strings.Join(out, "\n")
 }
 
 func teamWorkerStart(line string) bool {
@@ -2064,7 +2569,7 @@ func teamWorkerSummary(line string) bool {
 // package prefix and roster heading are structural anchors; only complete
 // worker/activity blocks are selected when rows are scarce.
 func (m Model) renderTeamWidget() string {
-	budget := m.teamWidgetHeightLimit()
+	budget := m.teamPanelHeightLimit()
 	if budget <= 0 {
 		return ""
 	}
@@ -2102,6 +2607,13 @@ func (m Model) renderTeamWidget() string {
 	prefixEnd := len(m.TeamWidgetLines)
 	if agents >= 0 {
 		prefixEnd = agents
+	} else if len(m.TeamWidgetLines) > 0 {
+		// Snapshots without a roster heading (the followed-session roster
+		// builds one line per worker) need the same hierarchy, otherwise the
+		// popup-sized cap would blank the whole panel instead of trimming
+		// it. The first line is the panel title, so it becomes the heading
+		// and every remaining row is content that may be dropped.
+		agents, prefixEnd = 0, 0
 	}
 	base := append([]string{}, m.TeamWidgetLines[:prefixEnd]...)
 	if status != "" {
@@ -2111,35 +2623,31 @@ func (m Model) renderTeamWidget() string {
 		return statusOnly()
 	}
 
-	// Legacy/test snapshots may not contain a roster heading. Keep them
-	// lossless while still reserving one row for an honest overflow marker.
-	if agents < 0 {
-		all := append(append([]string{}, base...), m.TeamWidgetLines[prefixEnd:]...)
-		if len(all) <= budget {
-			return strings.Join(mapLines(all, fit), "\n")
-		}
-		available := budget - len(base)
-		if available <= 0 {
-			return statusOnly()
-		}
-		keep := available - 1
-		lines := append([]string{}, base...)
-		lines = append(lines, m.TeamWidgetLines[prefixEnd:prefixEnd+keep]...)
-		lines = append(lines, fmt.Sprintf("  … %d rows hidden", len(m.TeamWidgetLines[prefixEnd:])-keep))
-		return strings.Join(mapLines(lines, fit), "\n")
-	}
-
+	// Legacy/test snapshots may not contain a roster heading; the title row
+	// was promoted to one above, so every remaining row is a block and the
+	// shared selection below trims it with an honest overflow marker.
 	heading := m.TeamWidgetLines[agents]
 	blocks := make([][]string, 0)
 	summary := ""
+	// openWorker records whether the box-drawing hierarchy owns the current
+	// block; a flat snapshot has no such hierarchy, so its rows are
+	// independent and must not be glued to the row above them.
+	openWorker := false
 	for _, line := range m.TeamWidgetLines[agents+1:] {
 		switch {
 		case teamWorkerSummary(line):
 			summary = line
+			openWorker = false
 		case teamWorkerStart(line):
 			blocks = append(blocks, []string{line})
-		case len(blocks) > 0:
+			openWorker = true
+		case openWorker:
 			blocks[len(blocks)-1] = append(blocks[len(blocks)-1], line)
+		default:
+			// A flat snapshot (no box-drawing hierarchy) has independent
+			// rows, so each one becomes its own block and the cap can still
+			// drop it whole instead of silently discarding it.
+			blocks = append(blocks, []string{line})
 		}
 	}
 
@@ -2239,38 +2747,38 @@ func (m Model) View() string {
 	teamAbove := teamPanel != "" && m.TeamWidgetPlacement != "belowEditor"
 	teamBelow := teamPanel != "" && m.TeamWidgetPlacement == "belowEditor"
 	taskPanel := m.renderTaskWidget()
+	// The team dashboard and the generic plugin panels share one row pool:
+	// both measure against teamWidgetHeightLimit, so without this
+	// subtraction each family would claim the full budget and the stack
+	// would grow past winH.
+	extBudget := m.extPanelBudget(panelHeight(teamPanel))
+	extAbove := m.renderExtWidgets("aboveEditor", extBudget)
+	extBelow := m.renderExtWidgets("belowEditor", max(0, extBudget-panelHeight(extAbove)))
 	chatVp := m.vp
-	// Persistent panels consume chat rows from a local viewport copy; keeping
-	// m.vp unchanged avoids mutating layout state during render. lipgloss
-	// reports an empty string as one row, so only measure panels that exist.
-	reserved := 0
-	if teamPanel != "" {
-		reserved += lipgloss.Height(teamPanel)
-	}
-	if taskPanel != "" {
-		reserved += lipgloss.Height(taskPanel)
-	}
-	chatVp.Height = max(0, chatVp.Height-reserved)
+	// The team panel's rows are already reserved from m.vp by
+	// applyTeamPanelH (same path as the popups), so the local copy only gives
+	// up rows for the task widget and the generic plugin panels — the two
+	// surfaces that are derived at paint time. lipgloss reports an empty
+	// string as one row, so measure them with panelHeight.
+	extra := panelHeight(taskPanel) + panelHeight(extAbove) + panelHeight(extBelow)
+	chatVp.Height = m.chatFrameRows(max(0, chatVp.Height-extra), panelHeight(teamPanel)+extra, inlineUI)
 	chatView := func() string { return padToHeight(chatVp.View(), chatVp.Height) }
-	bodyParts := []string{chatView()}
-	if teamAbove {
-		bodyParts = append(bodyParts, teamPanel)
-	}
-	if taskPanel != "" {
-		bodyParts = append(bodyParts, taskPanel)
-	}
-	bodyParts = append(bodyParts, m.renderInput())
-	if teamBelow {
-		bodyParts = append(bodyParts, teamPanel)
-	}
-	body := lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
-	if m.cmdOpen || m.atOpen || inlineUI || m.inputOpen() {
+	input := m.renderInput()
+	popupOpen := m.cmdOpen || m.atOpen || inlineUI || m.inputOpen()
+	// A popup replaces the body wholesale, so build exactly one of the two
+	// stacks. Rendering both meant the chat viewport and the input were laid
+	// out twice per frame (~260µs) and the first result was thrown away.
+	var body string
+	if popupOpen {
 		parts := []string{chatView()}
 		if teamAbove {
 			parts = append(parts, teamPanel)
 		}
 		if taskPanel != "" {
 			parts = append(parts, taskPanel)
+		}
+		if extAbove != "" {
+			parts = append(parts, extAbove)
 		}
 		if inlineUI {
 			// extension menu (plan-mode) floats above chat like /commands;
@@ -2289,11 +2797,33 @@ func (m Model) View() string {
 			// chat + sidebar stay visible behind it.
 			parts = append(parts, m.renderInputBox())
 		}
-		parts = append(parts, m.renderInput())
+		parts = append(parts, input)
+		if extBelow != "" {
+			parts = append(parts, extBelow)
+		}
 		if teamBelow {
 			parts = append(parts, teamPanel)
 		}
 		body = lipgloss.JoinVertical(lipgloss.Left, parts...)
+	} else {
+		bodyParts := []string{chatView()}
+		if teamAbove {
+			bodyParts = append(bodyParts, teamPanel)
+		}
+		if taskPanel != "" {
+			bodyParts = append(bodyParts, taskPanel)
+		}
+		if extAbove != "" {
+			bodyParts = append(bodyParts, extAbove)
+		}
+		bodyParts = append(bodyParts, input)
+		if extBelow != "" {
+			bodyParts = append(bodyParts, extBelow)
+		}
+		if teamBelow {
+			bodyParts = append(bodyParts, teamPanel)
+		}
+		body = lipgloss.JoinVertical(lipgloss.Left, bodyParts...)
 	}
 	left := lipgloss.JoinVertical(lipgloss.Left, m.renderHeader(), body)
 	left = m.overlayToasts(left) // float above chat: never shifts the frame
@@ -2319,7 +2849,13 @@ func (m Model) renderInputBox() string {
 		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
 	}
 	b.WriteString("\n")
-	b.WriteString(cmdHiStyle.Render(d.Filter+"▌") + "\n")
+	// pi's ui.input placeholder: a dim hint while the buffer is empty, so the
+	// offered context is visible instead of a bare cursor.
+	if d.Filter == "" && d.Placeholder != "" {
+		b.WriteString(toolStyle.Render(d.Placeholder) + cmdHiStyle.Render("▌") + "\n")
+	} else {
+		b.WriteString(cmdHiStyle.Render(d.Filter+"▌") + "\n")
+	}
 	b.WriteString("\n" + toolStyle.Render("type · Enter save · Esc cancel"))
 	boxW := 60
 	if mw := m.mainW() - 4; mw < boxW && mw > 20 {

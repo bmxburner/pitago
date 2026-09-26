@@ -8,9 +8,10 @@ import (
 	"pitago/src/pirpc"
 )
 
-func TestInputResponse(t *testing.T) {
-	// Enter submits the typed value
-	c := InputResponse("r1", "Fix bug", false)
+func TestTextResponse(t *testing.T) {
+	// Enter submits the typed value (ui.input and ui.editor share the
+	// shape: pi resolves {value} / {cancelled:true})
+	c := TextResponse("r1", "Fix bug", false)
 	if c.Type != "extension_ui_response" || c.ID != "r1" {
 		t.Fatalf("envelope = %+v", c)
 	}
@@ -18,7 +19,7 @@ func TestInputResponse(t *testing.T) {
 		t.Fatalf("submit = %+v", c)
 	}
 	// Esc cancels (empty value still submits — the extension treats it as back)
-	c = InputResponse("r1", "", true)
+	c = TextResponse("r1", "", true)
 	if c.Cancelled == nil || !*c.Cancelled || c.Value != nil {
 		t.Fatalf("cancel = %+v", c)
 	}
@@ -70,14 +71,46 @@ func TestSummarizeCountsPitagoAsBuiltin(t *testing.T) {
 	}
 }
 
-func TestShouldAutoCancel(t *testing.T) {
-	// input drives creation flows (pi-tasks createTask) and must reach the
-	// user; only the editor falls back to defaults/timeout.
-	if ShouldAutoCancel("input") {
-		t.Fatal("input must open a dialog, not auto-cancel")
+// ui.editor must reach the user: pi opens a real editor dialog for it in
+// both its TUI and its RPC mode (createExtensionInputComponent) and
+// resolves {value}. Auto-cancelling handed extensions undefined and pushed
+// them onto their default/timeout branch — a behaviour change, not a
+// rendering one.
+func TestTextMethodClassification(t *testing.T) {
+	for _, method := range []string{"input", "editor"} {
+		if !IsTextMethod(method) {
+			t.Fatalf("%s must open the free-text dialog, not auto-cancel", method)
+		}
+		if !IsDialogMethod(method) || IsFireAndForget(method) {
+			t.Fatalf("%s must stay a blocking dialog method", method)
+		}
+		if !IsDialogRequest([]byte(`{"id":"r1","method":"` + method + `"}`)) {
+			t.Fatalf("%s must be queued behind an open dialog", method)
+		}
 	}
-	if !ShouldAutoCancel("editor") {
-		t.Fatal("editor must stay auto-cancelled")
+	// Only free-text methods take the typing dialog; pickers and notices
+	// must not be captured by it.
+	for _, method := range []string{"select", "confirm", "notify", "setStatus", "setWidget", "custom"} {
+		if IsTextMethod(method) {
+			t.Fatalf("%s must not open the free-text dialog", method)
+		}
+	}
+	// Unreadable payloads still hold behind the open dialog (historical
+	// safe side: the extension is blocked, so we must not answer it).
+	if !IsDialogRequest([]byte(`not json`)) {
+		t.Fatal("unreadable payload must stay on the safe side")
+	}
+}
+
+func TestTextTitleFor(t *testing.T) {
+	if got := TextTitleFor("input", ""); got != "Input" {
+		t.Fatalf("input default title = %q", got)
+	}
+	if got := TextTitleFor("editor", ""); got != "Editor" {
+		t.Fatalf("editor default title = %q", got)
+	}
+	if got := TextTitleFor("editor", "Task description"); got != "Task description" {
+		t.Fatalf("explicit title must win, got %q", got)
 	}
 }
 
@@ -92,6 +125,27 @@ func TestMethodClassifiers(t *testing.T) {
 	for _, m := range []string{"notify", "setStatus", "setWidget", "setTitle", "set_editor_text"} {
 		if !IsFireAndForget(m) || IsDialogMethod(m) {
 			t.Fatalf("%s must be fire-and-forget-only", m)
+		}
+	}
+}
+
+// Follow mode's allowlist is a strict subset of the fire-and-forget methods:
+// everything a follower renders is informational and needs no answer, and the
+// one fire-and-forget method it refuses (set_editor_text) is exactly the one
+// that would write into the OWNED composer. Anything pi adds later is refused
+// by default, so this must never grow a non-fire-and-forget method.
+func TestIsFollowSafeUIStaysInsideFireAndForget(t *testing.T) {
+	for _, m := range []string{"notify", "setStatus", "setWidget", "setTitle"} {
+		if !IsFollowSafeUI(m) {
+			t.Fatalf("%s must render in follow mode", m)
+		}
+		if !IsFireAndForget(m) {
+			t.Fatalf("%s is follow-safe but not fire-and-forget", m)
+		}
+	}
+	for _, m := range []string{"set_editor_text", "select", "confirm", "input", "editor", "unknown_future_method", ""} {
+		if IsFollowSafeUI(m) {
+			t.Fatalf("%s must be refused in follow mode", m)
 		}
 	}
 }

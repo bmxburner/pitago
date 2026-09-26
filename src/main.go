@@ -46,17 +46,26 @@ func main() {
 		return
 	}
 
-	// Two-way key sync with pi (auth.json wins over env inside pi):
-	// 1. push pitago actives where pi has nothing yet so pitago-added keys
-	//    reach pi; 2. import pi → pitago (union, never moves active) so keys
-	//    added via stock `pi` show up here; 3. export actives to env.
+	// pi credential hygiene at launch: pi → pitago ONLY.
+	//
+	// Nothing here writes pi's auth.json and nothing mutates pitago's own
+	// environment. Pitago's credentials reach pi exclusively through the
+	// explicit /login and /logout actions (pirpc.PushActiveToPi), so
+	// launching pitago is as side-effect-free as launching pi:
+	//  1. import pi's api_keys into pitago's keystore (union, never moves
+	//     the active pointer) so /login lists what the user added in
+	//     stock pi;
+	//  2. mirror pi's logins (presence only, no secrets) for the picker.
 	keyPath := pirpc.KeyPath()
-	pirpc.EnsurePiHasActive(keyPath)
 	pirpc.SyncFromPi(keyPath)
 	pirpc.SyncAuthStateFromPi(pirpc.AuthStatePath())
+	// The saved active key reaches the pi child through the child-env
+	// overlay, not os.Setenv: nothing else pitago starts (or a crash dump)
+	// ever sees the secret, and an env var the user exported themselves
+	// still wins, same as before.
 	for env, key := range pirpc.LoadKeys(keyPath) {
 		if key != "" && os.Getenv(env) == "" {
-			_ = os.Setenv(env, key)
+			pirpc.SetPiChildEnv(env, key)
 		}
 	}
 
@@ -69,6 +78,11 @@ func main() {
 		Provider: *provider, Model: *modelFlag,
 		Continue: *cont, NoSession: *noSession, Dir: cwd,
 	}
+	// Restore the last model the user picked here, before Spawn: the child
+	// gets --provider/--model, so the first get_state already reports it
+	// and no in-session set_model is needed (respawns reuse these opts).
+	// Explicit -provider/-model flags still win.
+	applyRestoredModel(&opts, app.LoadPrefs(app.PrefsPath()))
 	pi, err := pirpc.Spawn(opts)
 	if err != nil {
 		fmt.Println("Cannot start pi:", err)
@@ -87,12 +101,10 @@ func main() {
 		_ = theme.Save(theme.ThemePath(), *themeFlag)
 	}
 	m.Configure(opts, keyPath)
-	// Restore the last explicitly chosen model when no --provider/--model
-	// flags: pi spawns on its own default, pitago re-applies the saved
-	// choice (persisted on every model switch) before the first frame.
-	if *provider == "" && *modelFlag == "" {
-		m.ApplySavedModel()
-	}
+	// Nothing else to restore: the model went out with the spawn flags
+	// above (or pi's own default applies), and the sidebar reads the live
+	// value back from get_state — pitago keeps no mid-session copy that
+	// the footer could disagree with.
 	// Preload the update cache so the welcome banner ("⬆ … pitago
 	// --update") shows on the first frame — the async auto-check in
 	// Init() refreshes it right after.
@@ -104,7 +116,7 @@ func main() {
 	m.UseBuiltins(builtin.All(), builtin.Confirmers())
 	// Mouse capture on by default so the sidebar is clickable + scrollable.
 	// Opt out with --mouse=false for plain highlight-to-copy.
-	progOpts := []tea.ProgramOption{tea.WithAltScreen()}
+	progOpts := []tea.ProgramOption{tea.WithAltScreen(), tea.WithFilter(app.ScrollEventFilter)}
 	if *mouse {
 		progOpts = append(progOpts, tea.WithMouseCellMotion())
 	}
@@ -115,6 +127,24 @@ func main() {
 		fmt.Println("Error:", err)
 		os.Exit(1)
 	}
+}
+
+// applyRestoredModel fills the (empty) spawn options from the last model
+// the user picked in prefs.json. A flag on the command line always wins;
+// a half-saved ref (only provider or only id) is not applied. Returns
+// whether a value was applied.
+func applyRestoredModel(opts *pirpc.Options, p app.Prefs) bool {
+	ref := p.CurrentModel
+	if ref == nil {
+		return false
+	}
+	if opts.Provider == "" {
+		opts.Provider = ref.Provider
+	}
+	if opts.Model == "" {
+		opts.Model = ref.ID
+	}
+	return opts.Provider != "" && opts.Model != ""
 }
 
 // runUpdate checks the latest GitHub release and replaces this binary.

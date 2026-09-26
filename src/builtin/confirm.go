@@ -30,8 +30,18 @@ func Confirmers() map[string]app.ConfirmFunc {
 		"update":      confirmUpdate,
 		"trajectory":  confirmTrajectory,
 		"tree":        confirmTree,
+		"fork":        confirmFork,
 		"subagents":   confirmSubagents,
+		"live":        confirmLive,
 	}
+}
+
+// confirmLive attaches to the picked /live row. Attaching (or the refusal on
+// a session with no bridge) is the whole action — the dialog closes first so
+// the transcript notice and the follow-mode repaint have no popup on top.
+func confirmLive(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	m.Dialogs = m.Dialogs[1:]
+	return m, m.AttachLive(ri)
 }
 
 // confirmSubagents selects the highlighted subagent: persists it as current
@@ -71,6 +81,26 @@ func confirmModel(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	return m, func() tea.Msg {
 		label, err := m.Pi.SetModelByID(prov, id)
 		return app.ModelCycleMsg{Label: label, Provider: prov, ID: id, Err: err}
+	}
+}
+
+// confirmFork branches the session at the picked user message (pi:
+// runtimeHost.fork(entryId) → {text, cancelled}). pi hands the branch's
+// text back to the editor, and an extension veto through
+// session_before_switch is reported rather than read as "done".
+func confirmFork(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if ri < 0 || ri >= len(d.Paths) {
+		return m, nil
+	}
+	entryID := d.Paths[ri]
+	m.Dialogs = m.Dialogs[1:]
+	m.Status = "forking session…"
+	m.Refresh()
+	return m, func() tea.Msg {
+		res, err := m.Pi.Fork(entryID)
+		verr := res.VetoErr("fork", err)
+		return app.PiOpMsg{Op: "fork", Notice: "forked to a new session", Text: res.Text,
+			Err: verr, Reload: verr == nil}
 	}
 }
 
@@ -239,24 +269,23 @@ func confirmLoginOAuth(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd)
 	if ri == 0 {
 		// User just ran /login in stock pi: import keys (union) + mirror
 		// pi logins (OAuth included) into pitago, refresh the picker.
-		pirpc.SyncFromPi(m.KeyPath)
-		authPath := m.AuthPath
+		// Both writes are blocking file I/O, so they run off the event loop
+		// and land as app.LoginReloadMsg — the same continuation the
+		// /login "reload models" action uses. ProvFocus is in-memory, so it
+		// is set here and picked up by the handler's RefreshLoginKeys.
+		var login *app.Dialog
+		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
+			login = m.Dialogs[0]
+			login.ProvFocus = false
+		}
+		keyPath, authPath := m.KeyPath, m.AuthPath
 		if authPath == "" {
 			authPath = pirpc.AuthStatePath()
 		}
-		pirpc.SyncAuthStateFromPi(authPath)
-		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
-			m.Dialogs[0].ProvFocus = false
-			m.RefreshLoginKeys(m.Dialogs[0])
-		}
-		m.Status = "reloading models…"
-		m.Refresh()
 		return m, func() tea.Msg {
-			models, err := m.Pi.GetModels()
-			if err != nil {
-				return app.SettingsRefreshMsg{Err: err}
-			}
-			return app.SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+			pirpc.SyncFromPi(keyPath)
+			pirpc.SyncAuthStateFromPi(authPath)
+			return app.LoginReloadMsg{D: login}
 		}
 	}
 	m.Refresh()
@@ -278,8 +307,18 @@ func confirmSecret(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	prov, env := d.LoginProvider, d.LoginEnv
 	m.Dialogs = m.Dialogs[1:]
 	m.Refresh()
+	keyPath := m.KeyPath
 	return m, func() tea.Msg {
-		return app.LoginKeyMsg{Provider: prov, Env: env, Key: key}
+		// Both writes are blocking file I/O, so they run off the event loop
+		// and the handler refreshes the picker and reconnects behind it.
+		msg := app.LoginKeyMsg{Provider: prov, Env: env, Key: key}
+		if msg.Err = pirpc.SaveKey(keyPath, env, key); msg.Err != nil {
+			return msg
+		}
+		// Critical: pi's auth.json wins over env, so export alone is not
+		// enough — write the active key to pi too or pi never sees models.
+		pirpc.PushActiveToPi(keyPath, env)
+		return msg
 	}
 }
 

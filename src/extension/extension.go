@@ -42,12 +42,31 @@ func Summarize(cmds []pirpc.RepoCommand) (ext, prompt, skill, builtin int) {
 	return ext, prompt, skill, builtin
 }
 
-// ShouldAutoCancel reports UI requests pitago answers without asking:
-// the editor falls back to agent defaults/timeout (free-text input gets a
-// real dialog instead — extensions like pi-tasks drive creation flows
-// through ui.input, which must not resolve empty).
-func ShouldAutoCancel(method string) bool {
-	return method == "editor"
+// IsTextMethod reports UI requests that ask the user to type a value, i.e.
+// the ones pitago renders with the free-text dialog (typing, backspace,
+// space, Ctrl+V paste, Enter submits / Esc cancels).
+//
+// pi parity: in RPC mode pi implements `editor` through
+// createExtensionInputComponent (dist/modes/rpc/rpc-mode.js), exactly like
+// `input` — it opens a real editor dialog and resolves {value}, a cancel
+// resolves {cancelled:true}. It is therefore NOT auto-cancelled here:
+// cancelling without asking hands the extension undefined and pushes it
+// onto its default/timeout branch, which is a behaviour change, not a
+// rendering one. Extensions like pi-tasks drive creation flows through
+// ui.input for the same reason.
+func IsTextMethod(method string) bool {
+	return method == "input" || method == "editor"
+}
+
+// TextTitleFor fills the free-text dialog title default per method.
+func TextTitleFor(method, title string) string {
+	if title != "" {
+		return title
+	}
+	if method == "editor" {
+		return "Editor"
+	}
+	return "Input"
 }
 
 // TitleFor fills the dialog title default per method.
@@ -140,6 +159,21 @@ func IsFireAndForget(method string) bool {
 	return false
 }
 
+// IsFollowSafeUI reports the extension_ui_request methods follow mode still
+// renders. An allowlist, not a denylist: a follow-mode window renders a remote
+// session read-only, so anything that would touch the OWNED composer
+// (set_editor_text) or open a prompt must be refused by default — including
+// fire-and-forget methods added to pi later, which the client never waits on
+// and therefore cannot recognize safely. The four listed here are pure
+// information the remote side already shows in its own window.
+func IsFollowSafeUI(method string) bool {
+	switch method {
+	case "notify", "setStatus", "setWidget", "setTitle":
+		return true
+	}
+	return false
+}
+
 // FallbackResponse builds a safe cancellation for an extension_ui_request
 // pitago cannot render (unknown future method, custom widget payload).
 // Dialog callers receive undefined/false and fall back to defaults; pi
@@ -150,7 +184,7 @@ func FallbackResponse(id string) pirpc.Command {
 }
 
 // IsDialogRequest reports extension_ui_request methods that open a dialog
-// (select/confirm/input). Anything else (notify/setStatus/setWidget/…)
+// (select/confirm/input/editor). Anything else (notify/setStatus/setWidget/…)
 // never disrupts input routing. Unreadable payloads stay on the safe side
 // (true = hold behind the open dialog, the historical behavior).
 func IsDialogRequest(raw json.RawMessage) bool {
@@ -161,16 +195,17 @@ func IsDialogRequest(raw json.RawMessage) bool {
 		return true
 	}
 	switch req.Method {
-	case "select", "confirm", "input":
+	case "select", "confirm", "input", "editor":
 		return true
 	}
 	return false
 }
 
-// InputResponse builds the extension_ui_response for a free-text input
-// dialog: Esc cancels, Enter submits the typed value (possibly empty — the
-// extension decides what empty means).
-func InputResponse(id, value string, cancelled bool) pirpc.Command {
+// TextResponse builds the extension_ui_response for a free-text dialog
+// (ui.input and ui.editor, the same wire shape as pi's): Esc cancels, Enter
+// submits the typed value (possibly empty — the extension decides what empty
+// means). The extension reads it back as {value} or {cancelled:true}.
+func TextResponse(id, value string, cancelled bool) pirpc.Command {
 	cmd := pirpc.Command{Type: "extension_ui_response", ID: id}
 	if cancelled {
 		cmd.Cancelled = boolPtr(true)

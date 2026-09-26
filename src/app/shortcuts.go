@@ -22,6 +22,8 @@ var shortcutsDb = []ShortcutItem{
 	{"Esc", "Cancel running turn (double-press within 3s)", "Global"},
 	{"Ctrl+Shift+/", "Open shortcuts page", "Global"},
 	{"/?", "Open command palette / shortcuts", "Global"},
+	{"Ctrl+D", "Detach from external Pi session (back to owned session)", "Global"},
+	{"Ctrl+Q", "Detach from external Pi session (back to owned session)", "Global"},
 
 	// Navigation / Chat
 	{"↑↓", "Scroll chat (recall history when empty, mouse on)", "Chat"},
@@ -45,6 +47,7 @@ var shortcutsDb = []ShortcutItem{
 	{"Ctrl+N", "New session", "UI"},
 	{"Ctrl+P", "Cycle model", "UI"},
 	{"Ctrl+Y", "Yank last assistant answer to clipboard", "UI"},
+	{"Ctrl+Y", "Copy selected step / notification (in trajectory, /notification)", "UI"},
 	{"Ctrl+V", "Paste (multi-backend)", "UI"},
 	{"Ctrl+O", "Open yank picker", "UI"},
 
@@ -54,6 +57,8 @@ var shortcutsDb = []ShortcutItem{
 	{"Ctrl+F", "Star/unstar model (in picker)", "UI"},
 
 	// Input / Tray
+	{"Alt+Enter", "Queue message as follow-up (waits for the turn to finish)", "Input"},
+	{"!cmd", "Run a shell command through pi (!!cmd keeps output out of context)", "Input"},
 	{"↓ (last input line)", "Move into image tray", "Input"},
 	{"←→ (tray)", "Select image chip", "Input"},
 	{"⌫ (tray empty)", "Delete last image chip", "Input"},

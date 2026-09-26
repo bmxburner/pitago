@@ -127,7 +127,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.applyLive(lm.generation, lm.message)
 	}
 	// Detach and owned-child isolation are global, even behind a read-only
-	// picker/dialog. In particular, Ctrl+D must never become "close dialog".
+	// picker/dialog. In particular, Ctrl+D must never become "close dialog":
+	// in follow mode it detaches (Ctrl+Q is the same detach key).
 	if km, ok := msg.(tea.KeyMsg); ok && m.followRemote && km.Type == tea.KeyCtrlD {
 		return m, m.detachLive()
 	}
@@ -184,25 +185,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// A dialog captures keys and mouse, but pi keeps working behind it:
 		// its events stay live (status/notify/pet/turn/todos) — except a
-		// second dialog request, which waits for the open one instead of
-		// stacking. Other async results stay swallowed — except paste
+		// second dialog request, which is queued (FIFO) instead of stacked
+		// and is promoted as soon as the stack empties. Other async
+		// results stay swallowed — except paste
 		// (Ctrl+V into the /login key field must land), the quit/esc
 		// disarms (an arm must always expire, even behind a dialog), the
 		// pet clock (elapsed/face animation is UI-only and must not
-		// freeze), and the /login stay-open pipeline (save/rename → respawn →
-		// reconnect must complete without closing the picker).
+		// freeze), the copyHint retirement (a copy confirmation raised by
+		// a dialog's own keypress must be able to expire behind that same
+		// dialog, or it sticks until the dialog closes), and the /login
+		// stay-open pipeline (save/rename → respawn →
+		// reconnect must complete without closing the picker). The
+		// deferred file-I/O messages belong to that same pipeline: they are
+		// the second half of an action taken inside a dialog, so swallowing
+		// them here would strand the dialog mid-action.
 		if em, ok := msg.(piEventMsg); ok {
 			if em.Event.Type != "extension_ui_request" ||
 				!extension.IsDialogRequest(em.Event.Raw) {
 				return m.handleEvent(em.Event)
 			}
+			// Park it. The old `return m, nil` dropped the payload on the
+			// floor without answering, so pi's pending request never
+			// resolved: the extension blocked on our UI until its own
+			// timeout — forever, when it set none.
+			m.queueDialogRequest(em.Event.Raw)
 			return m, nil
 		}
 		switch msg.(type) {
 		case tea.WindowSizeMsg, pasteDoneMsg, quitDisarmMsg, escDisarmMsg,
+			clearCopyHintMsg,
 			petTickMsg, petFlashMsg, streamFlushMsg,
 			LoginKeyMsg, RenameKeyMsg, respawnMsg, connectedMsg, CmdsRefreshMsg,
-			SettingsMsg, SettingsRefreshMsg, MarketMsg, PluginChangeMsg:
+			SettingsMsg, SettingsRefreshMsg, MarketMsg, PluginChangeMsg,
+			LoginSyncedMsg, LoginReloadMsg, OAuthGoneMsg, SettingWrittenMsg,
+			LoginSwitchMsg, LoginDeleteMsg, LoginRenameOpenMsg, LogoutDoneMsg,
+			LogoutListMsg:
 		default:
 			return m, nil
 		}
@@ -232,7 +249,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			m.vp, c = m.vp.Update(msg)
 		}
-		m.Refresh()
+		// No Refresh here: a wheel report only moves an offset, so the
+		// transcript and sidebar are still current. Re-rendering them per
+		// event is what made long chats scroll in jerks (see wheelTo).
 		return m, c
 	}
 
@@ -256,16 +275,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.ready {
 			m.vp = viewport.New(mainW, vpH)
 			m.sideVp = viewport.New(sideInnerW, m.sideContentH())
+			m.chatContent = "" // fresh viewport holds no content yet
 			m.ready = true
 		} else {
 			m.vp.Width = mainW
 			m.vp.Height = vpH
 			m.sideVp.Width = sideInnerW
 			m.syncSideH() // reserves the quit-arm footer line while armed
-			if m.cmdOpen || m.atOpen || m.isInlineUI() || m.inputOpen() {
+			if m.cmdOpen || m.atOpen || m.isInlineUI() || m.inputOpen() || m.teamPanelActive() {
 				// Resizing with a popup open must keep the winH budget:
 				// shrink the chat like a keystroke would (and clamp the
-				// popup scroll offset to its new window).
+				// popup scroll offset to its new window). The live team
+				// panel reserves rows the same way, so a resize has to
+				// re-sync it too or the panel would sit on the full chat.
 				m.ensureCmdVisible()
 				m.applyPopupH()
 			}
@@ -312,6 +334,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.progressByKey = make(map[string]int)
 		m.hist = nil
 		m.histIdx = -1
+		// A fresh pi process has no bash running and no retry in flight;
+		// stale latches would block Esc and "!cmd" forever.
+		m.bashRunning = false
+		m.retrying = false
 		m.restore(msg.msgs)
 		m.Status = "ready"
 		m.planOn = false // fresh connect: plan latch is live-only
@@ -402,18 +428,69 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case sentAckMsg:
 		if msg.err != nil {
+			// A refused send must not cost the user their words: pi took
+			// nothing, so the text (and the image chips it carried) go
+			// back into the editor, pi's own reason on top.
+			if msg.text != "" {
+				m.restoreQueuedToEditor([]string{msg.text})
+			}
+			if len(msg.tray) > 0 {
+				m.imgAtts = append(msg.tray, m.imgAtts...)
+				m.applyPopupH()
+			}
 			m.AddBlock(Block{Kind: "notice", Text: msg.err.Error(), Err: true})
 			m.thinking = false
 			m.Status = "ready"
 			m.Refresh()
+			return m, nil
+		}
+		if msg.queued {
+			// Healed: the message is in pi's follow-up queue, not lost.
+			m.AddBlock(Block{Kind: "notice", Text: "pi was still streaming — queued as a follow-up"})
+			m.Refresh()
 		}
 		return m, nil
 
-	case extensionCmdAckMsg:
+	case PiOpMsg:
+		return m.handlePiOp(msg)
+
+	case escAbortMsg:
+		// Queued steer/follow-up text goes back above whatever the user
+		// has typed now; only the abort itself is reported.
+		if len(msg.restored) > 0 {
+			m.restoreQueuedToEditor(msg.restored)
+		}
 		if msg.err != nil {
 			m.AddBlock(Block{Kind: "notice", Text: msg.err.Error(), Err: true})
-			m.Refresh()
+			m.thinking = false
+			m.Status = "ready"
 		}
+		m.Refresh()
+		return m, nil
+
+	case extensionCmdAckMsg:
+		// A synchronous extension command may own a visible lifecycle
+		// (beginExtCmd/endExtCmd in src/app/extui_state.go). When it does,
+		// the ack closes that window with the real error instead of printing
+		// a bare inline notice — so a command never reports failure twice
+		// and never looks silent. Commands with no lifecycle keep the
+		// original inline notice.
+		if msg.err != nil {
+			if m.extCmdPending(msg.name) {
+				m.endExtCmd(msg.name, msg.err, false)
+				m.Refresh()
+			} else {
+				m.AddBlock(Block{Kind: "notice", Text: msg.err.Error(), Err: true})
+				m.Refresh()
+			}
+		}
+		return m, nil
+
+	case teamWatchdogMsg:
+		// The deadline for one dispatched /team. handleTeamWatchdog drops
+		// stale ticks (already delivered, superseded, or never armed) and
+		// only the live token can close the window with a visible reason.
+		m.handleTeamWatchdog(msg)
 		return m, nil
 
 	case pasteDoneMsg:
@@ -424,6 +501,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Refresh()
 		if len(m.toasts) > 0 {
 			scheduleToastTick() // countdown keeps ticking; expiry prunes
+		}
+		return m, nil
+
+	case clearCopyHintMsg:
+		// A newer copy bumped the generation, so this timer is stale and
+		// the newer hint still owns the footer.
+		if msg.gen == m.copyGen {
+			m.copyHint = ""
+			m.applyPopupH()
+			m.Refresh()
 		}
 		return m, nil
 
@@ -469,7 +556,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case SessionResetMsg:
 		if msg.Err != nil {
+			// pi refused the switch (an extension vetoed it through
+			// session_before_switch, or the RPC failed). The session did
+			// NOT change, so the transcript must stay: clearing it here is
+			// how a veto used to look like a successful new session with
+			// an empty chat.
 			m.AddBlock(Block{Kind: "notice", Text: msg.Err.Error(), Err: true})
+			m.Status = "ready"
+			m.Refresh()
+			return m, nil
 		}
 		m.blocks = nil
 		m.tools = make(map[string]int)
@@ -496,11 +591,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.pendSpeed = false
 		m.lastDur, m.lastSpeed = 0, 0
 		m.RefreshFollow()
-		if prov, id := m.savedModel(); strings.TrimSpace(id) != "" {
-			m.Status = "ready — restoring model…"
-			m.Refresh()
-			return m, tea.Batch(m.queryStats(), m.restoreModelCmd(prov, id))
-		}
+		// No model restore: pi's NewSession resets to its own default and
+		// the label is re-read from get_state below, exactly like pi.
+		// (The saved pick is only applied at process start, not here.)
 		return m, m.queryStats()
 
 	case ModelCycleMsg:
@@ -516,14 +609,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				id = msg.Label
 			}
 			m.pushRecent(msg.Provider, id, msg.Label)
-			m.rememberModel(msg.Provider, id, msg.Label)
+			// ModelCycleMsg only ever comes from an explicit user pick
+			// (/model, /recent), never from a get_state readback — so this
+			// is the "user chose a model" signal worth persisting for the
+			// next process start. The connected/state-refresh paths must
+			// NOT write here: they echo pi's own default.
+			m.SetCurrentModel(msg.Provider, id)
 			m.Status = "ready"
-			verb := "model switched → "
-			if msg.Restored {
-				verb = "model restored → "
-			}
-			m.AddBlock(Block{Kind: "notice", Text: verb + msg.Label})
+			m.AddBlock(Block{Kind: "notice", Text: "model switched → " + msg.Label})
 			m.Refresh()
+			// fetchStateOnce re-reads get_state because setModel also
+			// adjusts the thinking level for the new model (pi parity):
+			// the footer and /thinking picker must not keep the old one.
 			return m, m.fetchStateOnce()
 		}
 
@@ -546,6 +643,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.Scope == "all" {
 				title = "Resume session (all)"
 			}
+		}
+		if msg.Kind == "fork" {
+			title = "Fork from a previous message"
 		}
 		if msg.Replace && len(m.Dialogs) > 0 && m.Dialogs[0].Kind == msg.Kind {
 			// Tab scope swap: keep the typed filter, reload rows in place.
@@ -750,14 +850,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case LoginKeyMsg:
-		if err := pirpc.SaveKey(m.KeyPath, msg.Env, msg.Key); err != nil {
-			m.AddBlock(Block{Kind: "notice", Text: "failed to save key: " + err.Error(), Err: true})
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "failed to save key: " + msg.Err.Error(), Err: true})
 			m.Refresh()
 			return m, nil
 		}
-		// Critical: pi's auth.json wins over env, so export alone is not
-		// enough — write the active key to pi too or pi never sees models.
-		pirpc.PushActiveToPi(m.KeyPath, msg.Env)
 		m.AddBlock(Block{Kind: "notice", Text: "saved key " + msg.Provider + " → pi — reconnecting…"})
 		// Stay on /login: refresh the picker in place, reconnect behind it.
 		if len(m.Dialogs) > 0 && m.Dialogs[0].Kind == "login" {
@@ -777,8 +874,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.RespawnPi()
 
 	case RenameKeyMsg:
-		if err := pirpc.RenameKey(m.KeyPath, msg.Env, msg.Idx, msg.Name); err != nil {
-			m.AddBlock(Block{Kind: "notice", Text: "rename failed: " + err.Error(), Err: true})
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "rename failed: " + msg.Err.Error(), Err: true})
 			m.Refresh()
 			return m, nil
 		}
@@ -789,6 +886,138 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Refresh()
 		}
 		return m, nil
+
+	case LoginSwitchMsg:
+		m.RefreshLoginKeys(msg.D)
+		m.AddBlock(Block{Kind: "notice", Text: "switched " + msg.Prov + " to key " + msg.Masked + " → pi — reconnecting…"})
+		m.Refresh()
+		return m, m.RespawnPi()
+
+	case LoginDeleteMsg:
+		m.RefreshLoginKeys(msg.D)
+		if msg.D.KeyCursor >= len(msg.D.Options) {
+			msg.D.KeyCursor = 0
+		}
+		if !msg.Active {
+			m.Refresh()
+			return m, nil
+		}
+		if len(msg.Left) == 0 {
+			m.AddBlock(Block{Kind: "notice", Text: "deleted key " + msg.Prov + " " + msg.Masked + " (last key) → pi — reconnecting…"})
+		} else {
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("deleted key %s %s — switched to %s (%d left) → pi, reconnecting…",
+				msg.Prov, msg.Masked, pirpc.MaskKey(msg.Left[0]), len(msg.Left))})
+		}
+		m.Refresh()
+		return m, m.RespawnPi()
+
+	case LoginRenameOpenMsg:
+		// Push the rename prompt on top of /login (login stays at [1] so
+		// Enter/Esc returns to it, never to the main screen).
+		pre := ""
+		if msg.Idx < len(msg.Items) {
+			pre = msg.Items[msg.Idx].Name
+		}
+		r := &Dialog{Kind: "rename", Title: "Rename key — " + msg.Provider,
+			Message:       "Name is display-only (pitago keystore). Empty clears it. Enter saves, Esc back to /login.",
+			Filter:        pre,
+			LoginProvider: msg.Provider, LoginEnv: msg.Env,
+			RenameIdx: msg.Idx}
+		m.Dialogs = append([]*Dialog{r}, m.Dialogs...)
+		m.Refresh()
+		return m, nil
+
+	case LogoutListMsg:
+		if len(msg.Opts) == 0 {
+			m.AddBlock(Block{Kind: "notice", Text: "nothing to remove — no keys or pi logins"})
+			m.Refresh()
+			return m, nil
+		}
+		d := &Dialog{Kind: "logout", Title: "Remove login",
+			Message: "Pick a provider: deletes its ACTIVE key, or disconnects OAuth (pi too).",
+			Options: msg.Opts, Descs: msg.Descs}
+		if msg.Arg != "" {
+			d.Filter = msg.Arg
+		}
+		d.Reindex()
+		m.Dialogs = append(m.Dialogs, d)
+		m.Refresh()
+		return m, nil
+
+	case LogoutDoneMsg:
+		switch msg.Kind {
+		case "no-keys":
+			m.AddBlock(Block{Kind: "notice", Text: "no saved keys for " + msg.Provider})
+			m.Refresh()
+			return m, nil
+		case "failed":
+			m.AddBlock(Block{Kind: "notice", Text: "failed to delete key: " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		if len(msg.Left) == 0 {
+			m.AddBlock(Block{Kind: "notice", Text: "deleted key " + msg.Provider + " " + msg.Masked + " (last key) → pi — reconnecting…"})
+		} else {
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("deleted active key %s %s — switched to %s (%d left) → pi, reconnecting…",
+				msg.Provider, msg.Masked, pirpc.MaskKey(msg.Left[0]), len(msg.Left))})
+		}
+		m.Refresh()
+		return m, m.RespawnPi()
+
+	case LoginSyncedMsg:
+		// The picker build needs the real Model and the union-import that
+		// just landed, so it re-enters src/builtin's hidden continuation
+		// instead of running as another blocking step.
+		return m, m.RunBuiltin(BuiltinLoginDialog, msg.Arg)
+
+	case LoginReloadMsg:
+		// In-place "reload models" on an open /login: refresh the picker
+		// first, then re-count models (same order as before). D is nil when
+		// the OAuth guide was closed over no /login dialog.
+		if msg.D != nil {
+			m.RefreshLoginKeys(msg.D)
+		}
+		m.Status = "reloading models…"
+		m.Refresh()
+		return m, func() tea.Msg {
+			models, err := m.Pi.GetModels()
+			if err != nil {
+				return SettingsRefreshMsg{Err: err}
+			}
+			return SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+		}
+
+	case OAuthGoneMsg:
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "failed to disconnect " + msg.Prov + ": " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		if msg.D != nil {
+			m.RefreshLoginKeys(msg.D)
+			msg.D.KeyCursor = loginKeysLen(msg.D) // land on the guide row
+		}
+		m.AddBlock(Block{Kind: "notice", Text: "disconnected OAuth " + msg.Prov + " (pi + pitago) — reconnecting…"})
+		m.Refresh()
+		return m, m.RespawnPi()
+
+	case SettingWrittenMsg:
+		if msg.Err != nil {
+			m.Status = "ready"
+			m.AddBlock(Block{Kind: "notice", Text: "settings write failed: " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		// The write already landed, so respawning here makes pi pick the
+		// new value up — the same write-then-respawn order as before.
+		if msg.Path == "terminal.showImages" || msg.Path == "terminal.imageWidthCells" {
+			m.ApplyImageSettings() // this TUI owns rendering; invalidate it immediately
+		}
+		msg.D.Options, msg.D.Descs, msg.D.Providers, msg.D.Settings = msg.Opts, msg.Descs, msg.Cats, msg.St
+		msg.D.Reindex()
+		m.Status = "reconnecting pi…"
+		m.Refresh()
+		return m, m.RespawnPi()
 
 	case UpdateCheckMsg:
 		m.handleUpdateCheck(msg)
@@ -810,7 +1039,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.liveBridge != nil {
 			m.liveBridge.SetOwnPID(msg.client.PID())
 		}
-		msg.client.OnEvent = func(e pirpc.Event) { ProgRef.Send(piEventMsg{e}) }
+		msg.client.SetOnEvent(func(e pirpc.Event) { ProgRef.Send(piEventMsg{e}) })
 		m.Status = "reloading…"
 		m.Refresh()
 		return m, m.fetchAll()
@@ -994,6 +1223,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// (warning pinned to the sidebar corner) and auto-disarms.
 			// Esc is the double-press mid-turn cancel key (same window).
 			if m.quitArmed() {
+				// Stop the live transport on the way out: a tail is a
+				// goroutine we own, and leaving it reading a foreign
+				// session file after the window is gone is a leak, not a
+				// feature.
+				m.StopLiveTransport()
 				return m, tea.Quit
 			}
 			m.quitArm = time.Now()
@@ -1067,7 +1301,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Status = "opening new session…"
 			m.Refresh()
 			return m, func() tea.Msg {
-				return SessionResetMsg{Err: m.Pi.NewSession()}
+				// NewSessionResult, not NewSession: pi answers
+				// new_session with {cancelled} when an extension vetoes the
+				// switch through session_before_switch, and the old
+				// wrapper dropped that flag — a cancelled Ctrl+N looked
+				// like a new session while the conversation stayed put.
+				res, err := m.Pi.NewSessionResult("")
+				return SessionResetMsg{Err: res.VetoErr("new_session", err)}
 			}
 		case tea.KeyCtrlP:
 			m.Status = "switching model…"
@@ -1084,6 +1324,18 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.escArm = time.Time{}
 				return m, nil
 			}
+			// A running !cmd is cancelled with one Esc (pi: onEscape →
+			// isBashRunning → session.abortBash(),
+			// interactive-mode.js:2336-2338). No turn is streaming then,
+			// so this never races the double-Esc turn cancel below.
+			if m.bashRunning {
+				return m, m.abortBashCmd()
+			}
+			// Same for pi's auto-retry loop: pi swaps Esc to abortRetry()
+			// while auto_retry_start is live (interactive-mode.js:2921-2929).
+			if m.retrying {
+				return m, m.abortRetryCmd()
+			}
 			if m.thinking {
 				// Double-press within 3s to cancel (Ctrl+C parity):
 				// a stray Esc only arms + auto-disarms.
@@ -1092,13 +1344,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.Status = "cancelling…"
 					m.Refresh()
 					return m, func() tea.Msg {
+						// Pi parity: an abort first pulls every queued
+						// steer/follow-up back into the editor
+						// (restoreQueuedMessagesToEditor) — the text the
+						// user already sent must survive the cancel.
 						steer, follow, _ := m.Pi.ClearQueue()
 						restored := append(steer, follow...)
-						if len(restored) > 0 {
-							_ = restored // returned text, shown as notice for brevity
-						}
 						_, err := m.Pi.Abort()
-						return sentAckMsg{err: err}
+						return escAbortMsg{restored: restored, err: err}
 					}
 				}
 				m.escArm = time.Now()
@@ -1109,6 +1362,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		case tea.KeyEnter:
+			// Alt+Enter queues a follow-up while pi is streaming, exactly
+			// like pi (prompt(text,{streamingBehavior:'followUp'}),
+			// interactive-mode.js:3546); idle, it is a plain submit.
+			if msg.Alt {
+				return m, m.submitFollowUp()
+			}
 			return m, m.submitInput()
 		}
 	}
@@ -1235,8 +1494,13 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 			m.blocks[i].ToolStatus = "done"
 		}
 		m.blocks[i].ToolResult = joinText(p.Result.Content)
+		// Always keep the diff, even when content is non-empty: pi's edit
+		// tool always reports a "Successfully replaced ..." line, so
+		// falling back to the diff only when ToolResult is empty means the
+		// change is never rendered.
+		m.blocks[i].ToolDiff = diffOfDetails(p.Result.Details)
 		if m.blocks[i].ToolResult == "" {
-			m.blocks[i].ToolResult = diffOfDetails(p.Result.Details)
+			m.blocks[i].ToolResult = m.blocks[i].ToolDiff
 		}
 		if isTodoTool(p.ToolName) {
 			f := envFields(ev.Raw, "details", "result")
@@ -1278,8 +1542,10 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 	case "compaction_end":
 		m.AddBlock(Block{Kind: "notice", Text: "context compacted"})
 	case "auto_retry_start":
-		m.AddBlock(Block{Kind: "notice", Text: "provider error, retrying…"})
+		m.retrying = true // Esc now aborts the retry (pi parity)
+		m.AddBlock(Block{Kind: "notice", Text: "provider error, retrying… (Esc to stop)"})
 	case "auto_retry_end":
+		m.retrying = false
 		var p struct {
 			Success bool `json:"success"`
 		}
@@ -1296,6 +1562,8 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 	case "pi_exited":
 		m.thinking = false
 		m.escArm = time.Time{}
+		m.bashRunning = false
+		m.retrying = false
 		m.pet = petState{}
 		m.clearTeamWidgetState()
 		if m.respawning {
@@ -1473,6 +1741,11 @@ func (m *Model) applyMessageEnd(raw []byte) tea.Cmd {
 			if m.blocks[i].ToolStatus == "running" {
 				m.blocks[i].ToolStatus = status
 			}
+			// Same as the live path: keep the diff regardless of content so
+			// reopening a live session shows the change, not the receipt.
+			if d := diffOfDetails(msg.Details); d != "" {
+				m.blocks[i].ToolDiff = d
+			}
 			if m.blocks[i].ToolResult == "" {
 				m.blocks[i].ToolResult = text
 			}
@@ -1536,6 +1809,11 @@ func (m *Model) restore(msgs []pirpc.AgentMessage) {
 					m.blocks[i].ToolStatus = "error"
 				}
 				m.blocks[i].ToolResult = text
+				// Restoring a past session must show the diff too, not just
+				// the receipt line the tool also reported.
+				if d := diffOfDetails(msg.Details); d != "" {
+					m.blocks[i].ToolDiff = d
+				}
 			}
 		case "bashExecution":
 			m.AddBlock(Block{Kind: "bash", Text: "$ " + msg.Command})
@@ -1622,13 +1900,37 @@ func (m Model) fireUI(cmd pirpc.Command) {
 func (m Model) handleUIRequest(raw []byte) Model {
 	var req pirpc.UIRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
+		// A payload we cannot read must still resolve on pi's side: the
+		// extension stays blocked on this request until it is answered or
+		// times out. Recover the id leniently and cancel. When even that
+		// fails there is no id in the payload, so pi has nothing pending
+		// under that request and there is nothing to answer.
+		if id, ok := looseUIRequestID(raw); ok {
+			m.AddBlock(Block{Kind: "notice", Text: "plugin UI không đọc được — đã hủy: " + id, Err: true})
+			m.fireUI(extension.FallbackResponse(id))
+			m.Refresh()
+		}
+		return m
+	}
+	// Follow mode is one-way and read-only, and the owned session keeps
+	// running underneath it. The bridge exports remote events and never
+	// carries an answer back, while fireUI would reply on the OWNED pi, which
+	// has no pending request under this id: a dialog would trap the user
+	// behind a prompt a read-only view cannot answer. And a remote
+	// set_editor_text would overwrite the user's OWN prompt textbox — they
+	// would unknowingly send the subagent's prefill to their own pi. So an
+	// explicit allowlist (notify/setStatus/setWidget/setTitle, the pure
+	// information the remote window already shows) is all a follower renders;
+	// everything else, known or added to pi later, is refused by default.
+	if m.followRemote && !extension.IsFollowSafeUI(req.Method) {
+		// addChatNotice, not a toast: the remote user is waiting on that
+		// prompt, so the refusal belongs in the transcript.
+		m.addChatNotice("remote plugin prompt ignored while following: "+req.Method, false)
+		m.refreshPiTasks()
+		m.Refresh()
 		return m
 	}
 	switch {
-	case extension.ShouldAutoCancel(req.Method):
-		// MVP: auto-cancel so the agent uses defaults/timeout
-		m.AddBlock(Block{Kind: "notice", Text: "plugin muốn mở editor — đã dùng mặc định"})
-		m.fireUI(extension.FallbackResponse(req.ID))
 	case req.Method == "select" || req.Method == "confirm":
 		kind := "ui"
 		title := extension.TitleFor(req.Method, req.Title)
@@ -1646,16 +1948,26 @@ func (m Model) handleUIRequest(raw []byte) Model {
 		d.Reindex()
 		m.Dialogs = append(m.Dialogs, d)
 		m.applyPopupH()
-	case req.Method == "input":
-		// free-text prompt (e.g. pi-tasks createTask subject/description):
-		// a real typing dialog, Esc cancels, Enter submits.
-		title := req.Title
-		if title == "" {
-			title = "Input"
+	case extension.IsTextMethod(req.Method):
+		// free-text prompt: ui.input (pi-tasks createTask subject/description)
+		// and ui.editor, which pi renders with the same input component and
+		// answers with {value}/{cancelled:true}. One dialog serves both: a
+		// real typing field, Esc cancels, Enter submits.
+		// pi seeds ui.editor with `prefill` and hints ui.input with
+		// `placeholder`; both are the value the extension means the user to
+		// start from. Seed the buffer from the prefill (tolerating the older
+		// `text` field) and keep the hint for an empty buffer, so the reply
+		// carries what the extension offered instead of a bare empty string.
+		prefill := req.Prefill
+		if prefill == "" {
+			prefill = req.Text
 		}
 		d := &Dialog{
 			ID: req.ID, Method: req.Method, Kind: "input",
-			Title: title, Message: req.Message, Filter: req.Text,
+			Title:       extension.TextTitleFor(req.Method, req.Title),
+			Message:     req.Message,
+			Filter:      prefill,
+			Placeholder: req.Placeholder,
 		}
 		m.Dialogs = append(m.Dialogs, d)
 		m.applyPopupH()
@@ -1669,30 +1981,49 @@ func (m Model) handleUIRequest(raw []byte) Model {
 			m.AddBlock(Block{Kind: "notice", Text: req.Message, Err: req.NotifyType == "error"})
 		}
 	case req.Method == "setStatus":
+		// pi-agents-team keeps first refusal for its own key (its status
+		// feeds the dashboard, not the footer). Everything else lands in
+		// the per-key registry: the old single `m.extStat` slot was
+		// last-writer-wins, so any plugin — pi-lens, lsp, fff, web-activity,
+		// plan-mode, mcp — silently stole the footer from the team and
+		// from every sibling.
 		if !m.setTeamStatus(req.StatusKey, req.StatusText) {
-			m.extStat = stripANSI(req.StatusText)
+			m.setExtStatus(req.StatusKey, req.StatusText)
 		}
 	case req.Method == "set_editor_text":
 		m.ta.SetValue(req.Text)
 		m.histIdx = -1
 	case req.Method == "setWidget":
 		// RPC mode carries string arrays only (component factories are
-		// ignored pi-side). Team state replaces the editor dashboard in
-		// place; ordinary widgets remain transient toasts and the async
-		// subagent widget retains its in-place transcript block.
-		if isTeamWidget(req.WidgetKey) {
-			m.setTeamWidget(req.WidgetLines, req.WidgetPlacement)
-		} else if len(req.WidgetLines) > 0 {
-			label := req.WidgetKey
-			if label == "" {
-				label = "plugin"
-			}
-			text := "[" + label + "]\n" + strings.Join(req.WidgetLines, "\n")
-			if isAgentProgressWidget(req.WidgetKey) {
-				m.setChatProgressWidget(req.WidgetKey, text, false)
+		// ignored pi-side). Two keys stay special-cased because they are
+		// load-bearing and covered by tests: the team dashboard replaces
+		// the editor block in place, and the async subagent progress
+		// widget keeps its single in-place transcript block.
+		// Every other key now gets a real panel — downgrading it to a
+		// one-shot notice is what made pi-lens / plan-mode / web-activity
+		// appear for an instant and then vanish.
+		switch {
+		case isTeamWidget(req.WidgetKey):
+			// A team widget drawn as a TUI component factory cannot cross a
+			// process boundary, so the bridge reports it as opaque and the
+			// live per-worker detail is simply unavailable. The worker roster
+			// itself is not lost: the followed session writes it to disk, so
+			// rebuild it from there instead of leaving the widget blank.
+			if req.WidgetOpaque {
+				m.refreshTeamFromSession()
 			} else {
-				m.AddBlock(Block{Kind: "notice", Text: text})
+				m.setTeamWidget(req.WidgetLines, req.WidgetPlacement)
 			}
+		case isAgentProgressWidget(req.WidgetKey):
+			if len(req.WidgetLines) == 0 {
+				m.clearChatProgressWidget(req.WidgetKey)
+			} else {
+				m.setChatProgressWidget(req.WidgetKey, extWidgetText(req.WidgetKey, req.WidgetLines), false)
+			}
+		default:
+			// Empty lines is pi's "this widget is gone" signal, and
+			// setExtWidget routes it to clearExtWidget: one key only.
+			m.setExtWidget(req.WidgetKey, req.WidgetLines, req.WidgetPlacement)
 		}
 	case req.Method == "setTitle":
 		// terminal window title: no TUI surface, ignore per protocol
@@ -1712,6 +2043,125 @@ func (m Model) handleUIRequest(raw []byte) Model {
 	m.refreshPiTasks()
 	m.Refresh()
 	return m
+}
+
+// extWidgetText formats a widget payload the way the transcript block
+// expects: an owner tag, then the plugin's own lines verbatim.
+func extWidgetText(key string, lines []string) string {
+	label := strings.TrimSpace(stripANSI(key))
+	if label == "" {
+		label = "plugin"
+	}
+	return "[" + label + "]\n" + strings.Join(lines, "\n")
+}
+
+// maxQueuedDialogs bounds the parked extension dialog queue. Past this the
+// oldest entry is cancelled, so a plugin that spams menus can never grow
+// the queue without limit — and, more importantly, can never leave one of
+// its requests unanswered.
+const maxQueuedDialogs = 32
+
+// queueDialogRequest parks a raw extension_ui_request while a dialog is
+// open. FIFO: plugins ask permission in causal order (pi-tasks
+// createTask → description → menu) and a reorder would answer the wrong
+// question. Overflow cancels the oldest so nothing blocks forever.
+func (m *Model) queueDialogRequest(raw []byte) {
+	if len(raw) == 0 {
+		return
+	}
+	if len(m.queuedDialogs) >= maxQueuedDialogs {
+		oldest := m.queuedDialogs[0]
+		m.queuedDialogs = m.queuedDialogs[1:]
+		m.cancelQueuedRequest(oldest)
+	}
+	m.queuedDialogs = append(m.queuedDialogs, append([]byte(nil), raw...))
+}
+
+// cancelQueuedRequest answers a parked request we are refusing to show.
+// Fire-and-forget payloads carry no dialog, so this is the only thing that
+// keeps a dropped request from stalling the extension.
+func (m *Model) cancelQueuedRequest(raw []byte) {
+	var req pirpc.UIRequest
+	if err := json.Unmarshal(raw, &req); err != nil || req.ID == "" {
+		return
+	}
+	m.AddBlock(Block{Kind: "notice", Text: "plugin menu bị bỏ qua (hàng đợi đầy): " + req.ID, Err: true})
+	m.fireUI(extension.FallbackResponse(req.ID))
+}
+
+// drainQueuedDialogs promotes the oldest parked request once the dialog
+// stack is empty. Fire-and-forget payloads never open a dialog, so the loop
+// cannot spin: each pass either consumes one queue entry or leaves a dialog
+// on the stack and stops. maxQueuedDialogs bounds it as a second guard.
+func (m *Model) drainQueuedDialogs() {
+	for i := 0; len(m.Dialogs) == 0 && i < maxQueuedDialogs; i++ {
+		if len(m.queuedDialogs) == 0 {
+			return
+		}
+		raw := m.queuedDialogs[0]
+		m.queuedDialogs = m.queuedDialogs[1:]
+		*m = m.handleUIRequest(raw)
+	}
+}
+
+// looseUIRequestID recovers the request id from a payload that failed the
+// strict UIRequest decode. Best effort on purpose: with no id there is no
+// pending request to answer, and a guessed id would cancel someone else's
+// dialog.
+func looseUIRequestID(raw []byte) (string, bool) {
+	var loose struct {
+		ID any `json:"id"`
+	}
+	if err := json.Unmarshal(raw, &loose); err != nil {
+		return "", false
+	}
+	switch v := loose.ID.(type) {
+	case string:
+		return v, v != ""
+	case float64:
+		return fmt.Sprintf("%.0f", v), true
+	}
+	return "", false
+}
+
+// clearChatProgressWidget retires one plugin's in-place transcript block
+// and leaves sibling progress widgets alone. Empty widgetLines is pi's
+// "widget is gone" signal; the old len>0 guard swallowed it, so the block
+// stayed on screen for the rest of the session. The row is marked done
+// rather than spliced out: deleting a mid-transcript block would shift
+// every index behind it, including the other plugins' progress rows.
+func (m *Model) clearChatProgressWidget(key string) {
+	key = strings.ToLower(strings.TrimSpace(stripANSI(key)))
+	i, ok := m.progressByKey[key]
+	if !ok {
+		return
+	}
+	delete(m.progressByKey, key)
+	if i >= 0 && i < len(m.blocks) && m.blocks[i].Kind == "notice" {
+		label := strings.TrimSpace(stripANSI(key))
+		if label == "" {
+			label = "plugin"
+		}
+		m.blocks[i].Text = "[" + label + "] done"
+	}
+}
+
+// filterableDialog reports pickers whose typing filters the option list.
+//
+// isFilterKind (src/app/pconfig.go) is deliberately NOT extended: it is the
+// generic-list predicate shared with the settings/login/session pickers, and
+// the extension pickers need one extra discriminator those do not have —
+// method. A "ui" *select* is a long, plugin-authored option list that was
+// unnavigable without typing; a "ui" *confirm* must not swallow y/n as
+// filter text, which is how the shortcuts are scoped.
+func filterableDialog(d *Dialog) bool {
+	if d == nil {
+		return false
+	}
+	if isFilterKind(d.Kind) || d.Kind == "askUser" {
+		return true
+	}
+	return d.Kind == "ui" && d.Method == "select"
 }
 
 func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1794,8 +2244,13 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+	case tea.KeyCtrlC:
+		// Dialog capture runs before the global ^C quit arm, so without an
+		// explicit case here a full-height plugin picker had no way out:
+		// ^C fell through to the rune/junk tail and did nothing.
+		return m.dismissDialog(d)
 	case tea.KeyBackspace:
-		if (isFilterKind(d.Kind) || d.Kind == "askUser" || d.Kind == "secret" || d.Kind == "rename" || d.Kind == "input") && d.Filter != "" {
+		if (filterableDialog(d) || d.Kind == "secret" || d.Kind == "rename" || d.Kind == "input") && d.Filter != "" {
 			r := []rune(d.Filter) // rune-wise: byte trim corrupts Vietnamese
 			d.Filter = string(r[:len(r)-1])
 			d.Reindex()
@@ -1821,20 +2276,16 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, m.pasteCmd(true) // paste into the dialog buffer
 		}
 		return m, nil
-	case tea.KeyEsc:
-		if d.Kind == "ui" || d.Kind == "askUser" {
-			m.answerDialog(d, -1)
-		} else if d.Kind == "input" {
-			m.answerInput(d, true)
-		} else {
-			m.Dialogs = m.Dialogs[1:]
-			// Events stay swallowed while a dialog is open: re-sync
-			// the sidebar in case task writes landed meanwhile.
-			m.refreshPiTasks()
-			m.Refresh()
-			return m, m.ReconcileTurnCmd()
+	case tea.KeyCtrlY:
+		// Copies the selected row and leaves the dialog open. Must sit
+		// above the rune tail: every unmodified rune is filter text, so
+		// Ctrl+Y is the only shape this can take.
+		if dialogCopyable(d) {
+			return m, m.copyDialogSelection(d)
 		}
 		return m, nil
+	case tea.KeyEsc:
+		return m.dismissDialog(d)
 	case tea.KeyTab:
 		if d.Kind == "sessions" {
 			return m, m.ReloadResumeScope(d) // pi: Tab toggles Current/All
@@ -1844,6 +2295,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if d.Kind == "shortcuts" { // help page: Enter closes like Esc
 			m.Dialogs = m.Dialogs[1:]
 			m.refreshPiTasks()
+			m.drainQueuedDialogs()
 			m.Refresh()
 			return m, m.ReconcileTurnCmd()
 		}
@@ -1852,7 +2304,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if km.Type == tea.KeySpace {
 		// space arrives as its own key (not Runes): typing contexts take
 		// it literally, option lists keep ignoring it.
-		if isFilterKind(d.Kind) || d.Kind == "askUser" {
+		if filterableDialog(d) {
 			d.Filter += " "
 			d.Reindex()
 			return m, nil
@@ -1864,7 +2316,7 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if km.Type == tea.KeyRunes {
-		if isFilterKind(d.Kind) || d.Kind == "askUser" {
+		if filterableDialog(d) {
 			// type to filter the picker
 			d.Filter += km.String()
 			d.Reindex()
@@ -1876,11 +2328,16 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		s := strings.ToLower(km.String())
-		if s == "y" && d.Method == "confirm" {
+		// y/n are confirm-only. Scoped to d.Method (not d.Kind) so they
+		// never fire on a *select* — the old `d.Kind == "ui"` guard
+		// answered a select with its last option, silently committing a
+		// choice the user never looked at. Runes never reach here for a
+		// select (filterableDialog), so this is belt-and-braces.
+		if d.Method == "confirm" && s == "y" {
 			m.answerDialog(d, 0)
 			return m, nil
 		}
-		if s == "n" && d.Kind == "ui" {
+		if d.Method == "confirm" && s == "n" {
 			m.answerDialog(d, len(d.Options)-1)
 			return m, nil
 		}
@@ -2132,18 +2589,24 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 	}
 	if d.Kind == "rename" {
 		// rename pops itself (login stays underneath) and saves via msg
-		// so the pipeline works even with the picker open.
+		// so the pipeline works even with the picker open. The keystore
+		// write is blocking file I/O, so it runs in the Cmd and reports
+		// back with the same message.
 		name := strings.TrimSpace(d.Filter)
 		prov, env, idx := d.LoginProvider, d.LoginEnv, d.RenameIdx
+		keyPath := m.KeyPath
 		m.Dialogs = m.Dialogs[1:]
+		m.drainQueuedDialogs()
 		m.Refresh()
 		return m, func() tea.Msg {
-			return RenameKeyMsg{Provider: prov, Env: env, Idx: idx, Name: name}
+			msg := RenameKeyMsg{Provider: prov, Env: env, Idx: idx, Name: name}
+			msg.Err = pirpc.RenameKey(keyPath, env, idx, name)
+			return msg
 		}
 	}
 	if d.Kind == "input" {
-		// free-text prompt: Enter submits the typed value (even empty —
-		// the extension treats empty as back/cancel).
+		// free-text prompt (ui.input / ui.editor): Enter submits the typed
+		// value (even empty — the extension treats empty as back/cancel).
 		m.answerInput(d, false)
 		return m, nil
 	}
@@ -2166,14 +2629,40 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// answerInput replies to an extension free-text input dialog (Enter submits
-// the typed value, Esc cancels). Either way the extension resumes — e.g.
-// pi-tasks createTask advances to the description prompt or back to its menu.
+// answerInput replies to an extension free-text dialog (ui.input /
+// ui.editor). Enter submits the typed value, Esc cancels. Either way the
+// extension resumes — e.g. pi-tasks createTask advances to the description
+// prompt or back to its menu.
+// dismissDialog closes the top dialog the way Esc does — used by Esc and by
+// the new Ctrl+C case — and promotes the next parked extension request.
+func (m Model) dismissDialog(d *Dialog) (tea.Model, tea.Cmd) {
+	if d.Kind == "ui" || d.Kind == "askUser" {
+		m.answerDialog(d, -1)
+	} else if d.Kind == "input" {
+		m.answerInput(d, true)
+	} else {
+		m.Dialogs = m.Dialogs[1:]
+		// Events stay swallowed while a dialog is open: re-sync
+		// the sidebar in case task writes landed meanwhile.
+		m.refreshPiTasks()
+		m.drainQueuedDialogs()
+		m.Refresh()
+		return m, m.ReconcileTurnCmd()
+	}
+	m.drainQueuedDialogs()
+	return m, nil
+}
+
 func (m *Model) answerInput(d *Dialog, cancelled bool) {
 	m.Dialogs = m.Dialogs[1:]
-	_ = m.Pi.Fire(extension.InputResponse(d.ID, d.Filter, cancelled))
+	// fireUI, not m.Pi.Fire: Esc on a queued input dialog is now a routine
+	// path (the drain promotes one after every close), and a nil client —
+	// tests, or the window before a respawn reconnects — used to panic and
+	// take the whole TUI down.
+	m.fireUI(extension.TextResponse(d.ID, d.Filter, cancelled))
 	m.refreshPiTasks() // /tasks-menu writes land in the store file
 	m.applyPopupH()
+	m.drainQueuedDialogs()
 	m.Refresh()
 }
 
@@ -2190,6 +2679,7 @@ func (m *Model) answerDialog(d *Dialog, choice int) {
 	m.Dialogs = m.Dialogs[1:]
 	m.fireUI(extension.Response(d.ID, d.Method, choice, d.Options))
 	m.applyPopupH()
+	m.drainQueuedDialogs()
 	m.Refresh()
 }
 
@@ -2656,25 +3146,20 @@ func (m Model) updateLoginDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) 
 }
 
 // openRenameDialog pushes a name prompt on top of /login (login stays at
-// [1] so Enter/Esc returns to it, never to the main screen).
+// [1] so Enter/Esc returns to it, never to the main screen). The keystore
+// read that prefills it runs off the event loop, so the prompt is pushed
+// from the LoginRenameOpenMsg handler.
 func (m Model) openRenameDialog(d *Dialog) (tea.Model, tea.Cmd) {
 	nk := loginKeysLen(d)
 	if d.KeyCursor < 0 || d.KeyCursor >= nk {
 		return m, nil
 	}
-	items, _ := pirpc.ListKeyItems(m.KeyPath, d.LoginEnv)
-	pre := ""
-	if d.KeyCursor < len(items) {
-		pre = items[d.KeyCursor].Name
+	prov, env, idx := d.LoginProvider, d.LoginEnv, d.KeyCursor
+	keyPath := m.KeyPath
+	return m, func() tea.Msg {
+		items, _ := pirpc.ListKeyItems(keyPath, env)
+		return LoginRenameOpenMsg{Provider: prov, Env: env, Items: items, Idx: idx}
 	}
-	r := &Dialog{Kind: "rename", Title: "Rename key — " + d.LoginProvider,
-		Message:       "Name is display-only (pitago keystore). Empty clears it. Enter saves, Esc back to /login.",
-		Filter:        pre,
-		LoginProvider: d.LoginProvider, LoginEnv: d.LoginEnv,
-		RenameIdx: d.KeyCursor}
-	m.Dialogs = append([]*Dialog{r}, m.Dialogs...)
-	m.Refresh()
-	return m, nil
 }
 
 // confirmLoginKey runs Enter on the right pane: use a key, add one, guide
@@ -2683,20 +3168,22 @@ func (m Model) openRenameDialog(d *Dialog) (tea.Model, tea.Cmd) {
 func (m Model) confirmLoginKey(d *Dialog) (tea.Model, tea.Cmd) {
 	nk := loginKeysLen(d)
 	if d.KeyCursor < nk {
-		prov, env := d.LoginProvider, d.LoginEnv
-		idx := d.KeyCursor
-		keys, _ := pirpc.ListKeys(m.KeyPath, env)
-		masked := ""
-		if idx >= 0 && idx < len(keys) {
-			masked = pirpc.MaskKey(keys[idx])
+		prov, env, idx := d.LoginProvider, d.LoginEnv, d.KeyCursor
+		keyPath := m.KeyPath
+		// Keystore read, activation and the push to pi are blocking file
+		// I/O: all of it runs in the Cmd, so the notice's key is the one
+		// that was actually made active.
+		return m, func() tea.Msg {
+			keys, _ := pirpc.ListKeys(keyPath, env)
+			masked := ""
+			if idx >= 0 && idx < len(keys) {
+				masked = pirpc.MaskKey(keys[idx])
+			}
+			_ = pirpc.SetActive(keyPath, env, idx)
+			// Selecting a key pushes it to pi (auth.json wins over env).
+			pirpc.PushActiveToPi(keyPath, env)
+			return LoginSwitchMsg{Prov: prov, Masked: masked, D: d}
 		}
-		_ = pirpc.SetActive(m.KeyPath, env, idx)
-		// Selecting a key pushes it to pi (auth.json wins over env).
-		pirpc.PushActiveToPi(m.KeyPath, env)
-		m.RefreshLoginKeys(d)
-		m.AddBlock(Block{Kind: "notice", Text: "switched " + prov + " to key " + masked + " → pi — reconnecting…"})
-		m.Refresh()
-		return m, m.RespawnPi()
 	}
 	ai := d.KeyCursor - nk
 	if ai < 0 || ai >= len(d.LoginActions) {
@@ -2731,17 +3218,14 @@ func (m Model) loginAction(d *Dialog, ai int) (tea.Model, tea.Cmd) {
 	case "disconnect":
 		return m.disconnectOAuth(d)
 	default: // reload models — stay open, re-import pi first
-		pirpc.SyncFromPi(m.KeyPath)
-		pirpc.SyncAuthStateFromPi(m.authPath())
-		m.RefreshLoginKeys(d)
-		m.Status = "reloading models…"
-		m.Refresh()
+		// SyncFromPi + the authState mirror are blocking file I/O; they run
+		// off the event loop and land as LoginReloadMsg, which then refreshes
+		// the picker and re-counts models in the original order.
+		keyPath, authPath := m.KeyPath, m.authPath()
 		return m, func() tea.Msg {
-			models, err := m.Pi.GetModels()
-			if err != nil {
-				return SettingsRefreshMsg{Err: err}
-			}
-			return SettingsRefreshMsg{Notice: fmt.Sprintf("pi sees %d models", len(models))}
+			pirpc.SyncFromPi(keyPath)
+			pirpc.SyncAuthStateFromPi(authPath)
+			return LoginReloadMsg{D: d}
 		}
 	}
 }
@@ -2761,19 +3245,20 @@ func (m Model) openOAuthGuide(d *Dialog) (tea.Model, tea.Cmd) {
 
 // disconnectOAuth logs a provider out of its pi subscription: drops pi's
 // OAuth entry + pitago's mirror, stays on /login, reconnects behind it.
+// The teardown is blocking file I/O, so it runs off the event loop and lands
+// as OAuthGoneMsg (which refreshes the keys, then respawns).
 func (m Model) disconnectOAuth(d *Dialog) (tea.Model, tea.Cmd) {
 	prov := d.LoginProvider
 	if prov == "" || !d.LoginOAuth {
 		return m, nil
 	}
-	_ = pirpc.DeletePiAuth(prov)
-	pirpc.ForgetAuthState(m.authPath(), prov)
-	pirpc.SyncAuthStateFromPi(m.authPath())
-	m.RefreshLoginKeys(d)
-	d.KeyCursor = loginKeysLen(d) // land on the guide row
-	m.AddBlock(Block{Kind: "notice", Text: "disconnected OAuth " + prov + " (pi + pitago) — reconnecting…"})
-	m.Refresh()
-	return m, m.RespawnPi()
+	authPath := m.authPath()
+	return m, func() tea.Msg {
+		_ = pirpc.DeletePiAuth(prov)
+		pirpc.ForgetAuthState(authPath, prov)
+		pirpc.SyncAuthStateFromPi(authPath)
+		return OAuthGoneMsg{Prov: prov, D: d}
+	}
 }
 
 // authPath returns pitago's pi-login mirror path ("" when unconfigured).
@@ -2802,37 +3287,29 @@ func (m Model) deleteLoginKey(d *Dialog) (tea.Model, tea.Cmd) {
 	prov, env := d.LoginProvider, d.LoginEnv
 	idx := d.KeyCursor
 	isActive := idx == d.KeyActive
+	keyPath := m.KeyPath
+	// Delete + push + re-read all run in one Cmd: the trailing read must
+	// never observe a keystore whose write is still in flight, since its
+	// result decides the notice.
 	if !isActive {
-		_ = pirpc.DeleteKeyAt(m.KeyPath, env, idx)
-		m.RefreshLoginKeys(d)
-		if d.KeyCursor >= len(d.Options) {
-			d.KeyCursor = 0
+		return m, func() tea.Msg {
+			_ = pirpc.DeleteKeyAt(keyPath, env, idx)
+			return LoginDeleteMsg{Prov: prov, D: d}
 		}
-		m.Refresh()
-		return m, nil
 	}
-	keysBefore, _ := pirpc.ListKeys(m.KeyPath, env)
-	masked := ""
-	if idx >= 0 && idx < len(keysBefore) {
-		masked = pirpc.MaskKey(keysBefore[idx])
+	return m, func() tea.Msg {
+		keysBefore, _ := pirpc.ListKeys(keyPath, env)
+		masked := ""
+		if idx >= 0 && idx < len(keysBefore) {
+			masked = pirpc.MaskKey(keysBefore[idx])
+		}
+		_ = pirpc.DeleteKeyAt(keyPath, env, idx)
+		// Keep pi in sync: last key removes pi's entry, otherwise pi follows
+		// the new active key.
+		pirpc.PushActiveToPi(keyPath, env)
+		keys, _ := pirpc.ListKeys(keyPath, env)
+		return LoginDeleteMsg{Prov: prov, Masked: masked, Left: keys, Active: true, D: d}
 	}
-	_ = pirpc.DeleteKeyAt(m.KeyPath, env, idx)
-	// Keep pi in sync: last key removes pi's entry, otherwise pi follows
-	// the new active key.
-	pirpc.PushActiveToPi(m.KeyPath, env)
-	m.RefreshLoginKeys(d)
-	if d.KeyCursor >= len(d.Options) {
-		d.KeyCursor = 0
-	}
-	keys, _ := pirpc.ListKeys(m.KeyPath, env)
-	if len(keys) == 0 {
-		m.AddBlock(Block{Kind: "notice", Text: "deleted key " + prov + " " + masked + " (last key) → pi — reconnecting…"})
-	} else {
-		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("deleted key %s %s — switched to %s (%d left) → pi, reconnecting…",
-			prov, masked, pirpc.MaskKey(keys[0]), len(keys))})
-	}
-	m.Refresh()
-	return m, m.RespawnPi()
 }
 
 // pollCmds periodically reloads pi commands (auto-detects new ones).

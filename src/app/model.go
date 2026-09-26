@@ -47,6 +47,7 @@ type Dialog struct {
 	Payload           []string          // yank picker: full text per option; login: raw keys ("" for action rows)
 	Cursor            int
 	Filter            string // picker filter / secret buffer / rename buffer
+	Placeholder       string // free-text dialog: dim hint shown while the buffer is empty
 	FIdx              []int
 	FavSet            map[string]bool // model picker: starred provider\x00id (★ column, sorted first)
 	PIdx              []int           // login: filtered provider indices into Provs
@@ -96,14 +97,21 @@ type Model struct {
 	sideVp              viewport.Model // sidebar scroll: clips content to sideH, Ctrl/Alt+↑↓/PgUp/PgDn or wheel over it scrolls
 	ta                  textarea.Model
 	Pi                  *pirpc.Client
-	liveBridge          *live.Bridge // foreign Pi SSE bridge (read-only)
-	followRemote        bool         // true while rendering a foreign session
+	liveBridge          *live.Bridge     // foreign Pi SSE bridge (read-only)
+	liveTail            *live.Tail       // foreign Pi session-file tail (read-only, any running pi)
+	liveSource          live.Source      // which transport is attached; empty when none is
+	liveSessionFile     string           // owned session file displaced by follow mode, restored on detach
+	liveBridgeInstalled bool             // the bridge extension install was already attempted/reported
+	liveCands           []live.Candidate // /live picker rows (parallel to the live dialog Options)
+	followRemote        bool             // true while rendering a foreign session
 	liveConnected       bool
 	remoteSession       string
 	liveGeneration      uint64 // invalidates transport messages queued before detach
 	blocks              []Block
 	toasts              []Toast        // ephemeral popups (model switch, yank…): never in chat history
 	notificationHistory []Toast        // session-RAM log of emitted toasts; bounded, never persisted
+	copyHint            string         // transient "copied N chars" shown in an open dialog's footer
+	copyGen             int            // guards the copyHint timer: a 2nd copy must not be cleared by the 1st
 	tools               map[string]int // toolCallId -> block index
 	progressByKey       map[string]int // extension widget key -> live chat block index
 	curAsst             int
@@ -112,13 +120,19 @@ type Model struct {
 	thinkDelta          bool // thinking deltas streamed into curThink (same)
 	thinking            bool
 	Status              string
-	extStat             string
-	TeamWidgetLines     []string // live pi-agents-team dashboard lines
-	TeamWidgetPlacement string   // aboveEditor (default) or belowEditor
-	TeamStatus          string   // pi-agent-team status text
-	TeamWidgetVisible   bool     // explicit /team visibility preference
-	TeamWidgetSeen      bool     // widget state exists in the current cycle
-	planOn              bool     // plan-mode latch, live only: set on Start choice, cleared on /new (heuristic, extension has no plan flag in get_state)
+	extStat             string                     // derived one-line footer summary; source of truth is extStatus
+	extStatus           map[string]string          // statusKey -> live text (9 plugins share this surface)
+	extStatusSeq        []string                   // LRU order, most recent last
+	extWidget           map[string]*extWidgetPanel // widgetKey -> persistent panel (setWidget)
+	extWidgetSeq        []string
+	queuedDialogs       [][]byte        // extension_ui_request payloads awaiting a free dialog slot
+	extCmdWait          map[string]bool // in-flight synchronous extension commands ("/team")
+	TeamWidgetLines     []string        // live pi-agents-team dashboard lines
+	TeamWidgetPlacement string          // aboveEditor (default) or belowEditor
+	TeamStatus          string          // pi-agent-team status text
+	TeamWidgetVisible   bool            // explicit /team visibility preference
+	TeamWidgetSeen      bool            // widget state exists in the current cycle
+	planOn              bool            // plan-mode latch, live only: set on Start choice, cleared on /new (heuristic, extension has no plan flag in get_state)
 	ready               bool
 	winW                int
 	winH                int
@@ -153,7 +167,6 @@ type Model struct {
 	Side                map[string]bool // sidebar section visibility (nil entry = default; MCP + Plugins + Commands hide)
 	Dialogs             []*Dialog
 	connErr             string
-	AutoRetry           bool                    // no RPC getter; tracked locally (default on)
 	HideThinking        bool                    // /settings: skip thinking blocks in chat (pi parity, pitago-local)
 	ShowImages          bool                    // terminal.showImages
 	ImageWidthCells     int                     // terminal.imageWidthCells
@@ -176,6 +189,8 @@ type Model struct {
 	atPrefix            string
 	atItems             []mention.Item
 	imgAtts             []imgAttach // input tray: dropped/pasted/@-completed images as [Image N] chips
+	bashRunning         bool        // a "!cmd" runs through pi right now (Esc aborts it, pi parity)
+	retrying            bool        // pi is auto-retrying a failed turn (Esc aborts the retry)
 	imgSeq              int         // chip counter, never renumbered
 	trayFocus           bool        // cursor moved into the tray (↓ from last input line)
 	imgCursor           int         // selected chip while trayFocus
@@ -193,6 +208,7 @@ type Model struct {
 	ThemeName           string            // active TUI theme (/theme, --theme flag)
 	themePath           string            // persisted theme ("" = don't persist)
 	prefsPath           string            // persisted pitago-local prefs ("" = don't persist)
+	savedModel          *ModelRef         // last user-picked model this process wrote (in-memory mirror of prefs.currentModel)
 	builtins            []Builtin
 	confirm             map[string]ConfirmFunc
 	expandTools         bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
@@ -207,6 +223,7 @@ type Model struct {
 	plugAt              time.Time // first press timestamp for the pending plugin op
 	renderCache         []string  // per-block rendered output (renderBlocks reuses clean history)
 	renderCacheKey      []uint64  // fingerprint parallel to renderCache (see blockKey)
+	chatContent         string    // transcript string currently loaded into vp (setChatContent skips an unchanged re-measure)
 	sideCache           string    // last built sidebar content (streaming reuses within sideThrottle)
 	sideCacheAt         time.Time // last sidebar rebuild
 	lastPaint           time.Time // last chat viewport paint (streaming coalesces to streamFrame)
@@ -278,7 +295,25 @@ type wsMsg struct {
 	data wsData
 }
 
-type sentAckMsg struct{ err error }
+// sentAckMsg reports a submitted message. err is set only when pi refused
+// the message outright; text is then handed back to the editor so a refused
+// send never silently drops what the user wrote. queued marks the self-heal
+// path: pitago believed pi was idle, pi was still streaming, and the message
+// went into pi's follow-up queue instead of being lost.
+type sentAckMsg struct {
+	err    error
+	text   string
+	queued bool
+	tray   []imgAttach // chips consumed by the send, returned on refusal
+}
+
+// escAbortMsg reports the double-Esc cancel: cleared steer/follow-up text
+// (pi parity — an abort restores the queue into the editor) plus the abort
+// error, since the queue restore and the abort are one RPC round trip.
+type escAbortMsg struct {
+	restored []string
+	err      error
+}
 
 type quitDisarmMsg struct{ gen int } // quit-arm window elapsed
 
@@ -290,7 +325,6 @@ type ModelCycleMsg struct {
 	Label    string
 	Provider string // may be "" (cycle path); resolved label-only entry
 	ID       string // model id when known, else ""
-	Restored bool   // true when re-applied after /new (notice says "restored")
 	Err      error
 }
 
@@ -347,14 +381,21 @@ type SettingsRefreshMsg struct {
 	Err    error
 }
 
+// LoginKeyMsg carries a saved provider key. The keystore write and the
+// push to pi's auth.json are blocking file I/O, so the producer runs them
+// in its Cmd and reports the outcome here (Err set => nothing was written).
 type LoginKeyMsg struct {
 	Provider, Env, Key string
+	Err                error
 }
 
+// RenameKeyMsg carries a key rename, written off the event loop by the
+// producer (Err set => the keystore is unchanged).
 type RenameKeyMsg struct {
 	Provider, Env string
 	Idx           int
 	Name          string
+	Err           error
 }
 
 type respawnMsg struct {
@@ -366,6 +407,88 @@ type CmdsRefreshMsg struct {
 	Cmds     []pirpc.RepoCommand
 	Err      error
 	Announce bool // manual /reload: reports the result
+}
+
+// The messages below carry work that MUST NOT run on the event loop: RPC
+// round-trips and settings/auth file I/O. Each is produced by a tea.Cmd and
+// finished by a handler in update.go, so the render loop and pi's readLoop
+// stay unblocked (msgs is unbuffered — one blocking call freezes both).
+
+// LoginRenameOpenMsg carries the keystore rows read off the event loop so
+// the rename prompt can be prefilled and pushed from the handler.
+type LoginRenameOpenMsg struct {
+	Provider, Env string
+	Items         []pirpc.KeyItem
+	Idx           int
+}
+
+// LoginSwitchMsg reports that "use this key" finished off the event loop:
+// the key became active and was pushed to pi's auth.json. Masked is the key
+// as the notice spells it, read before the write.
+type LoginSwitchMsg struct {
+	Prov, Masked string
+	D            *Dialog
+}
+
+// LoginDeleteMsg reports that a key delete finished off the event loop. The
+// keystore delete, the push to pi and the re-read all happen in one Cmd, so
+// Left always describes a keystore that has already been written. Active
+// marks the deleted key as the active one: only then does pi respawn, and
+// only then does the notice report a switch.
+type LoginDeleteMsg struct {
+	Prov, Masked string
+	Left         []string
+	Active       bool
+	D            *Dialog
+}
+
+// LogoutListMsg carries the logout picker rows read off the event loop, so
+// the dialog (and the "nothing to remove" notice) is built on it. An empty
+// Opts means there is nothing to remove.
+type LogoutListMsg struct {
+	Arg         string
+	Opts, Descs []string
+}
+
+// LogoutDoneMsg reports a /logout teardown that ran off the event loop.
+// Which branch the provider took is decided there and carried in Kind, so
+// the notice and the respawn still come from one handler.
+type LogoutDoneMsg struct {
+	Provider string
+	Kind     string // "no-keys" | "failed" | "deleted"
+	Masked   string
+	Left     []string
+	Err      error
+}
+
+// LoginSyncedMsg reports that /login's off-loop pi re-import finished
+// (SyncFromPi union-import + the authState mirror). src/builtin owns the
+// picker build, so Update re-enters the hidden BuiltinLoginDialog builtin.
+type LoginSyncedMsg struct{ Arg string }
+
+// LoginReloadMsg reports the same re-import for the in-place "reload models"
+// action on an open /login dialog: refresh that dialog, then re-count models.
+type LoginReloadMsg struct{ D *Dialog }
+
+// OAuthGoneMsg reports an off-loop OAuth teardown (pi's auth.json entry plus
+// pitago's mirror). Both disconnect paths share it; D is the /login dialog to
+// refresh in place (nil when the caller already popped it).
+type OAuthGoneMsg struct {
+	Prov string
+	D    *Dialog
+	Err  error
+}
+
+// SettingWrittenMsg reports a settings.json write done off the event loop.
+// The rebuilt rows ship with it because settingsOptions lives in src/builtin;
+// the handler applies the row and only then respawns pi, so the respawn still
+// reads the new value.
+type SettingWrittenMsg struct {
+	D                 *Dialog
+	Path              string
+	St                SettingsState
+	Opts, Descs, Cats []string
+	Err               error
 }
 
 func New(pi *pirpc.Client, cwd string) Model {
@@ -402,13 +525,14 @@ func New(pi *pirpc.Client, cwd string) Model {
 		Status:        "connecting to pi…",
 		cwd:           cwd,
 		ModelLbl:      "…",
-		AutoRetry:     true,
 		showPlugins:   true, // PLUGINS starts expanded
 	}
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true), m.runLiveBridge())
+	// No auto-attach: /live is the only way into follow mode, and it starts
+	// the transport on demand (see ToggleLiveSession).
+	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true))
 }
 
 // fetchAll loads state/messages/stats/commands after (re)connect.
@@ -508,21 +632,39 @@ func (m *Model) setToolArgs(i int, name, raw string) {
 
 // extensionCmdAckMsg reports extension-command RPC errors without changing
 // model-turn state. Successful synchronous commands emit no agent_start.
-type extensionCmdAckMsg struct{ err error }
+//
+// name is the command that owns a visible lifecycle ("" when none does).
+// Update consults it so a command that already opened a lifecycle window
+// does not also print a bare inline error: the watchdog that owns that
+// window reports the failure once, with the real cause.
+type extensionCmdAckMsg struct {
+	err  error
+	name string
+}
 
 // ForwardExtensionCommand sends an extension slash command without entering
 // the model-turn "Working..." state. It always uses prompt (not steer), since
 // the command handler—not a new agent turn—consumes the request.
 func (m *Model) ForwardExtensionCommand(text string) tea.Cmd {
+	return m.forwardExtensionCommandNamed(text, "")
+}
+
+// forwardExtensionCommandNamed is ForwardExtensionCommand with the lifecycle
+// owner attached. A caller that armed beginExtCmd passes its own name so the
+// ack defers error reporting to endExtCmd/the watchdog.
+func (m *Model) forwardExtensionCommandNamed(text, name string) tea.Cmd {
 	return func() tea.Msg {
 		if m.Pi == nil {
-			return extensionCmdAckMsg{err: fmt.Errorf("pi is not connected")}
+			return extensionCmdAckMsg{name: name, err: fmt.Errorf("pi is not connected")}
 		}
 		_, err := m.Pi.Prompt(text)
-		return extensionCmdAckMsg{err: err}
+		return extensionCmdAckMsg{name: name, err: err}
 	}
 }
 
+// sendCmd submits a message. steer keeps pi's steering behaviour (never
+// downgraded to a plain prompt); a plain prompt self-heals when pi turns out
+// to be streaming anyway — see the AgentBusyError branch below.
 func (m *Model) sendCmd(steer bool, text string, images []pirpc.ImageContent) tea.Cmd {
 	m.thinking = true
 	m.escArm = time.Time{} // fresh turn drops a stale cancel arm
@@ -531,23 +673,85 @@ func (m *Model) sendCmd(steer bool, text string, images []pirpc.ImageContent) te
 	return func() tea.Msg {
 		var err error
 		if steer {
+			// Pi parity: steer is never downgraded to a plain prompt.
+			// pi calls session.steer(...) directly; a failure is reported,
+			// not silently re-sent as a fresh turn.
 			_, err = m.Pi.Steer(text, images...)
-			if err != nil { // fallback: follow_up via plain prompt
-				_, err = m.Pi.Prompt(text, images...)
-			}
-		} else {
-			_, err = m.Pi.Prompt(text, images...)
+			return sentAckMsg{err: err, text: text}
 		}
-		return sentAckMsg{err: err}
+		_, err = m.Pi.Prompt(text, images...)
+		if !pirpc.IsAgentBusy(err) {
+			return sentAckMsg{err: err, text: text}
+		}
+		// Self-heal the desync. pitago's streaming flag and pi's isStreaming
+		// can disagree (a turn pitago already considers settled, a steer pi
+		// has not started draining, a slow agent_settled). pi answers
+		// success:false with "Agent is already processing. Specify
+		// streamingBehavior ('steer' or 'followUp') to queue the message."
+		// (dist/core/agent-session.js:1243-1246) — that refusal is the
+		// reliable signal, and it never means the text was taken. Queue it
+		// as a follow-up instead of losing it; the follow-up then runs when
+		// the turn ends, which is also what pi's own Alt+Enter does
+		// (dist/modes/interactive/interactive-mode.js:3546).
+		if _, ferr := m.Pi.FollowUp(text, images...); ferr != nil {
+			return sentAckMsg{err: ferr, text: text}
+		}
+		return sentAckMsg{queued: true, text: text}
 	}
 }
+
+// sendFollowUpCmd queues the input to run after the current turn (pi's
+// Alt+Enter: prompt(text,{streamingBehavior:'followUp'})). The message is
+// not lost: it waits in pi's queue and the sidebar shows it there.
+func (m *Model) sendFollowUpCmd(text string, images []pirpc.ImageContent) tea.Cmd {
+	m.thinking = true
+	m.escArm = time.Time{}
+	m.Status = "queued as follow-up…"
+	m.RefreshFollow()
+	return func() tea.Msg {
+		_, err := m.Pi.FollowUp(text, images...)
+		return sentAckMsg{err: err, text: text, queued: err == nil}
+	}
+}
+
+// Send modes for one submit. pi picks the behaviour from session.isStreaming
+// on every submit (interactive-mode.js:2617-2622): Enter steers a running
+// turn, Alt+Enter queues a follow-up.
+const (
+	sendPrompt   = iota // idle: pi starts a new turn
+	sendSteer           // streaming + Enter: steers the running turn
+	sendFollowUp        // streaming + Alt+Enter: queued for after the turn
+)
 
 // submitInput sends the input (or steers mid-turn). Shared by Enter and
 // tray-Enter. Empty text + tray sends the images alone.
 func (m *Model) submitInput() tea.Cmd {
+	return m.submit(sendPrompt)
+}
+
+// submitFollowUp is Alt+Enter. pi queues a follow-up while streaming and
+// treats Alt+Enter as a plain submit when idle
+// (interactive-mode.js:3536-3558).
+func (m *Model) submitFollowUp() tea.Cmd {
+	return m.submit(sendFollowUp)
+}
+
+func (m *Model) submit(mode int) tea.Cmd {
 	text := strings.TrimSpace(m.ta.Value())
 	if text == "" && len(m.imgAtts) == 0 {
 		return nil
+	}
+	if mode == sendFollowUp && !m.thinking {
+		mode = sendPrompt // pi: Alt+Enter is an ordinary submit while idle
+	}
+	// "!cmd" is pi's shell escape (interactive-mode.js:2587-2601): the
+	// command runs in the session cwd through pi's own bash RPC, so its
+	// output is a session entry the model can see. pitago never spawns a
+	// shell of its own. "!!cmd" keeps the output out of the model's
+	// context (excludeFromContext). Images ride a prompt, not a bash call,
+	// so a tray full of chips sends the text as a normal message.
+	if cmd, exclude, ok := piBashCommand(text); ok && len(m.imgAtts) == 0 {
+		return m.runBashCmd(cmd, exclude, text)
 	}
 	m.pushHist(text)
 	m.histIdx = -1
@@ -562,6 +766,10 @@ func (m *Model) submitInput() tea.Cmd {
 	// stays so history keeps the file ref, images ride the RPC.
 	// Tray chips (drops/pastes/Tab-completed @) join in too.
 	images, notes := m.takeImages(text)
+	// Tray chips are consumed by the send; a refused send must give them
+	// back, or an image the user picked would silently vanish. Snapshot
+	// before takeImages clears the tray.
+	tray := append([]imgAttach(nil), m.imgAtts...)
 	for _, n := range notes {
 		m.AddBlock(Block{Kind: "notice", Text: n, Err: images == nil})
 	}
@@ -571,15 +779,75 @@ func (m *Model) submitInput() tea.Cmd {
 		m.Refresh()
 		return nil
 	}
-	if m.thinking {
+	if mode == sendFollowUp {
 		m.ta.Reset()
 		m.closeAt()
-		return m.sendCmd(true, text, images)
+		m.Refresh()
+		return withTrayRestore(m.sendFollowUpCmd(text, images), tray)
+	}
+	m.imgAtts = tray // a refused send keeps the chips; a sent one drops them
+	if mode == sendSteer || m.thinking {
+		m.ta.Reset()
+		m.closeAt()
+		return withTrayRestore(m.sendCmd(true, text, images), tray)
 	}
 	m.ta.Reset()
 	m.closeAt()
 	m.Refresh()
-	return m.sendCmd(false, text, images)
+	return withTrayRestore(m.sendCmd(false, text, images), tray)
+}
+
+// withTrayRestore hands the consumed tray chips to the ack so a refused
+// send can put them back in the input (a send pi never accepted must not
+// cost the user their attachments).
+func withTrayRestore(cmd tea.Cmd, tray []imgAttach) tea.Cmd {
+	if len(tray) == 0 {
+		return cmd
+	}
+	inner := cmd
+	return func() tea.Msg {
+		msg := inner()
+		if ack, ok := msg.(sentAckMsg); ok {
+			ack.tray = tray
+			return ack
+		}
+		return msg
+	}
+}
+
+// piBashCommand parses pi's shell escape: "!cmd" runs the command,
+// "!!cmd" keeps the output out of the model's context. A bare "!" is not a
+// command (pi needs a non-empty body) and stays chat text.
+func piBashCommand(text string) (string, bool, bool) {
+	if !strings.HasPrefix(text, "!") {
+		return "", false, false
+	}
+	exclude := strings.HasPrefix(text, "!!")
+	body := text[1:]
+	if exclude {
+		body = text[2:]
+	}
+	body = strings.TrimSpace(body)
+	if body == "" {
+		return "", false, false
+	}
+	return body, exclude, true
+}
+
+// restoreQueuedToEditor puts messages cleared off pi's queue back into the
+// input, pi parity: on abort pi prepends the queued text to whatever the
+// user has typed (restoreQueuedMessagesToEditor → setText(queued ⧺⧺ current)).
+// Dropping them would silently discard text the user already sent.
+func (m *Model) restoreQueuedToEditor(queued []string) {
+	parts := make([]string, 0, 2)
+	if joined := strings.Join(queued, "\n\n"); strings.TrimSpace(joined) != "" {
+		parts = append(parts, joined)
+	}
+	if cur := m.ta.Value(); strings.TrimSpace(cur) != "" {
+		parts = append(parts, cur)
+	}
+	m.ta.SetValue(strings.Join(parts, "\n\n"))
+	m.histIdx = -1 // restored text is live input, not a recalled message
 }
 
 func (m *Model) queryStats() tea.Cmd {
@@ -671,13 +939,60 @@ func (m *Model) SwitchSession(path string) tea.Cmd {
 	}
 }
 
+// paintHook observes every repaint. It is nil in production (one nil check
+// per frame) and set only by tests that pin the paint policy — e.g. that a
+// forwarded live event is painted once instead of twice.
+var paintHook func()
+
+// setChatContent loads a rendered transcript into the chat viewport,
+// skipping the re-measure when the string is unchanged.
+//
+// viewport.SetContent splits the string and then walks every line through
+// ansi.StringWidth to find the longest one, so it costs O(transcript) —
+// the single largest per-paint cost once a chat gets long, and measured at
+// ~79% of a repaint. Skipping an identical string is safe: SetContent never
+// resets YOffset (it only re-pins to the bottom when the offset overruns
+// the line count), so a redundant call re-measures without moving the view.
+func (m *Model) setChatContent(s string) {
+	// "" doubles as "nothing loaded yet": an empty transcript still has to
+	// go through, or a freshly built viewport would sit blank.
+	if s != "" && s == m.chatContent {
+		return
+	}
+	m.chatContent = s
+	m.vp.SetContent(s)
+}
+
+// wheelTo routes one wheel report at column x to the sidebar when hovered
+// and to the chat otherwise, returning the viewport's command.
+//
+// Scrolling only moves an offset — the transcript and the sidebar text are
+// unchanged — so this deliberately does not repaint them. Re-rendering on
+// every wheel event cost O(transcript) per event, so a single trackpad
+// burst (tens of reports) overran the frame budget, the input queue backed
+// up behind Update, and the view caught up long after the wheel stopped.
+// Every path that actually changes content (Refresh, RefreshFollow, the
+// streaming painters) owns its own SetContent.
+func (m *Model) wheelTo(x int, msg tea.MouseMsg) tea.Cmd {
+	var c tea.Cmd
+	if m.overSide(x) {
+		m.sideVp, c = m.sideVp.Update(msg)
+	} else {
+		m.vp, c = m.vp.Update(msg)
+	}
+	return c
+}
+
 func (m *Model) Refresh() {
 	if !m.ready {
 		return
 	}
+	if paintHook != nil {
+		paintHook()
+	}
 	// only stick to bottom when already there — no jump while reading history
 	follow := m.vp.AtBottom()
-	m.vp.SetContent(m.renderBlocks())
+	m.setChatContent(m.renderBlocks())
 	if follow {
 		m.vp.GotoBottom()
 	}
@@ -720,6 +1035,22 @@ func (m *Model) TogglePlugins() {
 	m.Refresh()
 }
 
+// ToggleLspSection collapses/expands the sidebar LSP diagnostics list (/lsp).
+// When the section is hidden (Sidebar tab default) the first toggle reveals it
+// expanded instead of flipping blind state — same contract as TogglePlugins.
+func (m *Model) ToggleLspSection() {
+	if !m.SideVisible(SideLSP) {
+		m.setSideVisible(SideLSP, true)
+		lspCollapsed.Store(false)
+	} else {
+		ToggleLspCollapsed()
+	}
+	if !m.ready {
+		return
+	}
+	m.Refresh()
+}
+
 // ToggleMouse flips mouse capture at runtime (/mouse): on = clickable
 // sidebar + wheel scroll, off = native text selection.
 // Arg parsing is pitago-owned (src/pitago); this is the thin MVC controller.
@@ -747,7 +1078,7 @@ func (m *Model) RefreshFollow() {
 	if !m.ready {
 		return
 	}
-	m.vp.SetContent(m.renderBlocks())
+	m.setChatContent(m.renderBlocks())
 	m.vp.GotoBottom()
 	now := time.Now()
 	s := m.buildSidebarContent()
@@ -767,6 +1098,9 @@ func (m *Model) refreshStreaming() tea.Cmd {
 	if !m.ready {
 		return nil
 	}
+	if paintHook != nil && (m.lastPaint.IsZero() || time.Since(m.lastPaint) >= streamFrame) {
+		paintHook()
+	}
 	now := time.Now()
 	if !m.lastPaint.IsZero() && now.Sub(m.lastPaint) < streamFrame {
 		if !m.pendingPaint {
@@ -776,7 +1110,7 @@ func (m *Model) refreshStreaming() tea.Cmd {
 		return nil
 	}
 	follow := m.vp.AtBottom()
-	m.vp.SetContent(m.renderBlocks())
+	m.setChatContent(m.renderBlocks())
 	if follow {
 		m.vp.GotoBottom()
 	}
@@ -798,7 +1132,7 @@ func (m *Model) flushStreaming() {
 	}
 	m.pendingPaint = false
 	follow := m.vp.AtBottom()
-	m.vp.SetContent(m.renderBlocks())
+	m.setChatContent(m.renderBlocks())
 	if follow {
 		m.vp.GotoBottom()
 	}
@@ -823,28 +1157,22 @@ func (m *Model) ThinkLvl() string { return m.thinkLvl }
 func (m *Model) CycleThinking() tea.Cmd {
 	m.Status = "switching thinking…"
 	m.Refresh()
-	cur := m.ThinkLvl()
 	return func() tea.Msg {
-		levels, err := m.Pi.GetLevels()
+		// Pi parity: pi's cycle command advances its own level order
+		// (session.cycleThinkingLevel → {level}); pitago used to
+		// recompute "next after current" from get_available_thinking_levels,
+		// which drifts from pi the moment the level list or the current
+		// level is not what pitago thinks it is.
+		level, err := m.Pi.CycleThinkingLevel()
 		if err != nil {
 			return SettingsRefreshMsg{Err: err}
 		}
-		if len(levels) == 0 {
+		if level == "" {
 			return SettingsRefreshMsg{Err: fmt.Errorf("no thinking levels")}
-		}
-		next := levels[0]
-		for i, l := range levels {
-			if l == cur {
-				next = levels[(i+1)%len(levels)]
-				break
-			}
-		}
-		if err := m.Pi.SetLevel(next); err != nil {
-			return SettingsRefreshMsg{Err: err}
 		}
 		// Toast, not chat: rapid Ctrl+T replaces one popup instead of
 		// spamming one line per press — same Notice path as /thinking.
-		return SettingsRefreshMsg{Notice: "thinking → " + next, Level: next}
+		return SettingsRefreshMsg{Notice: "thinking → " + level, Level: level}
 	}
 }
 
@@ -877,7 +1205,19 @@ func (m *Model) NoSession() bool { return m.spawnOpts.NoSession }
 type Builtin struct {
 	Name, Desc, Usage, Origin string
 	Run                       func(m *Model, arg string) tea.Cmd
+	// Hidden keeps a continuation entry out of the palette and out of
+	// slash-command interception. It exists so a builtin that must do
+	// blocking I/O off the event loop can split into "defer the I/O" and
+	// "build the UI" halves, with Update re-entering the second half once
+	// the first reports back. See BuiltinLoginDialog.
+	Hidden bool
 }
+
+// BuiltinLoginDialog is the hidden continuation of the /login builtin: the
+// picker build that runs on the event loop once the off-loop pi re-import
+// (LoginSyncedMsg) has landed. app re-enters it via RunBuiltin, so the
+// picker logic stays in src/builtin.
+const BuiltinLoginDialog = "login-dialog"
 
 // ConfirmFunc runs the Enter action of a picker dialog kind.
 // Implementations live in src/builtin (see Confirmers).
@@ -907,6 +1247,7 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	prefs := LoadPrefs(m.prefsPath)
 	m.HideThinking = prefs.HideThinking
 	m.CurAgent = prefs.CurrentSubagent
+	m.savedModel = prefs.CurrentModel
 	m.Side = prefs.Side
 	m.CmdShortcuts = prefs.CmdShortcuts
 	palette.Win = prefs.EffectiveAutocompleteMax()
@@ -944,7 +1285,7 @@ func (m *Model) FindBuiltin(text string) (Builtin, string, bool) {
 		return Builtin{}, "", false
 	}
 	for _, b := range m.builtins {
-		if b.Name == name {
+		if b.Name == name && !b.Hidden {
 			return b, arg, true
 		}
 	}
@@ -967,6 +1308,9 @@ func (m *Model) RunBuiltin(name, arg string) tea.Cmd {
 func BuiltinRepo(builtins []Builtin) []pirpc.RepoCommand {
 	out := make([]pirpc.RepoCommand, 0, len(builtins))
 	for _, b := range builtins {
+		if b.Hidden {
+			continue // continuation entry, not a user command
+		}
 		src := "builtin"
 		if b.Origin == "pitago" {
 			src = "pitago"
@@ -1000,9 +1344,9 @@ var ProgRef *tea.Program
 
 // WireClient routes a pi client's events into the UI program.
 func WireClient(c *pirpc.Client) {
-	c.OnEvent = func(e pirpc.Event) {
+	c.SetOnEvent(func(e pirpc.Event) {
 		if ProgRef != nil {
 			ProgRef.Send(piEventMsg{e})
 		}
-	}
+	})
 }
