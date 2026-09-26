@@ -137,9 +137,8 @@ func TestConfirmPconfigSideToggle(t *testing.T) {
 	d := m.Dialogs[0]
 	selectPsec(m, d, app.PsecSide)
 	// one row per sidebar section in app.sideOrder: pet, session, model, stats,
-	// cost, recent, commands, plugins, mcp, lsp, todos, tools, workspace
-	if len(d.Options) != 13 {
-		t.Fatalf("sidebar section should list 13 rows, got %d", len(d.Options))
+	if len(d.Options) != 14 {
+		t.Fatalf("sidebar section should list 14 rows, got %d", len(d.Options))
 	}
 	// MCP starts hidden
 	mi := -1
