@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Pitago-local TUI prefs (~/.config/pitago/prefs.json, 0600 like theme.json):
@@ -28,12 +29,32 @@ type ModelRef struct {
 
 // Prefs is the persisted pitago-local display prefs (zero = pi defaults).
 type Prefs struct {
-	HideThinking    bool              `json:"hideThinking,omitempty"`
-	AutocompleteMax int               `json:"autocompleteMax,omitempty"`
-	CurrentSubagent string            `json:"currentSubagent,omitempty"` // last-picked /subagents entry (● marker)
-	CurrentModel    *ModelRef         `json:"currentModel,omitempty"`    // last-picked model, restored at spawn only
-	Side            map[string]bool   `json:"side,omitempty"`            // sidebar section key → visible (missing = default)
-	CmdShortcuts    map[string]string `json:"cmdShortcuts,omitempty"`    // /command name → "alt+x" (hub-assigned, Alt+key fires it)
+	HideThinking          bool              `json:"hideThinking,omitempty"`
+	AutocompleteMax       int               `json:"autocompleteMax,omitempty"`
+	CurrentSubagent       string            `json:"currentSubagent,omitempty"`       // last-picked /subagents entry (● marker)
+	CurrentModel          *ModelRef         `json:"currentModel,omitempty"`          // last-picked model, restored at spawn only
+	Side                  map[string]bool   `json:"side,omitempty"`                  // sidebar section key → visible (missing = default)
+	CmdShortcuts          map[string]string `json:"cmdShortcuts,omitempty"`          // /command name → "alt+x" (hub-assigned, Alt+key fires it)
+	AnnotateSurface       string            `json:"annotateSurface,omitempty"`       // auto | tui | clipboard
+	AnnotatePlacement     string            `json:"annotatePlacement,omitempty"`     // native TUI placement
+	AnnotateTUIExecutable string            `json:"annotateTUIExecutable,omitempty"` // optional explicit plannotator-tui path
+}
+
+// TUIExecutablePref is the effective plannotator-tui path for capability detection.
+//
+// PITAGO_ANNOTATE_TUI overrides the persisted pref so the surface can be pinned or
+// turned off for one run without editing prefs.json. A value of off/none/0/false
+// disables native TUI detection entirely, which is how a user who does not want
+// the full-screen review surface keeps it from ever being chosen.
+func TUIExecutablePref(configured string) (path string, disabled bool) {
+	switch value := strings.ToLower(strings.TrimSpace(os.Getenv("PITAGO_ANNOTATE_TUI"))); value {
+	case "off", "none", "0", "false", "no":
+		return "", true
+	case "":
+		return configured, false
+	default:
+		return value, false
+	}
 }
 
 // PrefsPath is ~/.config/pitago/prefs.json ("" when unresolvable).
