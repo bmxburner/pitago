@@ -32,9 +32,13 @@ type Prefs struct {
 	HideThinking          bool              `json:"hideThinking,omitempty"`
 	AutocompleteMax       int               `json:"autocompleteMax,omitempty"`
 	CurrentSubagent       string            `json:"currentSubagent,omitempty"`       // last-picked /subagents entry (● marker)
+	Pet                   string            `json:"pet,omitempty"`                   // sidebar ASCII pet name (missing = default "cat")
+	PetStyle              string            `json:"petStyle,omitempty"`              // "ascii" (default) | "classic" kaomoji look
 	CurrentModel          *ModelRef         `json:"currentModel,omitempty"`          // last-picked model, restored at spawn only
 	Side                  map[string]bool   `json:"side,omitempty"`                  // sidebar section key → visible (missing = default)
 	CmdShortcuts          map[string]string `json:"cmdShortcuts,omitempty"`          // /command name → "alt+x" (hub-assigned, Alt+key fires it)
+	RecentCmds            []string          `json:"recentCmds,omitempty"`            // last-run /command names, most recent first (floated to the top of the "/" popup)
+	Tidy                  bool              `json:"tidy,omitempty"`                  // tidy mode: tool blocks collapse to their header (no args detail, no result/diff/output)
 	AnnotateSurface       string            `json:"annotateSurface,omitempty"`       // auto | tui | clipboard
 	AnnotatePlacement     string            `json:"annotatePlacement,omitempty"`     // native TUI placement
 	AnnotateTUIExecutable string            `json:"annotateTUIExecutable,omitempty"` // optional explicit plannotator-tui path

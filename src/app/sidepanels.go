@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"pitago/src/ext"
@@ -35,6 +36,7 @@ const (
 	SideLSP       = "lsp"
 	SideTodos     = "todos"
 	SideTools     = "tools"
+	SideSkills    = "skills"
 	SideSubagents = "subagents"
 	SideWorkspace = "workspace"
 )
@@ -43,7 +45,7 @@ const (
 var sideOrder = []string{
 	SidePet, SideSession, SideModel, SideStats, SideCost, SideRecent,
 	SideCommands, SidePlugins, SideMCP, SideLSP, SideTodos, SideTools,
-	SideSubagents, SideWorkspace,
+	SideSkills, SideSubagents, SideWorkspace,
 }
 
 // sideLabel is the Sidebar tab display name per section key.
@@ -73,6 +75,8 @@ func sideLabel(key string) string {
 		return "Todos"
 	case SideTools:
 		return "Tools"
+	case SideSkills:
+		return "Skills"
 	case SideSubagents:
 		return "Subagents"
 	case SideWorkspace:
@@ -115,11 +119,15 @@ func (m *Model) setSideVisible(key string, v bool) {
 
 // ToggleSideSection flips one sidebar section (the /pitago-setting Sidebar
 // tab): the hub stays open so several sections toggle in one visit.
-func (m *Model) ToggleSideSection(key string) {
+// Toggling the pet section also arms (or lets lapse) the pet tick loop: an
+// invisible block has nothing to animate, a visible one needs the timer back
+// even with no turn in flight. Returns the pet command when one is started.
+func (m *Model) ToggleSideSection(key string) tea.Cmd {
 	m.setSideVisible(key, !m.SideVisible(key))
 	if m.ready {
 		m.Refresh()
 	}
+	return m.ensurePetTick()
 }
 
 type TodoStatus = ext.TodoStatus

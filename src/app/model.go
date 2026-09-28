@@ -14,6 +14,7 @@ import (
 	"pitago/src/components/favorite"
 	"pitago/src/components/mention"
 	"pitago/src/components/palette"
+	"pitago/src/components/pet"
 	"pitago/src/components/recent"
 	terminal_image "pitago/src/components/terminal_image"
 	"pitago/src/components/theme"
@@ -46,6 +47,9 @@ type Dialog struct {
 	Scope             string            // sessions picker: "current" | "all" (Tab toggles)
 	Payload           []string          // yank picker: full text per option; login: raw keys ("" for action rows)
 	BlockIdx          int               // blockactions: target chat block index (for Payload kinds)
+	TreeJump          []int             // tree: index of the row's user/assistant message among the transcript's user/assistant blocks, in order; -1 = no such block
+	TreeRole          []string          // tree: role ("user"/"assistant") of a message row, "" for every other entry type
+	Current           string            // the value in use, marked in the grid/list (pet: "●" cell)
 	Cursor            int
 	Filter            string // picker filter / secret buffer / rename buffer
 	Placeholder       string // free-text dialog: dim hint shown while the buffer is empty
@@ -90,6 +94,7 @@ type SettingsState struct {
 	Theme                  string
 	Vals                   map[string]string // file-backed pi rows (dotted path → display)
 	HideThinking           bool              // pitago-local "Hide thinking" row
+	Tidy                   bool              // tidy mode: tool blocks render header-only (global pref, all projects)
 	AutocompleteMax        int               // pitago-local "Autocomplete max" row
 }
 
@@ -143,7 +148,7 @@ type Model struct {
 	ready               bool
 	winW                int
 	winH                int
-	hideSide            bool // Ctrl+B: hide sidebar for clean drag-select of chat
+	hideSide            bool // Ctrl+E: hide sidebar for clean drag-select of chat
 	Mouse               bool // --mouse: terminal reports clicks (sidebar recent switch)
 	baseVpH             int
 	cwd                 string
@@ -174,6 +179,9 @@ type Model struct {
 	Side                map[string]bool // sidebar section visibility (nil entry = default; MCP + Plugins + Commands hide)
 	Dialogs             []*Dialog
 	connErr             string
+	probe               startupProbe            // startup readiness budget (zero = defaultProbe)
+	connected           bool                    // a connect landed: gates the welcome-header latch
+	started             bool                    // welcome header already painted post-connect
 	HideThinking        bool                    // /settings: skip thinking blocks in chat (pi parity, pitago-local)
 	ShowImages          bool                    // terminal.showImages
 	ImageWidthCells     int                     // terminal.imageWidthCells
@@ -215,8 +223,12 @@ type Model struct {
 	hist                []string          // sent messages, oldest→newest (↑↓ recall when input empty)
 	histIdx             int               // -1 = live input, else index into hist while browsing
 	CmdShortcuts        map[string]string // /command → "alt+x" (hub-assigned Alt shortcuts, persisted in prefs)
+	RecentCmds          []string          // last-run /command names, most recent first (top of the "/" popup, persisted in prefs)
+	Tidy                bool              // tidy mode: tool blocks render header-only (global pref, all projects)
 	ThemeName           string            // active TUI theme (/theme, --theme flag)
 	themePath           string            // persisted theme ("" = don't persist)
+	PetName             string            // pinned sidebar ASCII pet (/pet, prefs.json)
+	PetStyle            string            // sidebar pet look: pet.StyleASCII (default) | pet.StyleClassic
 	prefsPath           string            // persisted pitago-local prefs ("" = don't persist)
 	savedModel          *ModelRef         // last user-picked model this process wrote (in-memory mirror of prefs.currentModel)
 	hideTaskWidget      bool              // suppress the above-editor task widget (prefs.taskWidgetOff); zero = show, so a bare Model{} keeps upstream behaviour
@@ -243,6 +255,8 @@ type Model struct {
 	plugAt              time.Time // first press timestamp for the pending plugin op
 	renderCache         []string  // per-block rendered output (renderBlocks reuses clean history)
 	renderCacheKey      []uint64  // fingerprint parallel to renderCache (see blockKey)
+	blockLine           []int     // transcript line where each block starts (parallel to m.blocks; hidden/skip blocks share the next visible line)
+	jumpBlock           int       // block index carrying the "jumped here" mark (-1 = no mark; New sets it, a Model literal without it would mark block 0)
 	chatContent         string    // transcript string currently loaded into vp (setChatContent skips an unchanged re-measure)
 	sideCache           string    // last built sidebar content (streaming reuses within sideThrottle)
 	sideCacheAt         time.Time // last sidebar rebuild
@@ -295,6 +309,14 @@ type connectedMsg struct {
 	cmds    []pirpc.RepoCommand
 	entries []pirpc.SessionEntry // usage attribution for the COST breakdown
 	err     error
+	// client is the pi this fetch ran against. A result whose client is no
+	// longer m.Pi belongs to a respawned session and is dropped, so a queued
+	// self-heal re-arm cannot paint a stale error over a healthy session.
+	client *pirpc.Client
+	// retry marks an error the readiness probe can recover from (pi alive
+	// but not answering yet): the handler re-arms a slow fetchAll instead
+	// of leaving the session dead-ended.
+	retry bool
 }
 
 type piEventMsg struct{ pirpc.Event }
@@ -375,6 +397,9 @@ type SettingsMsg struct {
 type TreeMsg struct {
 	Mode                    string
 	Options, Descs, Payload []string
+	TreeIDs                 []string // tree: session entry id per row
+	TreeJump                []int    // row's user/assistant message ordinal in the transcript, -1 = none
+	TreeRole                []string // "user"/"assistant" for message rows, "" otherwise
 	Filter                  string
 	Current                 int
 	Err                     error
@@ -542,6 +567,7 @@ func New(pi *pirpc.Client, cwd string) Model {
 		progressByKey: make(map[string]int),
 		curAsst:       -1,
 		curThink:      -1,
+		jumpBlock:     -1, // no "jumped here" mark until JumpToEntry sets one
 		histIdx:       -1,
 		Status:        "connecting to pi…",
 		cwd:           cwd,
@@ -553,23 +579,14 @@ func New(pi *pirpc.Client, cwd string) Model {
 func (m Model) Init() tea.Cmd {
 	// No auto-attach: /live is the only way into follow mode, and it starts
 	// the transport on demand (see ToggleLiveSession).
-	return tea.Batch(m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true), subagentsTickCmd())
-}
-
-// fetchAll loads state/messages/stats/commands after (re)connect.
-
-func (m Model) fetchAll() tea.Cmd {
-	return func() tea.Msg {
-		state, err := m.Pi.GetState()
-		if err != nil {
-			return connectedMsg{err: err}
-		}
-		msgs, _ := m.Pi.GetMessages()
-		stats, _ := m.Pi.GetStats()
-		cmds, _ := m.Pi.GetCommands()
-		entries, _ := m.Pi.GetEntries()
-		return connectedMsg{state: state, msgs: msgs, stats: stats, cmds: cmds, entries: entries}
+	cmds := []tea.Cmd{m.fetchAll(), m.pollCmds(), m.pollWs(), m.CheckUpdatesCmd(true), subagentsTickCmd()}
+	// The sidebar pet is on screen from the first frame, so its animation
+	// loop has to start at boot instead of waiting for the first turn to
+	// arm it (F1: this path arms the loop, so it returns the command).
+	if cmd := m.ensurePetTick(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
+	return tea.Batch(cmds...)
 }
 
 func (m *Model) AddBlock(b Block) int {
@@ -583,6 +600,11 @@ func (m *Model) AddBlock(b Block) int {
 	m.blocks = append(m.blocks, b)
 	return len(m.blocks) - 1
 }
+
+// BlockCount reports how many transcript blocks exist. It is a test seam:
+// src/builtin drives the app through its exported API only, so asserting
+// that a tree action posted a block needs a way to count them.
+func (m Model) BlockCount() int { return len(m.blocks) }
 
 // addChatNotice appends a notice that is intentionally part of the
 // conversation. Most notices use AddBlock and stay ephemeral; subagent
@@ -777,11 +799,24 @@ func (m *Model) submit(mode int) tea.Cmd {
 	m.pushHist(text)
 	m.histIdx = -1
 	if b, arg, ok := m.FindBuiltin(text); ok {
+		m.noteCmdUse(b.Name) // ran: leads the "/" popup next time
 		m.ta.Reset()
 		m.refreshCmds()
 		m.refreshAt()
 		m.Refresh()
 		return b.Run(m, arg)
+	}
+	// A pi-owned command (builtin/extension) is answered by pi's command
+	// handler, not by a model turn, so it is forwarded without entering the
+	// turn state. Sending it as a prompt would pin "pi is running…" until an
+	// agent_settled that never arrives (see FindPiCommand).
+	if name, ok := m.FindPiCommand(text); ok {
+		m.noteCmdUse(name) // ran: leads the "/" popup next time
+		m.ta.Reset()
+		m.refreshCmds()
+		m.refreshAt()
+		m.Refresh()
+		return m.ForwardExtensionCommand(text)
 	}
 	// @image.png → vision attachments (pi CLI parity); the @text
 	// stays so history keeps the file ref, images ride the RPC.
@@ -1040,6 +1075,33 @@ func (m *Model) ToggleSide() {
 	m.Refresh()
 }
 
+// SetTidy turns tidy mode on/off and persists it to the global prefs
+// (~/.config/pitago/prefs.json), so the choice follows the user across
+// every project and restarts. Returns the new value.
+//
+// The render cache is dropped rather than re-keyed: blockKey already
+// folds Tidy in, but clearing is cheap and keeps the two paths honest.
+func (m *Model) SetTidy(on bool) bool {
+	m.Tidy = on
+	m.renderCache = nil
+	prefs := LoadPrefs(m.prefsPath)
+	prefs.Tidy = on
+	_ = SavePrefs(m.prefsPath, prefs)
+	m.Refresh()
+	return on
+}
+
+// ToggleTidy flips tidy mode and toasts the new state.
+func (m *Model) ToggleTidy() bool {
+	on := m.SetTidy(!m.Tidy)
+	state := "on"
+	if !on {
+		state = "off"
+	}
+	m.AddBlock(Block{Kind: "notice", Text: "tidy mode " + state + " — tool calls show just their header"})
+	return on
+}
+
 // TogglePlugins collapses/expands the sidebar PLUGINS list (click its
 // header or /plugins). When the section is hidden (Sidebar tab default)
 // the first toggle reveals it expanded instead of flipping blind state.
@@ -1267,12 +1329,23 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.prefsPath = PrefsPath()
 	prefs := LoadPrefs(m.prefsPath)
 	m.HideThinking = prefs.HideThinking
+	m.Tidy = prefs.Tidy
 	m.CurAgent = prefs.CurrentSubagent
+	// Resolve, not raw read: a hand-edited or stale prefs.json must still
+	// yield a drawable pet, never an empty sidebar block.
+	m.PetName = pet.Resolve(prefs.Pet).Name
+	// Same drift guard for the look: a missing or hand-edited petStyle
+	// falls back to ascii rather than rendering an unknown style.
+	m.PetStyle = pet.StyleASCII
+	if pet.IsStyle(prefs.PetStyle) {
+		m.PetStyle = prefs.PetStyle
+	}
 	m.savedModel = prefs.CurrentModel
 	m.Side = prefs.Side
 	m.CmdShortcuts = prefs.CmdShortcuts
 	m.hideTaskWidget = !prefs.TaskWidgetVisible()
 	m.loadTaskDisplay()
+	m.RecentCmds = prefs.RecentCmds
 	palette.Win = prefs.EffectiveAutocompleteMax()
 	m.ApplyImageSettings()
 }
@@ -1292,12 +1365,10 @@ func (m *Model) ApplyImageSettings() {
 	m.renderCacheKey = nil
 }
 
-// FindBuiltin matches "/name" or "/name args" against the registry.
-// Anything else (extension/prompt/skill commands, chat text) falls through
-// to pi via Prompt.
-func (m *Model) FindBuiltin(text string) (Builtin, string, bool) {
+// splitCommand splits "/name args" into its name and argument.
+func splitCommand(text string) (string, string, bool) {
 	if len(text) < 2 || text[0] != '/' {
-		return Builtin{}, "", false
+		return "", "", false
 	}
 	rest := text[1:]
 	name, arg := rest, ""
@@ -1305,6 +1376,49 @@ func (m *Model) FindBuiltin(text string) (Builtin, string, bool) {
 		name, arg = rest[:i], strings.TrimSpace(rest[i+1:])
 	}
 	if strings.Contains(name, "\n") || name == "" {
+		return "", "", false
+	}
+	return name, arg, true
+}
+
+// FindPiCommand reports a slash command pi's own command handler consumes,
+// i.e. one listed by get_commands as a builtin or an extension command.
+// These are NOT model turns: pi answers them synchronously and — measured on
+// `pi --mode rpc`, where `{"type":"prompt","message":"/team"}` emits
+// extension_ui_request + message_start/message_end and nothing else — it
+// sends no agent_start and no agent_settled.
+//
+// That is why they must not travel through sendCmd: that path sets
+// m.thinking and m.Status = "pi is running…" up front and relies on
+// agent_settled (or a get_state push, which only follows an event) to clear
+// them. With no such event the footer spins "pi is running…" forever on an
+// idle session, and Enter keeps steering instead of prompting.
+//
+// prompt and skill rows are deliberately excluded: those expand into real
+// user text and DO open a turn, so they keep the sendCmd lifecycle.
+func (m *Model) FindPiCommand(text string) (string, bool) {
+	name, _, ok := splitCommand(text)
+	if !ok {
+		return "", false
+	}
+	for _, c := range m.Cmds {
+		if !strings.EqualFold(strings.TrimSpace(c.Name), name) {
+			continue
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Source)) {
+		case "builtin", "extension":
+			return name, true
+		}
+	}
+	return "", false
+}
+
+// FindBuiltin matches "/name" or "/name args" against the registry.
+// Extension commands and chat text fall through to pi; see FindPiCommand
+// for the split between a no-turn command forward and a model prompt.
+func (m *Model) FindBuiltin(text string) (Builtin, string, bool) {
+	name, arg, ok := splitCommand(text)
+	if !ok {
 		return Builtin{}, "", false
 	}
 	for _, b := range m.builtins {

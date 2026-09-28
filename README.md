@@ -4,7 +4,9 @@
 
 <div align="center">
 
-![pitago demo](resources/demo.gif)
+https://github.com/user-attachments/assets/93bfcae4-b02e-429d-a302-d2df850f71a7
+
+<sub>▸ 88s walkthrough — plays right here, no download. Want the lightweight loop instead? <a href="resources/demo.gif">GIF version</a></sub>
 
 [![Download](https://img.shields.io/badge/download-latest-brightgreen?style=flat-square)](https://github.com/cavaldos/pitago/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/cavaldos/pitago/total?style=flat-square)](https://github.com/cavaldos/pitago/releases)
@@ -196,7 +198,7 @@ script/release.sh v0.0.1
 | `Ctrl+P`                                                    | Cycle model                                                                                                                   |
 | `Ctrl+R`                                                    | Recent-models picker                                                                                                          |
 | `Ctrl+T`                                                    | Cycle thinking level (no picker)                                                                                              |
-| `Ctrl+B`                                                    | Hide/show sidebar (hide for clean drag-select of chat only)                                                                   |
+| `Ctrl+E`                                                    | Hide/show sidebar (hide for clean drag-select of chat only)                                                                   |
 | `Ctrl+Y`                                                    | Yank last assistant answer to clipboard (chat-only, no sidebar)                                                               |
 | `Ctrl+V`                                                    | Paste text — or screenshot data (pngpaste/wl-paste/xclip); errors shown, terminal Cmd+V still works                           |
 | `Backspace`                                                 | Empty input + image tray → remove last `[Image N]` chip                                                                       |
@@ -212,11 +214,11 @@ script/release.sh v0.0.1
 
 ### Copying text and messages
 
-- **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls.
+- **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls. In terminals where drag selection is unavailable, hold `Option`/`Shift` as before.
 - **Double-click** a chat line to select the whole rendered line.
 - **Right-click** an assistant block for `Copy markdown`, `Copy tables`, `Copy code blocks`, or `Copy plain text`.
-- With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse off`.
-- `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker.
+- With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse` (`/mouse off` for plain highlight-to-copy).
+- `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker (sidebar stays visible).
 - `/copy-md`, `/copy-tables`, and `/copy-code` copy semantic content from the last assistant message.
 - Whole-message copy preserves raw Markdown, tables, fenced-code languages, and links; partial drag selection copies ANSI/OSC-free visible text.
 - In hosted sessions (terminal multiplexers / remote panes), Pitago emits OSC 52 to the controlling terminal. Delivery depends on the terminal's OSC 52 support; if it is unavailable or the payload exceeds the safe cap, Pitago reports the copy failure instead of claiming success. Other sessions use the local system clipboard with platform fallbacks.
@@ -235,11 +237,12 @@ Type `/` to open the command popup. Two kinds:
 - `/copy-md` / `/copy-tables` / `/copy-code` — semantic copy from the last assistant message
 - `/sidebar` — hide/show sidebar
 - `/theme` — switch TUI theme (`/theme` opens picker, `/theme gruvbox` applies directly; or `pitago --theme one-dark`)
+- `/pet` — pick the sidebar pet. `/pet` opens a two-pane dialog in the `/model` shape: left = the entry list (18 animals plus the `ascii` and `classic` looks, `▸` cursor, `●` the one in use, type to filter, `↑↓` move, `Enter` applies, `Esc` cancels), right = a live demo of the highlighted entry. `/pet dragon`, `/pet ascii` and `/pet classic` apply directly. In the **ascii** look the sidebar block draws the animal (name inline, 5 rows) and the animals take turns every ~20s; in the **classic** look it draws the compact animated kaomoji face with the status label on one row (2 rows, no `PET` title) and nothing rotates
 - `/plugins` — collapse/expand installed pi plugins in the sidebar
 - `/mouse` — toggle mouse (click sidebar, wheel scroll) at runtime, `[on|off]`; off for native text selection
 - `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
 - `/thinking` — toggle thinking level
-- `/tree` — session tree, pi-style rows (read-only over RPC)
+- `/tree` — session tree, pi-style rows. `Enter` (or a left click when mouse is on) opens pi's follow-up **Tree action** menu on the picked row: `Jump to message` (scrolls the chat to that message and marks it), `Copy entry`, `Fork from here` (user rows only — pi's fork rejects any other entry), `Back to tree`; rows that are not chat messages offer `View entry` (prints the full entry, e.g. a compaction or a label) instead of the jump. `Esc`/`Ctrl+C` returns to the tree with the same row selected. Real branch navigation (pi's `navigateTree` + `Summarize branch?`) is not possible over RPC — pi 0.87.1 has no `navigate_tree` command — so the menu is local; the tree itself is read-only over RPC
 - `/trajectory [all|tools|messages]` — harness-style run trace window (numbered steps with time + kind, type to filter, `Enter` views the full step in chat)
 - `/notification [filter]` — browse notification history (time + info/error, newest first; in RAM for the current Pitago run, max 200)
 - `/settings` — agent settings, pi parity (22 rows: model · thinking · steering · follow-up · auto-compact · auto-retry · theme + skill commands · show images · image width · auto-resize · block images · transport · http timeout · cache warming · hide thinking · cache-miss notices · project trust · quiet startup · telemetry · autocomplete max · tree filter; file rows save to `~/.pi/agent/settings.json` and reconnect pi; dialog shows pi-style position `(6/33)`)
@@ -285,7 +288,7 @@ In short: `app` is a thin MVC shell, `components` holds pure view primitives,
 - `~/.config/pitago/keys.json` (0600) — saved API keys, several per provider with one active + optional name/added-date (`/login`, `/logout`; active key is also written to pi's `auth.json` so pi sees models)
 - `~/.config/pitago/pi_auth.json` (0600) — mirrored pi logins (OAuth account/expiry, no secrets) so `/login` lists + disconnects subscriptions done in stock pi
 - `~/.config/pitago/recent_models.json` — recent models (max 5)
-- `~/.config/pitago/prefs.json` (0600) — display prefs + the last model you picked (`currentModel`), passed to `pi` as `--provider/--model` at startup so a new window reopens on it (explicit `--provider`/`--model` flags win); `taskWidgetOff: true` hides the above-editor task widget (default shown)
+- `~/.config/pitago/prefs.json` (0600) — display prefs + the last model you picked (`currentModel`), passed to `pi` as `--provider/--model` at startup so a new window reopens on it (explicit `--provider`/`--model` flags win); `taskWidgetOff: true` hides the above-editor task widget (default shown); also the sidebar pet (`pet`, missing = default `cat`) and its look (`petStyle`: `ascii` (default) or `classic`)
 - `~/.config/pitago/theme.json` — active TUI theme (25 built-ins: default, one-dark, gruvbox, catppuccin-mocha, dracula… — `/theme` lists all)
 - `~/.config/pitago/update.json` — last update-check timestamp + tag (24h TTL)
 - `/tmp/pitago-pi-stderr.log` — pi child stderr

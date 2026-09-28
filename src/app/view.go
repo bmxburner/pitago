@@ -92,9 +92,20 @@ func (m *Model) renderBlocks() string {
 	if cw < 10 {
 		cw = 10
 	}
-	if len(m.blocks) == 0 && m.connErr == "" {
-		// fresh chat: pi-style startup header (logo + resources + ready)
+	if len(m.blocks) == 0 && m.connErr == "" && !m.started {
+		// fresh chat: pi-style startup header (logo + resources + ready).
+		//
+		// The latch belongs HERE, next to the paint, not in the connect
+		// handler: a fast pi answers get_state within the first frames, so a
+		// handler-side latch means the header is suppressed before it was
+		// ever drawn. Pre-connect paints keep showing it (the user is
+		// watching "connecting to pi…"), and the first paint AFTER a connect
+		// has landed shows it once and latches — so a later connErr that
+		// clears can never bring the logo back mid-session.
 		b.WriteString(m.welcomeView(w))
+		if m.connected {
+			m.started = true
+		}
 	}
 	if m.connErr != "" {
 		b.WriteString(gutter(errStyle.Render("×"), errStyle.Render("! "+m.connErr)+"\n"))
@@ -111,40 +122,60 @@ func (m *Model) renderBlocks() string {
 		m.renderCache, m.renderCacheKey = nc, nk
 	}
 	hide, expand, theme := m.HideThinking, m.expandTools, m.ThemeName
-	// Track each block's rendered start line so mouse hit-tests (right-click
-	// copy menu, drag selection) can map a screen row back to a block.
+	tidy := m.Tidy
+	// Two parallel start-line tables, same values for the same block:
+	//   m.blockRows — mouse hit-tests (right-click copy menu, drag selection)
+	//   m.blockLine — JumpToEntry scroll anchor
+	// Both are rebuilt on every pass but the per-block strings come from the
+	// render cache, so a clean history is only re-measured, never re-rendered.
 	if len(m.blockRows) != len(m.blocks) {
 		m.blockRows = make([]int, len(m.blocks))
+	}
+	if len(m.blockLine) != len(m.blocks) {
+		nl := make([]int, len(m.blocks))
+		copy(nl, m.blockLine)
+		m.blockLine = nl
 	}
 	// Use the same trailing-newline-aware line count for the preamble as
 	// for each rendered block, so hit-testing stays aligned with connErr.
 	cursor := ly(b.String())
+	line := strings.Count(b.String(), "\n")
 	for i, bl := range m.blocks {
+		// The jump mark lives outside renderOneBlock on purpose: it is a
+		// scroll anchor, not block content, and putting it in the cached
+		// string would fold it into blockKey's input for every other block.
+		if i == m.jumpBlock {
+			b.WriteString(toolStyle.Render(jumpMark) + "\n")
+			cursor++
+			line++
+		}
+		// Hidden/skipped blocks render as "", so they record the line the
+		// next visible block will use and the table never drifts.
 		m.blockRows[i] = cursor
+		m.blockLine[i] = line
 		// Image-bearing transcript blocks are always rebuilt as safe squares.
 		// This purges any cache entry created by an older image-render path
 		// before scroll/repaint can re-emit Kitty/iTerm placement escapes.
 		if len(bl.Images) > 0 {
 			m.renderCache[i], m.renderCacheKey[i] = "", 0
 		}
-		key := blockKey(bl, cw, hide, expand, theme)
-		var s string
-		var skip bool
+		key := blockKey(bl, cw, hide, expand, theme, tidy)
 		if m.renderCacheKey[i] == key {
-			s = m.renderCache[i]
-		} else {
-			s, skip = m.renderOneBlock(bl, cw)
-			if skip {
-				s = ""
-			}
-			m.renderCacheKey[i] = key
-			m.renderCache[i] = s
-		}
-		b.WriteString(s)
-		if s == "" {
+			s := m.renderCache[i]
+			b.WriteString(s)
+			cursor += ly(s)
+			line += strings.Count(s, "\n")
 			continue
 		}
+		s, skip := m.renderOneBlock(bl, cw)
+		if skip {
+			s = ""
+		}
+		m.renderCacheKey[i] = key
+		m.renderCache[i] = s
+		b.WriteString(s)
 		cursor += ly(s)
+		line += strings.Count(s, "\n")
 	}
 	if m.thinking {
 		b.WriteString(gutter(statusBarStyle.Render("○"), statusBarStyle.Render(m.Status)+"\n"))
@@ -221,7 +252,7 @@ func (m *Model) chatRowToBlock(screenY int) int {
 
 // blockKey fingerprints one block's rendered output: every field
 // renderOneBlock reads, plus the width and global render flags.
-func blockKey(bl Block, cw int, hide, expand bool, theme string) uint64 {
+func blockKey(bl Block, cw int, hide, expand bool, theme string, tidy bool) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(bl.Kind))
 	h.Write([]byte{0})
@@ -247,7 +278,7 @@ func blockKey(bl Block, cw int, hide, expand bool, theme string) uint64 {
 		h.Write([]byte{0})
 	}
 	fmt.Fprintf(h, "\x00images\x00%d", len(bl.Images))
-	fmt.Fprintf(h, "\x00%d\x00%v\x00%v\x00%s", cw, hide, expand, theme)
+	fmt.Fprintf(h, "\x00%d\x00%v\x00%v\x00%v\x00%s", cw, hide, expand, tidy, theme)
 	return h.Sum64()
 }
 
@@ -430,6 +461,12 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 	}
 	inner := blockInner(w)
 	rows := []string{toolHeaderRow(bl, toolHead(bl), inner)}
+	// Tidy mode: the header IS the block. A tool call reads as
+	// "● edit src/app/view.go" with no args line and no result, diff or
+	// preview underneath — the whole point of the mode.
+	if m.Tidy {
+		return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+	}
 	if d := toolDetail(bl); d != "" {
 		rows = append(rows, toolStyle.Render(d))
 	}
@@ -483,6 +520,11 @@ func toolHeaderRow(bl Block, head string, inner int) string {
 // long command does not pop into existence with its output.
 func (m Model) renderShellBlock(bl Block, w int) string {
 	rows := []string{shellCommandRow(bl)}
+	// Tidy mode keeps the command line (that IS the call) and drops the
+	// output section, so a long transcript of shell calls stays scannable.
+	if m.Tidy {
+		return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+	}
 	inner := blockInner(w) // clamped to the same floor framedBlock uses
 	if out := m.shellOutput(bl); out != "" {
 		label := "Output"
@@ -978,10 +1020,11 @@ func renderToolResultExpanded(tool, status, s string, expanded bool) string {
 }
 
 // renderSidebar mirrors pi's session panel: SESSION, model+ctx, STATS,
-// RECENT MODELS (clickable), COMMANDS, TOOLS, WORKSPACE, cwd. Content is
-// built by buildSidebarContent and shown through sideVp, so a tall sidebar
-// clips to the box and scrolls (wheel over it) instead of overflowing the layout.
-// recentAt maps clicks with sideVp.YOffset, so it stays correct scrolled.
+// RECENT MODELS (clickable), COMMANDS, TOOLS, SKILLS, WORKSPACE, cwd. Content
+// is built by buildSidebarContent and shown through sideVp, so a tall sidebar
+// clips to the box and scrolls (wheel over it) instead of overflowing the
+// layout. recentAt maps clicks with sideVp.YOffset, so it stays correct
+// scrolled.
 
 func (m Model) buildSidebarContent() string {
 	inner := sideInnerW
@@ -1169,6 +1212,13 @@ func (m Model) buildSidebarContent() string {
 			}
 			b.WriteString(sep() + "\n")
 		}
+	}
+	if m.SideVisible(SideSkills) {
+		// Renders nothing at all until the agent loads a skill, so a session
+		// that never touches one pays no rows and no separator (sideskills.go).
+		// Drawn after TOOLS to keep the order in sync with sideOrder, which is
+		// the row order of the /pitago-setting Sidebar tab.
+		b.WriteString(m.renderSkillsSection(inner))
 	}
 	if m.SideVisible(SideSubagents) {
 		b.WriteString(m.renderSubagentsSection(inner))
@@ -1438,6 +1488,9 @@ func inputBox(title string, lines []string, innerW int, border lipgloss.Color) s
 
 func (m Model) renderDialog() string {
 	d := m.Dialogs[0]
+	if d.Kind == "pet" {
+		return m.renderPetDialog(d)
+	}
 	if d.Kind == "pconfig" && len(d.Provs) > 0 {
 		return m.renderPconfigDialog(d)
 	}
@@ -1456,14 +1509,14 @@ func (m Model) renderDialog() string {
 	if d.Kind == "tree" {
 		return m.renderTreeDialog(d)
 	}
+	if d.Kind == "treeAction" {
+		return m.renderTreeActionDialog(d)
+	}
 	if d.Kind == "sessions" {
 		return m.renderResumeDialog(d)
 	}
 	if d.Kind == "askUser" {
 		return m.renderAskUserDialog(d)
-	}
-	if d.Kind == "shortcuts" {
-		return m.renderShortcutsDialog(d)
 	}
 	if d.Kind == "settings" && len(d.Provs) > 0 {
 		return m.renderSettingsDialog(d)
@@ -2520,7 +2573,19 @@ func (m Model) teamWidgetHeightLimit() int {
 // popup-sized class: bounded, predictable, and never able to claim the rows
 // the transcript needs. /team is unchanged and still renders the full
 // dashboard, so nothing is lost by capping the live surface.
-const teamPanelMaxRows = 8
+//
+// The cap counts the *painted* panel, border included (teamPanelBorderRows),
+// so it is deliberately 10 rather than 8: the rounded frame costs two rows
+// and must not be paid for out of the panel's content, or the first worker
+// block disappears from the live surface.
+const teamPanelMaxRows = 10
+
+// teamPanelBorderRows is what the rounded frame costs in rows: one top border
+// line and one bottom border line. teamPanelMaxRows is a budget for the whole
+// painted panel, so the inner content cap is the cap minus these two rows and
+// the panel never grows. The same two columns are what teamPanelInnerWidth
+// takes off the width (border + horizontal padding).
+const teamPanelBorderRows = 2
 
 // teamPanelHeightLimit is the pool the compact panel may draw from: the
 // frame's own reserve (header, input, task widget, every popup, and at least
@@ -2656,17 +2721,53 @@ func teamWorkerSummary(line string) bool {
 	return strings.HasPrefix(plain, "└ +")
 }
 
-// renderTeamWidget preserves pi-agents-team's authoritative hierarchy. The
-// package prefix and roster heading are structural anchors; only complete
-// worker/activity blocks are selected when rows are scarce.
+// teamPanelPaintedWidth is the widest the framed panel may be. mainW has a
+// small-terminal floor for the main layout; the widget must never inherit that
+// floor and paint past the actual terminal width.
+func (m Model) teamPanelPaintedWidth() int { return max(1, min(m.winW, m.mainW())) }
+
+// teamPanelInnerWidth is the display width every panel line is laid out
+// against inside the box: the painted width minus the two border columns and
+// the two /command-style padding columns. Truncation happens at this width and
+// the style is given teamPanelPaintedWidth()-2 (lipgloss Width() excludes the
+// border), so padding + border + content add up to the painted width exactly —
+// the box can never wrap a line or bleed past the chat column.
+func (m Model) teamPanelInnerWidth() int {
+	return max(1, m.teamPanelPaintedWidth()-2*teamPanelBorderRows)
+}
+
+// renderTeamWidget paints the live TEAM panel inside the same rounded border
+// the /command popup uses. Framing is the last step, so every row/width
+// decision below is made on the *content* and the frame is accounted for
+// exactly once, here and in the height budget (teamPanelBorderRows).
 func (m Model) renderTeamWidget() string {
-	budget := m.teamPanelHeightLimit()
-	if budget <= 0 {
+	body, framed := m.renderTeamPanelLines()
+	if body == "" {
 		return ""
+	}
+	if !framed {
+		// Bare status-only fallback: already one row, no box (see
+		// renderTeamPanelLines).
+		return body
+	}
+	return teamPopStyle.Width(max(1, m.teamPanelPaintedWidth()-teamPanelBorderRows)).Render(body)
+}
+
+// renderTeamPanelLines renders the panel content that goes inside the frame.
+// Every row is truncated with truncANSI, which counts display cells and lets
+// ANSI escapes through at zero width, so the pre-colored TeamWidgetLines are
+// measured and clipped by what they actually paint — never by len() or a rune
+// count. framed is false for the bare status-only row: it is a one-row
+// fallback for budgets too small to hold a border plus a line, so it must not
+// be boxed (that would claim two rows it does not paint).
+func (m Model) renderTeamPanelLines() (string, bool) {
+	limit := m.teamPanelHeightLimit()
+	if limit <= 0 {
+		return "", false
 	}
 	// mainW has a small-terminal floor for the main layout; the widget must
 	// never inherit that floor and paint past the actual terminal width.
-	width := max(1, min(m.winW, m.mainW()))
+	width := m.teamPanelInnerWidth()
 	fit := func(line string) string { return truncANSI(line, width) }
 
 	status := ""
@@ -2680,10 +2781,10 @@ func (m Model) renderTeamWidget() string {
 		return fit(status)
 	}
 	if len(m.TeamWidgetLines) == 0 || !m.TeamWidgetSeen {
-		return statusOnly()
+		return statusOnly(), false
 	}
 	if !m.TeamWidgetVisible {
-		return statusOnly()
+		return statusOnly(), false
 	}
 
 	// Everything before the roster heading is a structural prefix. This
@@ -2706,12 +2807,18 @@ func (m Model) renderTeamWidget() string {
 		// and every remaining row is content that may be dropped.
 		agents, prefixEnd = 0, 0
 	}
+	budget := limit - teamPanelBorderRows
+	if budget < 1 {
+		// Not even a border plus one row fits; a framed panel would claim
+		// rows it cannot fill, so fall back to the bare status row.
+		return statusOnly(), false
+	}
 	base := append([]string{}, m.TeamWidgetLines[:prefixEnd]...)
 	if status != "" {
 		base = append([]string{status}, base...)
 	}
 	if len(base) >= budget {
-		return statusOnly()
+		return statusOnly(), false
 	}
 
 	// Legacy/test snapshots may not contain a roster heading; the title row
@@ -2748,7 +2855,7 @@ func (m Model) renderTeamWidget() string {
 		all = append(all, summary)
 	}
 	if len(all) <= budget {
-		return strings.Join(mapLines(all, fit), "\n")
+		return strings.Join(mapLines(all, fit), "\n"), true
 	}
 
 	// The heading is mandatory whenever there is room for worker content. The
@@ -2757,7 +2864,7 @@ func (m Model) renderTeamWidget() string {
 	// row so `/team to view` remains discoverable.
 	mandatory := append(append([]string{}, base...), heading)
 	if len(mandatory) >= budget {
-		return statusOnly()
+		return statusOnly(), false
 	}
 	available := budget - len(mandatory)
 	reserveSummary := 0
@@ -2792,7 +2899,7 @@ func (m Model) renderTeamWidget() string {
 	if len(lines) > budget {
 		lines = lines[:budget]
 	}
-	return strings.Join(mapLines(lines, fit), "\n")
+	return strings.Join(mapLines(lines, fit), "\n"), true
 }
 
 func mapLines(lines []string, fit func(string) string) []string {
@@ -2853,6 +2960,14 @@ func (m Model) View() string {
 	// string as one row, so measure them with panelHeight.
 	extra := panelHeight(taskPanel) + panelHeight(extAbove) + panelHeight(extBelow)
 	chatVp.Height = m.chatFrameRows(max(0, chatVp.Height-extra), panelHeight(teamPanel)+extra, inlineUI)
+	// Shrinking Height without re-pinning drops rows from the BOTTOM of the
+	// transcript (viewport.View() renders lines[offset:offset+Height]), so the
+	// newest — most important — chat line would never be painted. Re-pin the
+	// copy when the copy is the shrunk one and the user was already following
+	// the tail; a user scrolled up reading history keeps their offset.
+	if chatVp.Height != m.vp.Height && m.vp.AtBottom() {
+		chatVp.GotoBottom()
+	}
 	// The selection overlay runs on this rendered viewport copy, not on m.vp:
 	// highlighting m.vp instead would highlight different pixels than the
 	// ones being drawn.

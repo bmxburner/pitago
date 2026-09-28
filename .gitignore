@@ -5,6 +5,10 @@
 # pi stderr log
 /tmp/pitago-pi-stderr.log
 
+# Raw screen recordings — H.264 cuts live on GitHub's user-attachments CDN, not in git
+resources/*.mp4
+resources/demo-poster.jpg
+
 # IDE / editor
 .idea/
 .vscode/

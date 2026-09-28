@@ -12,10 +12,12 @@ import (
 // a missing registration, so it is worth asserting the map directly.
 func TestConfirmersCoversEveryDialogKindThatConfirms(t *testing.T) {
 	confirmers := Confirmers()
+	// "theme" is absent on purpose: upstream folded /theme into the
+	// /pitago-setting hub (PsecTheme), so no theme dialog is opened any more.
 	for _, kind := range []string{
-		"model", "recent", "sessions", "thinking", "theme", "settings",
+		"model", "recent", "sessions", "thinking", "pet", "settings",
 		"pconfig", "login", "loginMethod", "loginOAuth", "logout", "secret",
-		"yank", "update", "trajectory", "tree", "subagents",
+		"yank", "update", "trajectory", "tree", "treeAction", "subagents",
 		"blockactions",
 	} {
 		if _, ok := confirmers[kind]; !ok {

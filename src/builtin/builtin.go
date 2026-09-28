@@ -4,12 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pitago/src/app"
 	"pitago/src/components/palette"
+	"pitago/src/components/pet"
 	"pitago/src/pirpc"
 )
 
@@ -325,6 +327,7 @@ func loadSettingsState(m *app.Model) (app.SettingsState, error) {
 		Theme:           app.OrDefault(m.ThemeName, "default"),
 		Vals:            fileSettingVals(cfg),
 		HideThinking:    m.HideThinking,
+		Tidy:            m.Tidy,
 		AutocompleteMax: palette.Win,
 	}
 	return sst, nil
@@ -404,6 +407,8 @@ var fileSettings = []fileSetting{
 		}},
 	{label: "Install telemetry", group: "Privacy", path: "enableInstallTelemetry", vals: []string{"on", "off"},
 		toVal: func(d string) any { return d == "on" }},
+	{label: "Tidy mode", group: "Pitago", path: "", vals: []string{"on", "off"}, local: true,
+		toVal: func(d string) any { return d == "on" }},
 	{label: "Autocomplete max", group: "Pitago", path: "", vals: []string{"3", "5", "7", "10", "15", "20"}, local: true,
 		toVal: func(d string) any { return atoiOr(d, 10) }},
 	{label: "Tree filter mode", group: "Pitago", path: "treeFilterMode", vals: []string{"default", "no-tools", "user-only", "labeled-only", "all"}, local: true,
@@ -480,6 +485,21 @@ func nextVal(vals []string, cur string) string {
 // liveSettingGroups parallels the 7 live rows: agent state first, theme last.
 var liveSettingGroups = []string{"Agent", "Agent", "Agent", "Agent", "Agent", "Agent", "Display"}
 
+// localSettingVal is the current display value of a pitago-local settings
+// row (one with no pi settings.json path). A single switch, so adding a
+// third local row cannot silently fall through to the wrong one.
+func localSettingVal(label string, st app.SettingsState) string {
+	switch label {
+	case "Hide thinking":
+		return onoff(st.HideThinking)
+	case "Tidy mode":
+		return onoff(st.Tidy)
+	case "Autocomplete max":
+		return itoa(st.AutocompleteMax)
+	}
+	return "—"
+}
+
 func settingsOptions(st app.SettingsState) ([]string, []string, []string) {
 	opts := []string{
 		"Model: " + st.Model,
@@ -503,11 +523,7 @@ func settingsOptions(st app.SettingsState) ([]string, []string, []string) {
 	for _, fr := range fileSettings {
 		disp := st.Vals[fr.path]
 		if fr.path == "" { // pitago-local rows
-			if fr.label == "Hide thinking" {
-				disp = onoff(st.HideThinking)
-			} else {
-				disp = itoa(st.AutocompleteMax)
-			}
+			disp = localSettingVal(fr.label, st)
 		}
 		foot := "Enter: toggle"
 		if len(fr.vals) > 2 {
@@ -608,10 +624,10 @@ func settingsAction(m *app.Model, ri int) (tea.Model, tea.Cmd) {
 			// pi's set_auto_retry persists retry.enabled itself.
 			return refresh()
 		}
-	case 6: // theme picker
+	case 6: // theme → the hub's Theme section
 		m.Dialogs = m.Dialogs[1:]
 		m.Refresh()
-		return m, m.OpenTheme()
+		m.OpenThemeSettings()
 	}
 	return m, nil
 }
@@ -625,11 +641,7 @@ func settingsFileAction(m *app.Model, d *app.Dialog, st app.SettingsState, fi in
 	fr := fileSettings[fi]
 	cur := st.Vals[fr.path]
 	if fr.path == "" {
-		if fr.label == "Hide thinking" {
-			cur = onoff(st.HideThinking)
-		} else {
-			cur = itoa(st.AutocompleteMax)
-		}
+		cur = localSettingVal(fr.label, st)
 	}
 	next := nextVal(fr.vals, cur)
 	if fr.local {
@@ -698,6 +710,11 @@ func applyLocalSetting(m *app.Model, fr fileSetting, next string) tea.Cmd {
 			_ = app.SavePrefs(prefsPath, prefs)
 			return nil
 		}
+	case "Tidy mode":
+		// SetTidy flips the live render and persists the global pref; the
+		// work is in-process only, so no Cmd and no settings.json write.
+		m.SetTidy(next == "on")
+		return nil
 	case "Tree filter mode":
 		return func() tea.Msg {
 			if err := pirpc.SetPiSetting(path, val); err != nil { // /tree reads it live
@@ -826,6 +843,40 @@ func activePathIDs(nodes []pirpc.TreeNode, leaf string) map[string]bool {
 		id = p
 	}
 	return out
+}
+
+// activePathOrder is activePathIDs in order: the leaf's branch as an id
+// slice root → leaf. The tree rows need it because "jump to message"
+// numbers the transcript blocks, and that numbering follows the branch's
+// chronological order, not the DFS order of the flat list.
+func activePathOrder(nodes []pirpc.TreeNode, leaf string) []string {
+	if leaf == "" {
+		return nil
+	}
+	parent := map[string]string{}
+	var walk func([]pirpc.TreeNode)
+	walk = func(ns []pirpc.TreeNode) {
+		for _, n := range ns {
+			if n.Entry.ParentID != nil {
+				parent[n.Entry.ID] = *n.Entry.ParentID
+			}
+			walk(n.Children)
+		}
+	}
+	walk(nodes)
+	var rev []string
+	for id := leaf; ; {
+		rev = append(rev, id)
+		p, ok := parent[id]
+		if !ok || p == "" {
+			break
+		}
+		id = p
+	}
+	for i, j := 0, len(rev)-1; i < j; i, j = i+1, j-1 {
+		rev[i], rev[j] = rev[j], rev[i]
+	}
+	return rev
 }
 
 // treeRow is one pi tree-list row: "• " when on the active path,
@@ -1101,7 +1152,7 @@ func All() []app.Builtin {
 				return app.PickerMsg{Kind: "model", Options: opts, Descs: descs, Providers: provs, Models: models, Current: m.ModelLbl}
 			}
 		}),
-		pi("tree", "Pi-style session tree (Enter views an entry)", "/tree [default|no-tools|user-only|labeled-only|all]", func(m *app.Model, arg string) tea.Cmd {
+		pi("tree", "Pi-style session tree (Enter opens the action menu)", "/tree [default|no-tools|user-only|labeled-only|all]", func(m *app.Model, arg string) tea.Cmd {
 			m.Status = "loading session tree…"
 			m.Refresh()
 			return loadTree(m, arg)
@@ -1271,9 +1322,26 @@ func All() []app.Builtin {
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				if arg == "" {
-					return m.OpenTheme()
+					m.OpenThemeSettings()
+					return nil
 				}
 				m.SetTheme(arg)
+				return nil
+			},
+		},
+		{
+			Name: "pet", Desc: "Pick the sidebar pet (18 animals + the ascii/classic looks — /pet lists all)", Usage: "/pet [name|ascii|classic]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				if arg == "" {
+					return m.OpenPet()
+				}
+				if m.SetPet(arg) {
+					return nil
+				}
+				m.AddBlock(app.Block{Kind: "notice",
+					Text: "unknown pet: " + arg + " — /pet lists all " + strconv.Itoa(len(pet.Entries())), Err: true})
+				m.Refresh()
 				return nil
 			},
 		},
@@ -1287,10 +1355,29 @@ func All() []app.Builtin {
 			},
 		},
 		{
+			Name: "tidy", Desc: "Tidy mode: tool calls collapse to one header line (/tidy on|off)", Usage: "/tidy [on|off]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				switch strings.ToLower(strings.TrimSpace(arg)) {
+				case "on", "off":
+					on := m.SetTidy(arg == "on")
+					m.AddBlock(app.Block{Kind: "notice", Text: "tidy mode " + onoff(on) +
+						" — tool calls show just their header"})
+				default:
+					m.ToggleTidy()
+				}
+				return nil
+			},
+		},
+		{
 			Name: "shortcuts", Desc: "Show keyboard shortcuts (/? or Ctrl+Shift+/)", Usage: "/shortcuts",
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
-				return m.OpenShortcuts()
+				// The standalone shortcuts window is gone: the settings
+				// hub's Shortcuts section is the same list, plus the
+				// hub-assigned Alt rows, and it can edit them.
+				m.OpenKeysSettings()
+				return nil
 			},
 		},
 		{

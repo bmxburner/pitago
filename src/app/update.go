@@ -13,6 +13,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"pitago/src/components/chat"
+	"pitago/src/components/pet"
 	"pitago/src/ext"
 	"pitago/src/extension"
 	"pitago/src/pirpc"
@@ -166,6 +167,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m.updateDialog(tea.KeyMsg{Type: t})
 			}
+			// Click-to-select on the tree and its action menu: one click on a
+			// tree row runs it (which opens the menu), and a click on a menu
+			// row selects it. Mouse is off by default (Alt+M), so this path
+			// stays a convenience over the keyboard, never a second code path
+			// with its own rules.
+			if mm.Action == tea.MouseActionPress && mm.Button == tea.MouseButtonLeft {
+				if d := m.Dialogs[0]; d.Kind == "tree" {
+					nm, cmd, _ := m.clickTreeDialog(d, mm)
+					return nm, cmd
+				}
+				if d := m.Dialogs[0]; d.Kind == "treeAction" {
+					nm, cmd, _ := m.clickTreeAction(d, mm)
+					return nm, cmd
+				}
+			}
 			return m, nil
 		}
 		if km, ok := msg.(tea.KeyMsg); ok {
@@ -310,9 +326,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.followRemote {
 			return m, nil // an in-flight owned fetch must not replace remote history
 		}
+		// A fetch queued against an older pi (the self-heal re-arm outlives a
+		// respawn) must be dropped, not applied: its client is closed, so its
+		// error is about the old child and would paint a fake "cannot connect
+		// to pi" over a session that is already healthy.
+		if msg.client != nil && msg.client != m.Pi {
+			return m, nil
+		}
 		if msg.err != nil {
 			m.connErr = msg.err.Error()
 			m.Status = "cannot connect to pi"
+			m.Refresh()
+			// A budget that ran out on a live-but-slow pi must not dead-end
+			// the TUI: keep polling in the background and let a later
+			// success clear the red line.
+			if msg.retry {
+				return m, m.fetchAllLater(m.probeOrDefault().RetryAfter)
+			}
 			return m, nil
 		}
 		m.ModelLbl = msg.state.Model.ID
@@ -342,6 +372,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Subagents = restoreSubagentsFromMessages(msg.msgs)
 		m.refreshSubagents(true)
 		m.blocks = nil
+		m.jumpBlock = -1 // a jump mark belongs to the transcript it was set in
 		m.tools = make(map[string]int)
 		m.progressByKey = make(map[string]int)
 		m.hist = nil
@@ -352,6 +383,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.retrying = false
 		m.restore(msg.msgs)
 		m.Status = "ready"
+		m.connErr = "" // a later success clears the startup error line
+		m.connected = true
 		m.planOn = false // fresh connect: plan latch is live-only
 		m.clearTeamWidgetState()
 		m.RefreshFollow()
@@ -570,12 +603,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case petTickMsg:
-		// 500ms loop while busy/flashing or a task is active: one timer also
-		// drives the task spinner and elapsed counter.
-		if m.pet.status.Busy() || m.pet.status.Flashing() || m.taskActive() {
+		// One timer drives the pet animation, the task spinner and the
+		// elapsed counter. It keeps running while the pet is busy/flashing,
+		// a task is active, or the pet section is simply on screen — a
+		// visible block blinks, sways and rotates even with pi idle. Hiding
+		// the section drops the last reason and the loop stops. In the
+		// classic look the tick only animates the faces — the animals do
+		// not wander, so rotation is skipped (the anchor stays put).
+		if m.petLooping() {
 			m.pet.tick++
+			// Lazily seed the rotation clock: a hand-built Model (tests) has
+			// a zero at, and time.Since on it is a huge bogus duration.
+			if m.pet.shown == "" {
+				m.pet.shown = pet.Resolve(m.PetName).Name
+				m.pet.at = time.Now()
+			}
+			if !m.petClassic() && time.Since(m.pet.at) >= petRotateEvery {
+				m.pet.shown = pet.Rotate(m.pet.shown, 1)
+				m.pet.at = time.Now()
+			}
 			m.Refresh()
-			return m, petTickCmd()
+			// Re-arm at the cadence the current state needs: fast for the
+			// elapsed counter, slow for a merely animated pet.
+			return m, petTickCmd(m.petInterval())
 		}
 		m.pet.ticking = false
 		return m, nil
@@ -606,6 +656,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.blocks = nil
+		m.jumpBlock = -1 // a jump mark belongs to the transcript it was set in
 		m.tools = make(map[string]int)
 		m.progressByKey = make(map[string]int)
 		m.curAsst, m.curThink = -1, -1
@@ -684,8 +735,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.Kind == "thinking" {
 			title = "Thinking level"
 		}
-		if msg.Kind == "theme" {
-			title = "Select theme"
+		if msg.Kind == "pet" {
+			title = "Select pet"
 		}
 		if msg.Kind == "sessions" {
 			title = "Resume session (current)"
@@ -713,7 +764,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Refresh()
 			return m, nil
 		}
-		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Models: msg.Models, Paths: msg.Paths, Payload: msg.Payload, Filter: msg.Filter, Scope: msg.Scope}
+		d := &Dialog{Kind: msg.Kind, Title: title, Options: msg.Options, Descs: msg.Descs, Providers: msg.Providers, Models: msg.Models, Paths: msg.Paths, Payload: msg.Payload, Filter: msg.Filter, Scope: msg.Scope, Current: msg.Current}
 		if msg.Kind == "model" {
 			// two-pane picker: left = providers, right = their models
 			d.Provs = buildProvs(msg.Providers)
@@ -835,8 +886,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				mode = "default"
 			}
 			d := &Dialog{Kind: "tree", Title: "Tree (" + mode + ")",
-				Message: "session tree · ↑↓ move · Enter views the full entry · type filters",
+				Message: "session tree · ↑↓ move · Enter opens the action menu · type filters",
 				Options: msg.Options, Descs: msg.Descs, Payload: msg.Payload,
+				// The entry id rides in Paths, the field every picker that
+				// acts on a row already uses (sessions: file, /fork: entry).
+				Paths: msg.TreeIDs, TreeJump: msg.TreeJump, TreeRole: msg.TreeRole,
 				Scope: mode, Filter: msg.Filter}
 			d.Reindex()
 			if msg.Current >= 0 {
@@ -1328,7 +1382,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.syncSideH()
 			m.Refresh()
 			return m, quitDisarmCmd(m.quitGen)
-		case tea.KeyCtrlB:
+		case tea.KeyCtrlE:
 			m.ToggleSide()
 			return m, nil
 		case tea.KeyCtrlY:
@@ -2268,6 +2322,9 @@ func filterableDialog(d *Dialog) bool {
 
 func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	d := m.Dialogs[0]
+	if d.Kind == "pet" {
+		return m.updatePetDialog(km, d)
+	}
 	if d.Kind == "team" {
 		return m.updateTeamDashboardDialog(km, d)
 	}
@@ -2298,7 +2355,6 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d.Cursor = n - 1
 			}
-			m.previewTheme(d)
 			d.TrajOff = 0 // new step → detail back to top
 		}
 		return m, nil
@@ -2309,7 +2365,6 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			} else {
 				d.Cursor = 0
 			}
-			m.previewTheme(d)
 			d.TrajOff = 0 // new step → detail back to top
 		}
 		return m, nil
@@ -2397,13 +2452,6 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
-		if d.Kind == "shortcuts" { // help page: Enter closes like Esc
-			m.Dialogs = m.Dialogs[1:]
-			m.refreshPiTasks()
-			m.drainQueuedDialogs()
-			m.Refresh()
-			return m, m.ReconcileTurnCmd()
-		}
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeySpace {
@@ -2734,6 +2782,22 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// CloseAllDialogs drops the whole dialog stack — the action menu AND the tree
+// behind it, which no key can do: Esc is pi's "back to the tree with the same
+// row selected" and must keep popping one at a time. It is the "close" action
+// of the menu, and it still promotes a parked extension request, so an
+// extension blocked on our UI is not stranded.
+func (m *Model) CloseAllDialogs() {
+	if len(m.Dialogs) == 0 {
+		return
+	}
+	m.Dialogs = nil
+	m.jumpBlock = -1 // the marked block belonged to the transcript behind it
+	m.refreshPiTasks()
+	m.drainQueuedDialogs()
+	m.Refresh()
+}
+
 // answerInput replies to an extension free-text dialog (ui.input /
 // ui.editor). Enter submits the typed value, Esc cancels. Either way the
 // extension resumes — e.g. pi-tasks createTask advances to the description
@@ -2935,9 +2999,17 @@ func (d *Dialog) Reindex() {
 		if prov != "" && normProv(providerAt(d.Providers, i)) != prov {
 			continue
 		}
+		// The provider haystack only applies to pickers that actually carry
+		// one: normProv("") is "other", so a pet/theme/notification option
+		// would otherwise match any filter containing an "o" (e.g. "owl")
+		// and the list would never narrow.
+		provHay := ""
+		if len(d.Providers) > 0 {
+			provHay = strings.ToLower(normProv(providerAt(d.Providers, i)))
+		}
 		if f == "" || strings.Contains(strings.ToLower(d.Options[i]), f) ||
 			(i < len(d.Descs) && strings.Contains(strings.ToLower(d.Descs[i]), f)) ||
-			strings.Contains(strings.ToLower(normProv(providerAt(d.Providers, i))), f) ||
+			strings.Contains(provHay, f) ||
 			strings.Contains(d.specHay(i), f) {
 			d.FIdx = append(d.FIdx, i)
 		}
