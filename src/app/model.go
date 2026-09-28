@@ -121,6 +121,7 @@ type Model struct {
 	liveGeneration      uint64 // invalidates transport messages queued before detach
 	blocks              []Block
 	toasts              []Toast        // ephemeral popups (model switch, yank…): never in chat history
+	toastSeq            int            // monotonic Toast.ID source: pairs a live popup with its viewer
 	notificationHistory []Toast        // session-RAM log of emitted toasts; bounded, never persisted
 	copyHint            string         // transient "copied N chars" shown in an open dialog's footer
 	copyGen             int            // guards the copyHint timer: a 2nd copy must not be cleared by the 1st

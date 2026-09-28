@@ -1392,6 +1392,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlE:
 			m.ToggleSide()
 			return m, nil
+		case tea.KeyCtrlX:
+			// The full text of the newest notification, without typing a
+			// command: opens the history with that entry selected and
+			// holds its countdown, so the popup cannot expire mid-read.
+			m.OpenNotificationsFromToast()
+			return m, nil
 		case tea.KeyCtrlY:
 			return m, m.YankLast()
 		case tea.KeyCtrlV:
@@ -2140,6 +2146,12 @@ func (m Model) handleUIRequest(raw []byte) Model {
 		// remain ephemeral toasts.
 		if isSubagentProgressMessage(req.Message) {
 			m.addChatNotice(req.Message, req.NotifyType == "error")
+		} else if title := strings.TrimSpace(req.Title); title != "" {
+			// pi already sends a title on notify; only the dialog methods
+			// were reading it, so an extension's heading was dropped here.
+			// Title + message both reach Ctrl+X, which shows them in full.
+			m.pushToastTitled(title, req.Message, req.NotifyType == "error")
+			m.Refresh()
 		} else {
 			m.AddBlock(Block{Kind: "notice", Text: req.Message, Err: req.NotifyType == "error"})
 		}
@@ -2390,6 +2402,20 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 				d.Cursor = n - 1
 			}
 		}
+		// The history's ←/→ scroll the detail pane, not the list: the list
+		// already has ↑↓ and PgUp/PgDn, and the text the row had to cut is
+		// the part that needs a dedicated key.
+		if d.Kind == "notification" {
+			m.updateNotificationDetail(km, d)
+		}
+		return m, nil
+	case tea.KeyHome, tea.KeyEnd:
+		// Home/End jump the same detail pane to its ends. The dialog switch
+		// had no case for them at all, so they used to fall through to the
+		// rune tail and do nothing.
+		if d.Kind == "notification" {
+			m.updateNotificationDetail(km, d)
+		}
 		return m, nil
 	case tea.KeyPgUp, tea.KeyPgDown:
 		if d.Kind == "tree" {
@@ -2409,6 +2435,8 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if d.Cursor < 0 {
 				d.Cursor = 0
 			}
+			// A new row is a new document: the pane returns to its top.
+			d.TrajOff = 0
 		}
 		return m, nil
 	case tea.KeyCtrlC:
@@ -2818,6 +2846,15 @@ func (m Model) dismissDialog(d *Dialog) (tea.Model, tea.Cmd) {
 		m.answerInput(d, true)
 	} else {
 		m.Dialogs = m.Dialogs[1:]
+		// Reading a notification pauses its countdown. Only release when the
+		// history is actually gone: dismissDialog runs for EVERY dialog
+		// close, so an unrelated dialog stacked on the open history (the
+		// extension-dialog path queues them) would otherwise end the hold
+		// while the reader is still there — and pruneToasts only releases,
+		// never re-freezes, so the popup would expire mid-read.
+		if !m.notificationHistoryOpen() {
+			m.resumeToasts()
+		}
 		// Events stay swallowed while a dialog is open: re-sync
 		// the sidebar in case task writes landed meanwhile.
 		m.refreshPiTasks()
