@@ -39,6 +39,7 @@ pitago wraps the `pi` agent in a beautiful terminal interface with:
 - Command palette with builtins and extension commands
 - File mention support (`@file`)
 - Image send via `@photo.png` or dropping/pasting file paths — or `Ctrl+V` on a copied screenshot (macOS needs `pngpaste`, Linux uses `wl-paste`/`xclip`). Vision over RPC, max 5 × 8MB. Paths collapse into `[Image N]` chips; `↓` moves into the tray, `←→` picks a chip, `⌫` deletes it, `Esc` back
+- Inline image display for sent images and images returned inside tool results (Kitty protocol — kitty, ghostty, wezterm, warp; PNG native, JPEG/GIF/WebP transcoded to PNG at render, GIF first frame only; anything else keeps the `□` placeholder). Width follows pi's `terminal.imageWidthCells`; force or disable with `PITAGO_IMAGE_PROTOCOL=kitty|iterm2|none` (`PI_IMAGE_PROTOCOL` also honoured)
 - Recent models picker
 - Clipboard integration (`Ctrl+Y` to yank last answer)
 - Optional Plannotator review surfaces via `/annotate`:
