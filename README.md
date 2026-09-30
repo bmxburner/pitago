@@ -141,6 +141,9 @@ go run ./src --provider anthropic --model claude-sonnet-4-20250514
 # Don't persist a session
 go run ./src --no-session
 
+# Load no pi extensions (same as `pi -ne`)
+go run ./src -ne      # or --no-extensions
+
 # Self-update to the latest GitHub release
 go run ./src --update   # or /update inside the app
 
@@ -214,11 +217,11 @@ script/release.sh v0.0.1
 
 ### Copying text and messages
 
-- **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls. In terminals where drag selection is unavailable, hold `Option`/`Shift` as before.
+- **With mouse on (default):** drag inside the chat to select and copy. Selection is clamped to the chat pane, so the sidebar is never included; dragging to the top/bottom edge auto-scrolls.
 - **Double-click** a chat line to select the whole rendered line.
-- **Right-click** an assistant block for `Copy markdown`, `Copy tables`, `Copy code blocks`, or `Copy plain text`.
-- With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse` (`/mouse off` for plain highlight-to-copy).
-- `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker (sidebar stays visible).
+- **Right-click** an assistant block for `Copy markdown`, `Copy N code block(s)`, `Copy N table(s)`, or `Copy plain text` — the menu lists only what the block actually contains.
+- With mouse off, native terminal selection works normally; start with `pitago --mouse=false` or toggle at runtime with `/mouse off`.
+- `Ctrl+Y` / `/yank` / `/copy` copies the last assistant answer; `Ctrl+O` opens the message picker.
 - `/copy-md`, `/copy-tables`, and `/copy-code` copy semantic content from the last assistant message.
 - Whole-message copy preserves raw Markdown, tables, fenced-code languages, and links; partial drag selection copies ANSI/OSC-free visible text.
 - In hosted sessions (terminal multiplexers / remote panes), Pitago emits OSC 52 to the controlling terminal. Delivery depends on the terminal's OSC 52 support; if it is unavailable or the payload exceeds the safe cap, Pitago reports the copy failure instead of claiming success. Other sessions use the local system clipboard with platform fallbacks.
@@ -242,6 +245,7 @@ Type `/` to open the command popup. Two kinds:
 - `/mouse` — toggle mouse (click sidebar, wheel scroll) at runtime, `[on|off]`; off for native text selection
 - `/update` — check GitHub releases + install latest (auto-checks in background, once a day)
 - `/thinking` — toggle thinking level
+- `/mcp` — MCP server manager, pi parity. One row per configured server: name plus `state · exposure · global|project` (`connected · 12 tools · 2 resources`, `failed: <first line of the error>`, `needs sign-in`, `disabled`), **servers needing attention first**, then by name; type to filter (the wheel moves the selection). `Enter` opens pi's per-server menu on the picked row — `Sign in` (only when it needs one; runs `pi mcp login` in the background with a status line, so the UI never blocks), `Tools` (the tool list), `Reconnect`, `Sign out` (deletes the stored OAuth credentials), `Exposure`, `Disable`; a disabled server offers `Enable` instead. `Esc`/`Ctrl+C` backs out to the list with the same row selected. Exposure and enable/disable are written into the `mcp.json` that defines the server, keeping every other key, its order and its indentation; the default value (`codemode`, enabled) removes the key rather than writing it, exactly like pi's own `updateMcpServerConfig`. Outside the manager the same actions run directly: `/mcp login <server>`, `/mcp logout <server>`, `/mcp reconnect <server>`. Data comes from `pi mcp list --json` (which is also what connects the servers, so it backs `Reconnect`); `/reload` is still needed for a *running session* to pick up a newly added server
 - `/tree` — session tree, pi-style rows. `Enter` (or a left click when mouse is on) opens pi's follow-up **Tree action** menu on the picked row: `Jump to message` (scrolls the chat to that message and marks it), `Copy entry`, `Fork from here` (user rows only — pi's fork rejects any other entry), `Back to tree`; rows that are not chat messages offer `View entry` (prints the full entry, e.g. a compaction or a label) instead of the jump. `Esc`/`Ctrl+C` returns to the tree with the same row selected. Real branch navigation (pi's `navigateTree` + `Summarize branch?`) is not possible over RPC — pi 0.87.1 has no `navigate_tree` command — so the menu is local; the tree itself is read-only over RPC
 - `/trajectory [all|tools|messages]` — harness-style run trace window (numbered steps with time + kind, type to filter, `Enter` views the full step in chat)
 - `/notification [filter]` — browse notification history (time + info/error, newest first; in RAM for the current Pitago run, max 200)
@@ -288,7 +292,7 @@ In short: `app` is a thin MVC shell, `components` holds pure view primitives,
 - `~/.config/pitago/keys.json` (0600) — saved API keys, several per provider with one active + optional name/added-date (`/login`, `/logout`; active key is also written to pi's `auth.json` so pi sees models)
 - `~/.config/pitago/pi_auth.json` (0600) — mirrored pi logins (OAuth account/expiry, no secrets) so `/login` lists + disconnects subscriptions done in stock pi
 - `~/.config/pitago/recent_models.json` — recent models (max 5)
-- `~/.config/pitago/prefs.json` (0600) — display prefs + the last model you picked (`currentModel`), passed to `pi` as `--provider/--model` at startup so a new window reopens on it (explicit `--provider`/`--model` flags win); `taskWidgetOff: true` hides the above-editor task widget (default shown); also the sidebar pet (`pet`, missing = default `cat`) and its look (`petStyle`: `ascii` (default) or `classic`)
+- `~/.config/pitago/prefs.json` (0600) — display prefs + the last model you picked (`currentModel`), passed to `pi` as `--provider/--model` at startup so a new window reopens on it (explicit `--provider`/`--model` flags win); also the sidebar pet (`pet`, missing = default `cat`) and its look (`petStyle`: `ascii` (default) or `classic`); `taskWidgetOff: true` hides the above-editor task widget (default shown)
 - `~/.config/pitago/theme.json` — active TUI theme (25 built-ins: default, one-dark, gruvbox, catppuccin-mocha, dracula… — `/theme` lists all)
 - `~/.config/pitago/update.json` — last update-check timestamp + tag (24h TTL)
 - `/tmp/pitago-pi-stderr.log` — pi child stderr

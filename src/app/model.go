@@ -36,20 +36,22 @@ type Dialog struct {
 	Message           string
 	Options           []string
 	Descs             []string
-	Providers         []string          // model picker: parallel provider per option
-	Models            []pirpc.ModelInfo // model picker: full specs parallel to Options
-	Provs             []string          // model picker: left pane (unique providers, [0]="All")
-	ProvConn          map[string]bool   // model picker: connected providers (green dot)
-	ProvCursor        int               // model picker: left-pane cursor
-	ProvFocus         bool              // model picker: true = providers focused
-	PsecIDs           []string          // pitago-setting: section id parallel to Provs (left pane)
-	Paths             []string          // sessions picker: parallel session file per option
-	Scope             string            // sessions picker: "current" | "all" (Tab toggles)
-	Payload           []string          // yank picker: full text per option; login: raw keys ("" for action rows)
-	BlockIdx          int               // blockactions: target chat block index (for Payload kinds)
-	TreeJump          []int             // tree: index of the row's user/assistant message among the transcript's user/assistant blocks, in order; -1 = no such block
-	TreeRole          []string          // tree: role ("user"/"assistant") of a message row, "" for every other entry type
-	Current           string            // the value in use, marked in the grid/list (pet: "●" cell)
+	Providers         []string              // model picker: parallel provider per option
+	Models            []pirpc.ModelInfo     // model picker: full specs parallel to Options
+	Provs             []string              // model picker: left pane (unique providers, [0]="All")
+	ProvConn          map[string]bool       // model picker: connected providers (green dot)
+	ProvCursor        int                   // model picker: left-pane cursor
+	ProvFocus         bool                  // model picker: true = providers focused
+	PsecIDs           []string              // pitago-setting: section id parallel to Provs (left pane)
+	Paths             []string              // sessions picker: parallel session file per option
+	Scope             string                // sessions picker: "current" | "all" (Tab toggles)
+	Payload           []string              // yank picker: full text per option; login: raw keys ("" for action rows)
+	BlockIdx          int                   // blockactions: target chat block index (for Payload kinds)
+	TreeJump          []int                 // tree: index of the row's user/assistant message among the transcript's user/assistant blocks, in order; -1 = no such block
+	TreeRole          []string              // tree: role ("user"/"assistant") of a message row, "" for every other entry type
+	McpServers        []pirpc.McpServerInfo // mcp: full server record per list row (transport, source, state, tools)
+	McpServer         pirpc.McpServerInfo   // mcp: the server an action/exposure dialog belongs to
+	Current           string                // the value in use, marked in the grid/list (pet: "●" cell)
 	Cursor            int
 	Filter            string // picker filter / secret buffer / rename buffer
 	Placeholder       string // free-text dialog: dim hint shown while the buffer is empty
@@ -181,8 +183,7 @@ type Model struct {
 	Dialogs             []*Dialog
 	connErr             string
 	probe               startupProbe            // startup readiness budget (zero = defaultProbe)
-	connected           bool                    // a connect landed: gates the welcome-header latch
-	started             bool                    // welcome header already painted post-connect
+	connected           bool                    // a connect landed (session identity/state came from pi)
 	HideThinking        bool                    // /settings: skip thinking blocks in chat (pi parity, pitago-local)
 	ShowImages          bool                    // terminal.showImages
 	ImageWidthCells     int                     // terminal.imageWidthCells
@@ -234,35 +235,42 @@ type Model struct {
 	savedModel          *ModelRef         // last user-picked model this process wrote (in-memory mirror of prefs.currentModel)
 	hideTaskWidget      bool              // suppress the above-editor task widget (prefs.taskWidgetOff); zero = show, so a bare Model{} keeps upstream behaviour
 	taskDisplay         taskDisplay       // resolved tasks-config.json display settings, refreshed by loadTaskDisplay
-	blockRows           []int             // rendered start line of each block (mouse hit-testing)
-	chatLines           []string          // absolute rendered chat content lines (selection source)
-	gutterCols          []int             // leading gutter cells per chat line (0 or 2), parallel to chatLines
-	sel                 Selection         // chat-column drag selection state
-	LastPressAt         time.Time         // last single-click timestamp (double-click detection)
-	LastPressLine       int               // line of last single-click
-	LastSelection       string            // last non-empty app-owned chat selection for /annotate-selection
-	PendingReview       *ReviewCapture    // captured Plannotator feedback awaiting Pi delivery (/annotate retry)
 	builtins            []Builtin
 	confirm             map[string]ConfirmFunc
-	expandTools         bool      // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
-	quitArm             time.Time // first Ctrl+C timestamp (second press within window quits)
-	quitGen             int       // arm generation (stale disarm ticks ignored)
-	escArm              time.Time // first Esc timestamp while running (second press within window cancels)
-	escGen              int       // arm generation (stale disarm ticks ignored)
-	mouseLeakAt         time.Time // last SGR mouse-report burst (split fragments within window are residue)
-	mouseBuf            string    // pending split tail ("[<65"…) waiting for its continuation (sequence, time-bound)
-	plugAction          string    // pending plugin op awaiting second confirm (auth gate)
-	plugSpec            string    // pending plugin spec (cleared on confirm/cancel/timeout)
-	plugAt              time.Time // first press timestamp for the pending plugin op
-	renderCache         []string  // per-block rendered output (renderBlocks reuses clean history)
-	renderCacheKey      []uint64  // fingerprint parallel to renderCache (see blockKey)
-	blockLine           []int     // transcript line where each block starts (parallel to m.blocks; hidden/skip blocks share the next visible line)
-	jumpBlock           int       // block index carrying the "jumped here" mark (-1 = no mark; New sets it, a Model literal without it would mark block 0)
-	chatContent         string    // transcript string currently loaded into vp (setChatContent skips an unchanged re-measure)
-	sideCache           string    // last built sidebar content (streaming reuses within sideThrottle)
-	sideCacheAt         time.Time // last sidebar rebuild
-	lastPaint           time.Time // last chat viewport paint (streaming coalesces to streamFrame)
-	pendingPaint        bool      // a coalesced paint is waiting on its flush tick
+	expandTools         bool           // Ctrl+G: expand every tool block (write/read/diff previews), pi-style
+	quitArm             time.Time      // first Ctrl+C timestamp (second press within window quits)
+	quitGen             int            // arm generation (stale disarm ticks ignored)
+	escArm              time.Time      // first Esc timestamp while running (second press within window cancels)
+	escGen              int            // arm generation (stale disarm ticks ignored)
+	mouseLeakAt         time.Time      // last SGR mouse-report burst (split fragments within window are residue)
+	mouseBuf            string         // pending split tail ("[<65"…) waiting for its continuation (sequence, time-bound)
+	plugAction          string         // pending plugin op awaiting second confirm (auth gate)
+	plugSpec            string         // pending plugin spec (cleared on confirm/cancel/timeout)
+	plugAt              time.Time      // first press timestamp for the pending plugin op
+	renderCache         []string       // per-block rendered output (renderBlocks reuses clean history)
+	renderCacheKey      []uint64       // fingerprint parallel to renderCache (see blockKey)
+	blockLine           []int          // transcript line where each block starts (parallel to m.blocks; hidden/skip blocks share the next visible line)
+	blockRows           []int          // rendered start line of each block (mouse hit-testing)
+	chatLines           []string       // absolute rendered chat content lines (selection source)
+	gutterCols          []int          // leading gutter cells per chat line (0 or 2), parallel to chatLines
+	sel                 Selection      // chat-column drag selection state
+	LastPressAt         time.Time      // last single-click timestamp (double-click detection)
+	LastPressLine       int            // line of last single-click
+	LastSelection       string         // last non-empty app-owned chat selection for /annotate-selection
+	PendingReview       *ReviewCapture // captured Plannotator feedback awaiting Pi delivery (/annotate retry)
+	jumpBlock           int            // block index carrying the "jumped here" mark (-1 = no mark; New sets it, a Model literal without it would mark block 0)
+	chatContent         string         // transcript string currently loaded into vp (setChatContent skips an unchanged re-measure)
+	sideCache           string         // last built sidebar content (streaming reuses within sideThrottle)
+	sideCacheAt         time.Time      // last sidebar rebuild
+	lastPaint           time.Time      // last chat viewport paint (streaming coalesces to streamFrame)
+	pendingPaint        bool           // a coalesced paint is waiting on its flush tick
+
+	// piTaskSeen records that a real pi-tasks store file was read for
+	// piTaskSeenFor. refreshPiTasks uses it to tell "no store configured"
+	// (extension absent, PI_TASKS=off, memory scope) from "the store we read
+	// was unlinked by 'Clear all'", which is an authoritative empty list.
+	piTaskSeen    bool
+	piTaskSeenFor string // session file the flag was armed for; a switch invalidates it
 }
 
 // quitArmWindow is the double-press window for Ctrl+C quit.
@@ -606,6 +614,25 @@ func (m *Model) AddBlock(b Block) int {
 // src/builtin drives the app through its exported API only, so asserting
 // that a tree action posted a block needs a way to count them.
 func (m Model) BlockCount() int { return len(m.blocks) }
+
+// LastNotice is the text of the most recent notice, which AddBlock
+// routes to the toast stack rather than the transcript. Same reason as
+// BlockCount: src/builtin drives the app through its exported API, and
+// the /mcp refusals (an unknown action, a name pi would not accept) are
+// only observable as notices.
+func (m Model) LastNotice() string {
+	if n := len(m.toasts); n > 0 {
+		return m.toasts[n-1].Text
+	}
+	if n := len(m.notificationHistory); n > 0 {
+		return m.notificationHistory[n-1].Text
+	}
+	return ""
+}
+
+// NoticeCount is how many notices have been emitted. Test seam, same
+// reason as BlockCount.
+func (m Model) NoticeCount() int { return len(m.toasts) + len(m.notificationHistory) }
 
 // addChatNotice appends a notice that is intentionally part of the
 // conversation. Most notices use AddBlock and stay ephemeral; subagent
@@ -1303,6 +1330,13 @@ type Builtin struct {
 // picker logic stays in src/builtin.
 const BuiltinLoginDialog = "login-dialog"
 
+// BuiltinMcpList is the hidden continuation of the /mcp builtin: the
+// `pi mcp list --json` run plus the row builder. app re-enters it via
+// RunBuiltin after every action that changes a server (sign-in,
+// sign-out, exposure, enable, disable, reconnect), because the rows
+// are pi-parity wording that belongs in src/builtin, not here.
+const BuiltinMcpList = "mcp-list"
+
 // ConfirmFunc runs the Enter action of a picker dialog kind.
 // Implementations live in src/builtin (see Confirmers).
 type ConfirmFunc func(m *Model, d *Dialog, ri int) (tea.Model, tea.Cmd)
@@ -1347,6 +1381,8 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.hideTaskWidget = !prefs.TaskWidgetVisible()
 	m.loadTaskDisplay()
 	m.RecentCmds = prefs.RecentCmds
+	m.hideTaskWidget = !prefs.TaskWidgetVisible()
+	m.loadTaskDisplay()
 	palette.Win = prefs.EffectiveAutocompleteMax()
 	m.ApplyImageSettings()
 }

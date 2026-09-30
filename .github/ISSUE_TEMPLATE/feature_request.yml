@@ -1,0 +1,49 @@
+name: Feature request
+description: Suggest a new capability, command, or improvement for pitago.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: |
+        What pitago makes hard or impossible today, and what you would
+        like instead.
+      placeholder: |
+        I want to jump back to a file I mentioned 50 messages ago.
+        Today I have to scroll manually or start a new session.
+    validations:
+      required: false
+
+  - type: dropdown
+    id: surface
+    attributes:
+      label: Where does this belong?
+      multiple: true
+      options:
+        - Chat / input
+        - Sidebar
+        - Command palette / slash command
+        - Model or provider management
+        - Themes
+        - Files or images
+        - Live sessions
+        - Extensions / marketplace
+        - Install / self-update
+        - Documentation
+        - Not sure
+    validations:
+      required: false
+
+  - type: dropdown
+    id: solution
+    attributes:
+      label: How should it be solved?
+      options:
+        - Change in pitago
+        - Change in pi (backend support over RPC)
+        - A pi extension, not core
+        - Documentation only
+        - Not sure
+    validations:
+      required: false

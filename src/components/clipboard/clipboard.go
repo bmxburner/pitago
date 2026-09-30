@@ -7,6 +7,7 @@ package clipboard
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -45,6 +46,14 @@ func IsHostedSession() bool {
 	return os.Getenv("ORCA_WORKTREE_ID") != "" || os.Getenv("ORCA_PANE_KEY") != ""
 }
 
+// Transport is the clipboard write implementation.
+//
+// It is a variable so tests can capture what would be copied instead of
+// performing the copy: a drag-release test that reaches the real Write would
+// overwrite the clipboard of whoever is running `go test`, and an OSC 52
+// test would emit a live set sequence to their terminal.
+var Transport = writeClipboard
+
 // Write copies text to the clipboard with the best available channel:
 //
 //  1. Hosted session       → OSC 52 only (the local system clipboard
@@ -54,11 +63,19 @@ func IsHostedSession() bool {
 //
 // OSC 52 is fire-and-forget: a non-nil Err is reported only when the
 // terminal write itself fails, never as proof the clipboard changed.
-func Write(text string) Status {
+func Write(text string) Status { return Transport(text) }
+
+// clipboardWriteAll is the atotto entry point. It is a variable so a test can
+// assert what would be handed to the system clipboard without writing to it:
+// `go test` must not replace the clipboard of whoever is running it.
+var clipboardWriteAll = clipboard.WriteAll
+
+// writeClipboard is the real transport behind Write.
+func writeClipboard(text string) Status {
 	if IsHostedSession() {
 		return writeOsc52(text)
 	}
-	if err := clipboard.WriteAll(text); err == nil {
+	if err := clipboardWriteAll(text); err == nil {
 		return Status{Channel: Atoto, Bytes: len(text), Chars: len([]rune(text))}
 	}
 	if s := writeExternal(text); s.Channel != None {
@@ -77,6 +94,12 @@ func Osc52String(text string) string {
 	return osc52.New(text).String()
 }
 
+// osc52Out is where the OSC 52 sequence goes. Bubble Tea owns stdout and
+// paints there, so the sequence is written to stderr; it is a variable so
+// tests can capture the sequence rather than emit a live one that would
+// replace the clipboard of the terminal running `go test`.
+var osc52Out io.Writer = os.Stderr
+
 // writeOsc52 emits the OSC 52 sequence to stderr (the terminal-facing
 // stream in a Bubble Tea app). Returns Channel=Osc52 on success.
 func writeOsc52(text string) Status {
@@ -90,7 +113,7 @@ func writeOsc52(text string) Status {
 		status.Err = fmt.Errorf("terminal produced an empty OSC 52 sequence")
 		return status
 	}
-	if _, err := fmt.Fprint(os.Stderr, seq); err != nil {
+	if _, err := fmt.Fprint(osc52Out, seq); err != nil {
 		status.Err = err
 		return status
 	}
@@ -98,37 +121,68 @@ func writeOsc52(text string) Status {
 	return status
 }
 
-// writeExternal runs a platform clipboard CLI as a fallback when atotto
-// fails. Mirrors the paste-path fallback style (src/app/paste.go).
-func writeExternal(text string) Status {
-	var cmd *exec.Cmd
+// externalHelper is one platform clipboard CLI fallback: the binary to look
+// for on PATH and the fixed arguments it needs.
+type externalHelper struct {
+	bin  string
+	args []string
+}
+
+// externalHelpers lists the clipboard CLIs to try, in order. It is a variable
+// so a test can exercise the multi-helper fallback chain on any platform.
+var externalHelpers = func() []externalHelper {
 	switch runtime.GOOS {
 	case "darwin":
-		cmd = exec.Command("pbcopy")
+		return []externalHelper{{bin: "pbcopy"}}
 	case "linux":
-		for _, bin := range []string{"wl-copy", "xclip", "xsel"} {
-			if path, err := exec.LookPath(bin); err == nil {
-				args := []string(nil)
-				if bin == "xclip" {
-					args = []string{"-i", "-selection", "clipboard"}
-				} else if bin == "xsel" {
-					args = []string{"-i", "--clipboard"}
-				}
-				cmd = exec.Command(path, args...)
-				break
-			}
+		// wl-copy first for Wayland, then the X11 helpers.
+		return []externalHelper{
+			{bin: "wl-copy"},
+			{bin: "xclip", args: []string{"-i", "-selection", "clipboard"}},
+			{bin: "xsel", args: []string{"-i", "--clipboard"}},
 		}
 	case "windows":
-		cmd = exec.Command("clip")
+		return []externalHelper{{bin: "clip"}}
 	default:
-		cmd = nil
+		return nil
 	}
-	if cmd == nil {
+}
+
+// lookPath and runCommand are the two points writeExternal touches the
+// process, kept as variables so tests can drive the fallback chain without a
+// real clipboard helper on the machine.
+var (
+	lookPath   = exec.LookPath
+	runCommand = func(cmd *exec.Cmd) error { return cmd.Run() }
+)
+
+// writeExternal runs platform clipboard CLIs until one delivers, mirroring
+// the paste-path fallback style (src/app/paste.go).
+//
+// Every installed helper is tried, not just the first found: a Linux box can
+// have wl-copy present but unusable (no Wayland session) while xclip works, and
+// stopping at the first would report failure over a backend that would have
+// succeeded. The last error is kept so an all-failed chain still explains
+// itself.
+func writeExternal(text string) Status {
+	var lastErr error
+	installed := false
+	for _, h := range externalHelpers() {
+		path, err := lookPath(h.bin)
+		if err != nil {
+			continue // not installed; try the next one
+		}
+		installed = true
+		cmd := exec.Command(path, h.args...)
+		cmd.Stdin = bytes.NewReader([]byte(text))
+		if err := runCommand(cmd); err == nil {
+			return Status{Channel: Atoto, Bytes: len(text), Chars: len([]rune(text))}
+		} else {
+			lastErr = err
+		}
+	}
+	if !installed {
 		return Status{Channel: None}
 	}
-	cmd.Stdin = bytes.NewReader([]byte(text))
-	if err := cmd.Run(); err != nil {
-		return Status{Channel: None, Err: err}
-	}
-	return Status{Channel: Atoto, Bytes: len(text), Chars: len([]rune(text))}
+	return Status{Channel: None, Err: lastErr}
 }

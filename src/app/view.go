@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 
 	"pitago/src/components/format"
@@ -92,20 +93,20 @@ func (m *Model) renderBlocks() string {
 	if cw < 10 {
 		cw = 10
 	}
-	if len(m.blocks) == 0 && m.connErr == "" && !m.started {
-		// fresh chat: pi-style startup header (logo + resources + ready).
+	if len(m.blocks) == 0 && m.connErr == "" {
+		// Empty chat: pi-style startup header (logo + resources + ready).
 		//
-		// The latch belongs HERE, next to the paint, not in the connect
-		// handler: a fast pi answers get_state within the first frames, so a
-		// handler-side latch means the header is suppressed before it was
-		// ever drawn. Pre-connect paints keep showing it (the user is
-		// watching "connecting to pi…"), and the first paint AFTER a connect
-		// has landed shows it once and latches — so a later connErr that
-		// clears can never bring the logo back mid-session.
+		// It is painted on EVERY empty-chat paint, pre- and post-connect,
+		// and disappears with the first transcript block. It used to latch
+		// after one paint ("shown once, never again"), which blanked the
+		// chat one frame after pi connected: the latch fired on the very
+		// paint that drew the logo, the next paint had nothing to draw, and
+		// the user saw the PITAGO banner for a moment and then an empty
+		// pane. A session only leaves the empty state through a block or a
+		// session reset, and a reset is exactly when pi shows the banner
+		// again — so "no blocks and no error" is the whole condition, and
+		// no latch is needed.
 		b.WriteString(m.welcomeView(w))
-		if m.connected {
-			m.started = true
-		}
 	}
 	if m.connErr != "" {
 		b.WriteString(gutter(errStyle.Render("×"), errStyle.Render("! "+m.connErr)+"\n"))
@@ -235,9 +236,26 @@ func ly(s string) int {
 // chatRowToBlock maps a screen y (chat column, 0-indexed absolute row
 // AFTER the header) to the block index under it, or -1. y is the mouse row;
 // the header occupies row 0 (renderHeader), the viewport starts at row 1.
+//
+// The row is resolved against the painted chat frame, not m.vp: with a task
+// widget or plugin panel up the frame is a shrunk, re-pinned copy, so m.vp's
+// offset points at a different block than the one the user right-clicked.
+// The same reasoning gates the right-click itself — a row below the chat
+// frame is a panel, not a block.
 func (m *Model) chatRowToBlock(screenY int) int {
-	abs := m.vp.YOffset + (screenY - 1)
+	chatVp := m.chatViewport()
+	if screenY < 1 || screenY > chatVp.Height {
+		return -1
+	}
+	abs := chatVp.YOffset + (screenY - 1)
 	if abs < 0 {
+		return -1
+	}
+	// Blank rows carry no block. Without this the loop below returns the last
+	// block that starts at or before abs, so right-clicking the empty space
+	// under a short transcript would open that block's copy menu — a menu for
+	// content the pointer was nowhere near.
+	if strings.TrimSpace(m.chatLine(abs)) == "" {
 		return -1
 	}
 	idx := -1
@@ -2606,6 +2624,46 @@ func (m Model) teamPanelActive() bool {
 	return len(m.TeamWidgetLines) > 0 && m.TeamWidgetSeen && m.TeamWidgetVisible
 }
 
+// chatFrameGeometry computes the viewport the chat body is actually painted
+// from, given the panels View() has already rendered. The painted geometry is
+// not always m.vp's: the task widget and the generic plugin panels are derived
+// at paint time, so the chat is drawn from a shrunk, possibly re-pinned copy.
+// Anything that maps a screen row to a transcript line must use this same
+// geometry — mapping against m.vp makes a press resolve to a different line
+// than the one that gets highlighted, and lets a press that lands on a panel
+// select an unrelated chat line.
+func (m Model) chatFrameGeometry(inlineUI bool, teamPanel, taskPanel, extAbove, extBelow string) viewport.Model {
+	// The team panel's rows are already reserved from m.vp by
+	// applyTeamPanelH (same path as the popups), so the local copy only gives
+	// up rows for the task widget and the generic plugin panels — the two
+	// surfaces that are derived at paint time. lipgloss reports an empty
+	// string as one row, so measure them with panelHeight.
+	extra := panelHeight(taskPanel) + panelHeight(extAbove) + panelHeight(extBelow)
+	chatVp := m.vp
+	chatVp.Height = m.chatFrameRows(max(0, chatVp.Height-extra), panelHeight(teamPanel)+extra, inlineUI)
+	// Shrinking Height without re-pinning drops rows from the BOTTOM of the
+	// transcript (viewport.View() renders lines[offset:offset+Height]), so the
+	// newest — most important — chat line would never be painted. Re-pin the
+	// copy when the copy is the shrunk one and the user was already following
+	// the tail; a user scrolled up reading history keeps their offset.
+	if chatVp.Height != m.vp.Height && m.vp.AtBottom() {
+		chatVp.GotoBottom()
+	}
+	return chatVp
+}
+
+// chatViewport is chatFrameGeometry for callers outside View(), which have no
+// rendered panels to hand it. The panel builders are pure string assembly over
+// small model state, so recomputing them per mouse event is cheaper than
+// caching geometry that could drift from what View() actually paints.
+func (m Model) chatViewport() viewport.Model {
+	teamPanel := m.renderTeamWidget()
+	extBudget := m.extPanelBudget(panelHeight(teamPanel))
+	extAbove := m.renderExtWidgets("aboveEditor", extBudget)
+	extBelow := m.renderExtWidgets("belowEditor", max(0, extBudget-panelHeight(extAbove)))
+	return m.chatFrameGeometry(m.isInlineUI(), teamPanel, m.renderTaskWidget(), extAbove, extBelow)
+}
+
 // chatFrameRows is the chat's share of the frame. Everything the frame paints
 // outside the chat — header, input, live panels, popups — is measured here so
 // the parts sum to exactly winH. alloc is what m.vp already holds after
@@ -2952,28 +3010,14 @@ func (m Model) View() string {
 	extBudget := m.extPanelBudget(panelHeight(teamPanel))
 	extAbove := m.renderExtWidgets("aboveEditor", extBudget)
 	extBelow := m.renderExtWidgets("belowEditor", max(0, extBudget-panelHeight(extAbove)))
-	chatVp := m.vp
-	// The team panel's rows are already reserved from m.vp by
-	// applyTeamPanelH (same path as the popups), so the local copy only gives
-	// up rows for the task widget and the generic plugin panels — the two
-	// surfaces that are derived at paint time. lipgloss reports an empty
-	// string as one row, so measure them with panelHeight.
-	extra := panelHeight(taskPanel) + panelHeight(extAbove) + panelHeight(extBelow)
-	chatVp.Height = m.chatFrameRows(max(0, chatVp.Height-extra), panelHeight(teamPanel)+extra, inlineUI)
-	// Shrinking Height without re-pinning drops rows from the BOTTOM of the
-	// transcript (viewport.View() renders lines[offset:offset+Height]), so the
-	// newest — most important — chat line would never be painted. Re-pin the
-	// copy when the copy is the shrunk one and the user was already following
-	// the tail; a user scrolled up reading history keeps their offset.
-	if chatVp.Height != m.vp.Height && m.vp.AtBottom() {
-		chatVp.GotoBottom()
-	}
+	chatVp := m.chatFrameGeometry(inlineUI, teamPanel, taskPanel, extAbove, extBelow)
 	// The selection overlay runs on this rendered viewport copy, not on m.vp:
 	// highlighting m.vp instead would highlight different pixels than the
 	// ones being drawn.
 	chatView := func() string {
 		return padToHeight(overlaySelection(chatVp.View(), chatVp.YOffset, m.sel, m.gutterCols), chatVp.Height)
 	}
+
 	input := m.renderInput()
 	popupOpen := m.cmdOpen || m.atOpen || inlineUI || m.inputOpen()
 	// A popup replaces the body wholesale, so build exactly one of the two

@@ -152,9 +152,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			// Trace windows: wheel over the left list moves the selection,
 			// wheel over the detail scrolls it (chat/sidebar stay behind).
-			if d := m.Dialogs[0]; (d.Kind == "trajectory" || d.Kind == "tree") &&
+			if d := m.Dialogs[0]; (d.Kind == "trajectory" || d.Kind == "tree" || d.Kind == "mcp") &&
 				(mm.Button == tea.MouseButtonWheelUp || mm.Button == tea.MouseButtonWheelDown) {
 				if d.Kind == "tree" {
+					return m.updateTreeWheel(d, mm)
+				}
+				if d.Kind == "mcp" {
+					// The /mcp list is a plain row list with no detail
+					// pane, so the wheel moves the selection exactly as
+					// it does on the tree.
 					return m.updateTreeWheel(d, mm)
 				}
 				return m.updateTrajWheel(d, mm)
@@ -236,7 +242,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			SettingsMsg, SettingsRefreshMsg, MarketMsg, PluginChangeMsg,
 			LoginSyncedMsg, LoginReloadMsg, OAuthGoneMsg, SettingWrittenMsg,
 			LoginSwitchMsg, LoginDeleteMsg, LoginRenameOpenMsg, LogoutDoneMsg,
-			LogoutListMsg:
+			LogoutListMsg, McpMsg, McpActionMsg, McpConfigMsg:
 		default:
 			return m, nil
 		}
@@ -906,6 +912,41 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Refresh()
 		return m, nil
 
+	case McpMsg:
+		m.openMcpListMsg(msg)
+		return m, nil
+
+	case McpActionMsg:
+		// A sign-in/out changes what the server reports (needs-auth or
+		// not), so the list is re-read: `pi mcp list` is also what
+		// connects, so this doubles as the reconnect.
+		m.Status = "ready"
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "mcp " + msg.Action + " failed: " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		notice := msg.Done()
+		if msg.Notice != "" {
+			notice += " — " + msg.Notice
+		}
+		m.AddBlock(Block{Kind: "notice", Text: notice})
+		m.PopMcpMenu()
+		return m, m.RunBuiltin(BuiltinMcpList, "")
+
+	case McpConfigMsg:
+		m.Status = "ready"
+		if msg.Err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: "mcp: " + msg.Err.Error(), Err: true})
+			m.Refresh()
+			return m, nil
+		}
+		if msg.Notice != "" {
+			m.AddBlock(Block{Kind: "notice", Text: msg.Notice})
+		}
+		m.PopMcpMenu()
+		return m, m.RunBuiltin(BuiltinMcpList, "")
+
 	case TrajectoryMsg:
 		m.Status = "ready"
 		if msg.Err != nil {
@@ -1235,14 +1276,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m2, cmd
 		}
 		// Right-click on an assistant chat block → semantic copy menu.
-		// Chat-only: sidebars keep their own click handlers below.
+		// Chat-only: sidebars keep their own click handlers below. The
+		// bound is the painted chat frame, not m.vp — rows below it are the
+		// task widget or a plugin panel, not transcript blocks.
 		if m.Mouse && msg.Action == tea.MouseActionPress &&
 			msg.Button == tea.MouseButtonRight && !m.overSide(msg.X) &&
-			msg.Y >= 1 && msg.Y < m.vp.Height {
+			msg.Y >= 1 && msg.Y <= m.chatViewport().Height {
 			if idx := m.chatRowToBlock(msg.Y); idx >= 0 && m.blocks[idx].Kind == "assistant" {
-				if d := newBlockActionsDialog(m.blocks, idx); d != nil {
-					m.Dialogs = append(m.Dialogs, d)
-					m.Refresh()
+				if m.OpenBlockActions(idx) {
 					return m, nil
 				}
 			}
@@ -2891,6 +2932,10 @@ func (m *Model) answerDialog(d *Dialog, choice int) {
 	}
 	m.Dialogs = m.Dialogs[1:]
 	m.fireUI(extension.Response(d.ID, d.Method, choice, d.Options))
+	// 'Clear all' in the extension menu answers this very dialog and emits
+	// no tool result, so the store file is the only signal. Re-sync here or
+	// the sidebar Todos panel and the above-editor widget keep the old list.
+	m.refreshPiTasks()
 	m.applyPopupH()
 	m.drainQueuedDialogs()
 	m.Refresh()
