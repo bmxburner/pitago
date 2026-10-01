@@ -327,6 +327,7 @@ func loadSettingsState(m *app.Model) (app.SettingsState, error) {
 		Theme:           app.OrDefault(m.ThemeName, "default"),
 		Vals:            fileSettingVals(cfg),
 		HideThinking:    m.HideThinking,
+		ThinkingView:    m.ThinkingView,
 		Tidy:            m.Tidy,
 		AutocompleteMax: palette.Win,
 	}
@@ -409,6 +410,8 @@ var fileSettings = []fileSetting{
 		toVal: func(d string) any { return d == "on" }},
 	{label: "Tidy mode", group: "Pitago", path: "", vals: []string{"on", "off"}, local: true,
 		toVal: func(d string) any { return d == "on" }},
+	{label: "Thinking view", group: "Pitago", path: "", vals: []string{"collapsed", "tail", "full"}, local: true,
+		toVal: func(d string) any { return d }},
 	{label: "Autocomplete max", group: "Pitago", path: "", vals: []string{"3", "5", "7", "10", "15", "20"}, local: true,
 		toVal: func(d string) any { return atoiOr(d, 10) }},
 	{label: "Tree filter mode", group: "Pitago", path: "treeFilterMode", vals: []string{"default", "no-tools", "user-only", "labeled-only", "all"}, local: true,
@@ -494,6 +497,8 @@ func localSettingVal(label string, st app.SettingsState) string {
 		return onoff(st.HideThinking)
 	case "Tidy mode":
 		return onoff(st.Tidy)
+	case "Thinking view":
+		return st.ThinkingView
 	case "Autocomplete max":
 		return itoa(st.AutocompleteMax)
 	}
@@ -647,6 +652,7 @@ func settingsFileAction(m *app.Model, d *app.Dialog, st app.SettingsState, fi in
 	if fr.local {
 		save := applyLocalSetting(m, fr, next)
 		st.HideThinking = m.HideThinking
+		st.ThinkingView = m.ThinkingView
 		st.AutocompleteMax = palette.Win
 		opts, descs, cats := settingsOptions(st)
 		d.Options, d.Descs, d.Providers, d.Settings = opts, descs, cats, st
@@ -714,6 +720,11 @@ func applyLocalSetting(m *app.Model, fr fileSetting, next string) tea.Cmd {
 		// SetTidy flips the live render and persists the global pref; the
 		// work is in-process only, so no Cmd and no settings.json write.
 		m.SetTidy(next == "on")
+		return nil
+	case "Thinking view":
+		// Same shape as Tidy mode: a client-side render choice, persisted
+		// to pitago's own prefs rather than pi's settings.json.
+		m.SetThinkingView(next)
 		return nil
 	case "Tree filter mode":
 		return func() tea.Msg {
@@ -1113,7 +1124,7 @@ func All() []app.Builtin {
 			},
 		},
 		{
-			Name: "annotate", Desc: "Review a file, folder, or latest reply with plannotator-tui (doctor · surface auto|tui|clipboard)", Usage: "/annotate [path|last|doctor|surface <surface>]",
+			Name: "annotate", Desc: "Review a file, folder, or latest reply with plannotator-tui (doctor · surface auto|tui|clipboard · --no-deliver)", Usage: "/annotate [path|last|doctor|surface <surface>|--no-deliver <path>]",
 			Origin: OriginPitago,
 			Run: func(m *app.Model, arg string) tea.Cmd {
 				return m.OpenAnnotate(arg)
@@ -1376,6 +1387,19 @@ func All() []app.Builtin {
 						" — tool calls show just their header"})
 				default:
 					m.ToggleTidy()
+				}
+				return nil
+			},
+		},
+		{
+			Name: "thinking-view", Desc: "How much of a thinking block renders: collapsed, tail, full (/thinking-view [collapsed|tail|full])", Usage: "/thinking-view [collapsed|tail|full]",
+			Origin: OriginPitago,
+			Run: func(m *app.Model, arg string) tea.Cmd {
+				if want := strings.ToLower(strings.TrimSpace(arg)); want != "" {
+					mode := m.SetThinkingView(want)
+					m.AddBlock(app.Block{Kind: "notice", Text: "thinking view → " + mode})
+				} else {
+					m.CycleThinkingView()
 				}
 				return nil
 			},

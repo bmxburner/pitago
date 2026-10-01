@@ -42,6 +42,12 @@ type ReviewRequest struct {
 	Preferred     ReviewSurface
 	Placement     string
 	TUIExecutable string
+	// NoDeliver runs the TUI handoff and captures the review without turning it
+	// into a Pi turn. It exists for the plannotator plan gate: the extension
+	// drives that gate and reads the plannotator-tui record itself, so delivering
+	// here as well would hand the agent the same feedback twice. See
+	// /annotate --no-deliver.
+	NoDeliver bool
 }
 
 type ReviewError struct {
@@ -233,11 +239,15 @@ func (m *Model) OpenAnnotate(arg string) tea.Cmd {
 		m.setAnnotateSurface(strings.TrimSpace(strings.TrimPrefix(arg, "surface ")))
 		return nil
 	}
+	// --no-deliver <path>: run the TUI and capture the review, but do not turn it
+	// into a Pi turn. The caller (the plannotator plan gate) owns delivery.
+	arg, noDeliver := parseNoDeliver(arg)
 	request, err := m.annotateRequest(arg)
 	if err != nil {
 		m.AddBlock(Block{Kind: "notice", Text: err.Error(), Err: true})
 		return nil
 	}
+	request.NoDeliver = noDeliver
 	caps := DetectReviewCapabilities(request)
 	surface, err := SelectReviewSurface(request, caps)
 	if err != nil {
@@ -291,6 +301,24 @@ func (m *Model) OpenAnnotate(arg string) tea.Cmd {
 		m.Refresh()
 		return nil
 	}
+}
+
+// parseNoDeliver strips a leading --no-deliver from an /annotate argument and
+// reports whether it was present. The remainder is unquoted, because callers
+// quoting the path (a temp path can contain spaces) would otherwise be reviewed
+// as a literal path including the quotes.
+func parseNoDeliver(arg string) (string, bool) {
+	rest, ok := strings.CutPrefix(arg, "--no-deliver")
+	if !ok {
+		return arg, false
+	}
+	arg = strings.TrimSpace(rest)
+	if len(arg) >= 2 && strings.HasPrefix(arg, `"`) && strings.HasSuffix(arg, `"`) {
+		if unquoted, err := strconv.Unquote(arg); err == nil {
+			arg = unquoted
+		}
+	}
+	return arg, true
 }
 
 func (m *Model) annotateRequest(arg string) (ReviewRequest, error) {
@@ -453,6 +481,19 @@ func (m *Model) handleReviewDone(msg reviewDoneMsg) tea.Cmd {
 		if capture.Outcome == reviewOutcomeDismissed {
 			m.AddBlock(Block{Kind: "notice", Text: "annotate tui closed · nothing was sent"})
 			m.PendingReview = nil
+			m.Refresh()
+			return nil
+		}
+		if msg.Request.NoDeliver {
+			// The caller reads the plannotator-tui record itself. Delivering here
+			// too would hand the agent the same feedback twice, so stop: the
+			// record on disk is the single source of truth.
+			m.PendingReview = nil
+			verb := "annotations"
+			if capture.AnnotationCount == 1 {
+				verb = "annotation"
+			}
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("annotate tui sent %d %s · %s · not delivered (--no-deliver)", capture.AnnotationCount, verb, capture.Outcome)})
 			m.Refresh()
 			return nil
 		}
