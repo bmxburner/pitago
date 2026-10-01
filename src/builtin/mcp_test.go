@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	"pitago/src/app"
 	"pitago/src/pirpc"
 )
@@ -27,6 +29,15 @@ func mcpPanelModel(t *testing.T) *app.Model {
 	}
 	t.Setenv("PI_CODING_AGENT_DIR", dir)
 	m := app.New(nil, t.TempDir())
+	// A real session always has a size before the hub is usable, and the
+	// hub's actions column is only reachable once it has one.
+	mm, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	switch got := mm.(type) {
+	case app.Model:
+		m = got
+	case *app.Model:
+		m = *got
+	}
 	return &m
 }
 
@@ -258,6 +269,10 @@ func TestHubPiActionRowsRunFromTheServerMenu(t *testing.T) {
 	}
 	// Enter on that row: focus the column and mark the run, exactly as the
 	// hub's key handler does.
+	// Establish the same invariant a keypress would: the column has to be
+	// on screen before an action can be asked for.
+	m.SyncMcpHubActions(d)
+	t.Logf("PROBE drawn=%v", d.McpActDrawn)
 	d.McpActFocus, d.McpActCursor, d.McpActRun = true, ri, true
 	m.UseBuiltins(All(), Confirmers())
 	mm, cmd := confirmPconfig(m, d, ri)
@@ -331,6 +346,7 @@ func TestHubEditAndRemoveFromTheActionsColumn(t *testing.T) {
 	if row < 0 {
 		t.Fatalf("no Edit row: %v", d.McpAct)
 	}
+	m.SyncMcpHubActions(d)
 	d.McpActFocus, d.McpActCursor, d.McpActRun = true, row, true
 	mm, _ := confirmPconfig(m, d, 0)
 	got := mm.(*app.Model)
@@ -369,6 +385,7 @@ func TestHubEditAndRemoveFromTheActionsColumn(t *testing.T) {
 	if rm < 0 {
 		t.Fatalf("no Remove row: %v", d2.McpAct)
 	}
+	m2.SyncMcpHubActions(d2)
 	d2.McpActFocus, d2.McpActCursor, d2.McpActRun = true, rm, true
 	mm, _ = confirmPconfig(m2, d2, 0)
 	got = mm.(*app.Model)
@@ -385,6 +402,7 @@ func TestHubEditAndRemoveFromTheActionsColumn(t *testing.T) {
 		t.Error("the first press must leave the gate armed on the Remove row")
 	}
 	// The second press inside the window removes it.
+	m2.SyncMcpHubActions(d2)
 	d2.McpActRun = true
 	mm, _ = confirmPconfig(got, d2, 0)
 	got = mm.(*app.Model)

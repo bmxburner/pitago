@@ -60,6 +60,8 @@ type Dialog struct {
 	McpActCursor      int         // highlighted action
 	McpActFocus       bool        // whether the third column has keyboard focus
 	McpActRun         bool        // Enter asked the actions column to run its highlighted row
+	McpActDrawn       bool        // the third column is actually on screen, so it may be entered or run
+	McpBaseMsg        string      // the MCP section's message without the actions hint, which is derived per render
 	McpEdit           McpEditMode // hub MCP section: pane 3 is editing an entry
 	Current           string      // the value in use, marked in the grid/list (pet: "●" cell)
 	Cursor            int

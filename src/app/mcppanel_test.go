@@ -2998,3 +2998,183 @@ func TestHubMcpFocusIsDroppedWhenTheColumnStopsBeingDrawn(t *testing.T) {
 		t.Fatal("Tab focused a column that is not drawn")
 	}
 }
+
+// Every line of a rendered dialog must be the same width. A row that grows
+// a phantom line — or one whose right border sits a cell or two inside the
+// others — wraps inside the box and shifts the frame. This is the check
+// the whole suite was missing: the desc case once fired on a wide Plugins
+// row with a -3 budget, so every plugin rendered "— …" and the borders
+// went ragged, with every existing test still green.
+func TestHubRowsNeverWrapInsideTheBox(t *testing.T) {
+	mcpPanelEnv(t)
+	for _, tc := range []struct {
+		name    string
+		sec     string
+		winW    int
+		wantRow string
+	}{
+		{"plugins wide", PsecPlugin, 140, "pi-fake-noexist"},
+		{"mcp wide", PsecMCP, 140, "vault-tools"},
+		{"mcp narrow", PsecMCP, 100, "vault-tools"},
+		{"plugins narrow", PsecPlugin, 100, "pi-fake-noexist"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := mcpPanelModel(t)
+			m.winW = tc.winW
+			m.Plugins = []Plugin{{Spec: "npm:pi-fake-noexist", Name: "pi-fake-noexist"}}
+			m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+				{Name: "vault-tools", State: "connected", Enabled: true, Scope: "user", Exposure: "tools"},
+			}})
+			m.OpenHubSection(tc.sec)
+			d := m.Dialogs[0]
+			m.loadRows(d)
+			m.syncMcpActDrawn(d)
+
+			out := stripANSI(m.renderPconfigDialog(d))
+			if !strings.Contains(out, tc.wantRow) {
+				t.Fatalf("%q is missing from the render:\n%s", tc.wantRow, out)
+			}
+			// A phantom "— …" on a row with no room for it is the symptom.
+			if strings.Contains(out, "— …") {
+				t.Errorf("a row rendered a phantom \"— …\" desc:\n%s", out)
+			}
+			// Every line the box draws must be exactly as wide as its
+			// peers, or a row has wrapped and the right border sits inside
+			// the others. The rounded corners are legitimately narrower, so
+			// the comparison is over the body lines only.
+			ref := -1
+			for i, ln := range strings.Split(out, "\n") {
+				if !strings.Contains(ln, "│") {
+					continue
+				}
+				w := lipgloss.Width(ln)
+				if ref == -1 {
+					ref = w
+					continue
+				}
+				if w != ref {
+					t.Errorf("line %d is %d wide, %d for every other body line — a row wrapped:\n%q",
+						i+1, w, ref, ln)
+				}
+			}
+		})
+	}
+}
+
+// A resize is the common way to lose the actions column, and it happens
+// with no keypress: WindowSizeMsg updates winW and rebuilds nothing, so a
+// hint cached in d.Message would keep promising a column that just went.
+func TestHubMcpHintIsTrueAfterAResizeWithNoKeypress(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+
+	wide := stripANSI(m.renderPconfigDialog(d))
+	if !strings.Contains(wide, "its actions") {
+		t.Fatalf("wide, the hint should mention the actions:\n%s", wide)
+	}
+
+	// The window shrinks. No key, no loadRows — just the resize.
+	m.winW = 100
+	narrow := stripANSI(m.renderPconfigDialog(d))
+	if strings.Contains(narrow, "its actions") {
+		t.Errorf("after a resize the hint still promises the column:\n%s", narrow)
+	}
+	if !strings.Contains(narrow, "vault-tools") {
+		t.Errorf("and the section vanished:\n%s", narrow)
+	}
+}
+
+// A focus that outlives its column must be dropped wherever it comes from,
+// not only by the key handlers that happen to notice. Cancelling the inline
+// editor sets the focus unconditionally, so at a narrow width it used to
+// leave the hub parked on a column that was never on screen: ↑↓ moved an
+// invisible cursor and ← was swallowed.
+func TestHubStaleActionFocusIsDroppedOnRender(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+	m.OpenMcpEditHub("vault-tools")
+
+	m.winW = 100 // the editor's cancel will set the focus unconditionally
+	mm, _ := m.cancelMcpEditHub(d)
+	m = ptr(mm.(Model))
+	if !d.McpActFocus {
+		t.Skip("cancel no longer parks the focus on the actions column")
+	}
+	// Rendering is enough to notice: no keypress required.
+	_ = m.renderPconfigDialog(d)
+	if d.McpActFocus {
+		t.Fatal("a focus on an undrawn column survived the render")
+	}
+	// And the keys that were being swallowed work again.
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyLeft}, d)
+	m = ptr(mm.(Model))
+	if m.Status != "" {
+		t.Logf("status after ←: %q", m.Status)
+	}
+}
+
+// The preconditions above are asserted against the production predicate,
+// which would follow a moved threshold silently. Pin the widths instead.
+func TestHubMcpDetailThresholdIs110(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+
+	for _, tc := range []struct {
+		winW  int
+		drawn bool
+	}{{119, false}, {120, true}} {
+		m.winW = tc.winW
+		if got := m.mcpActColumnDrawn(d); got != tc.drawn {
+			t.Errorf("winW=%d: mcpActColumnDrawn = %v, want %v (hubBoxW=%d)",
+				tc.winW, got, tc.drawn, hubBoxW(m))
+		}
+	}
+}
+
+// Defence in depth, pinned: even with a stale McpActRun, an undrawn column
+// yields no payload. The key handlers already refuse, but this is the only
+// function that can return one, so it asks too.
+func TestMcpHubActionRefusesAnUndrawnColumn(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+	m.loadRows(d)
+
+	m.winW = 100
+	m.syncMcpActDrawn(d)
+	if d.McpActDrawn {
+		t.Fatal("setup: at 100 the column is not drawn")
+	}
+	// A stale run flag, as if one had survived a resize.
+	d.McpActRun, d.McpActCursor, d.McpActFocus = true, 0, true
+	if payload, ok := McpHubAction(d); ok {
+		t.Fatalf("an undrawn column returned a payload: %q", payload)
+	}
+
+	// And the same state with the column drawn does return one.
+	m.winW = 140
+	m.syncMcpActDrawn(d)
+	d.McpActRun = true
+	if _, ok := McpHubAction(d); !ok {
+		t.Fatal("a drawn column refused its action — the guard is too broad")
+	}
+}

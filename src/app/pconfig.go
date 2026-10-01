@@ -235,6 +235,26 @@ func hubWindow(m *Model) int {
 // spends its middle pane on names and draws the actions in a third column.
 const mcpHubDetailW = 110
 
+// syncMcpActDrawn keeps the column's reachability in one place. A focus
+// can outlive the column — a resize, moving off the MCP section, cancelling
+// the inline editor — and a focus on an undrawn column is worse than none:
+// ↑↓ move an invisible cursor and ← is swallowed. So the drawn-ness is
+// stamped on the dialog for the package-level helpers to consult, and a
+// focus that no longer has a column under it is dropped.
+func (m Model) syncMcpActDrawn(d *Dialog) {
+	d.McpActDrawn = m.mcpActColumnDrawn(d)
+	if !d.McpActDrawn {
+		d.McpActFocus, d.McpActRun = false, false
+	}
+}
+
+// SyncMcpHubActions stamps the column's reachability onto the dialog.
+// Exported because anything that drives the hub's actions outside its own
+// key handling — src/builtin's confirm runner, and its tests — has to
+// establish the same invariant before asking for an action, exactly as a
+// keypress or a render does.
+func (m *Model) SyncMcpHubActions(d *Dialog) { m.syncMcpActDrawn(d) }
+
 // mcpActColumnDrawn reports whether that third column is actually on
 // screen. The middle pane drops the desc text whenever the column exists,
 // so on a narrower terminal there is no desc AND no column — and an
@@ -242,6 +262,12 @@ const mcpHubDetailW = 110
 // state-changing action (Disable) against a server whose state, exposure
 // and scope are nowhere on screen.
 func (m Model) mcpActColumnDrawn(d *Dialog) bool {
+	// The MCP manager panel lays its own actions column out, so it is drawn
+	// whatever the width. Only the hub's section has to trade the middle
+	// pane's width against the third one.
+	if d.Kind == mcpKind {
+		return true
+	}
 	return d.Kind == "pconfig" && d.CurPsec() == PsecMCP &&
 		hubBoxW(&m) >= mcpHubDetailW
 }
@@ -1332,6 +1358,9 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 
 // updatePconfigDialogKey handles one key in the two-pane hub.
 func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) {
+	// Before anything reads the actions column: the keyboard must not be
+	// able to reach a column the terminal is too narrow to draw.
+	m.syncMcpActDrawn(d)
 	// While pane 3 is the entry editor, it owns the keyboard: every key is
 	// text or a field action. Handing any of it to the hub would navigate
 	// the panes under the form, which is exactly the "different UI" trap.
@@ -1581,10 +1610,18 @@ func (m Model) updatePconfigWheel(d *Dialog, down bool) (tea.Model, tea.Cmd) {
 // mirrors the /model picker (fixed scroll windows so the box never
 // resizes while scrolling).
 func (m Model) renderPconfigDialog(d *Dialog) string {
+	m.syncMcpActDrawn(d)
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
-	if d.Message != "" {
-		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
+	// The MCP section's hint is derived, not read from d.Message: the
+	// message is cached at row-build time and a resize does not rebuild it,
+	// so a cached hint would still promise a column that just disappeared.
+	msg := d.Message
+	if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+		msg = m.mcpHubSectionHint(d, d.McpBaseMsg)
+	}
+	if msg != "" {
+		b.WriteString(statusBarStyle.Render(msg) + "\n")
 	}
 	// the marketplace filter is a remote npm search, not a local filter
 	filterLabel := "filter: "
@@ -1711,23 +1748,14 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 			}
 		}
 		row := Fit(Short(d.Options[ri], optW), optW)
-		// The hub's MCP section shows names only: State, Tools, Exposure,
-		// Scope and the entry are all in pane 3, so repeating them in the
-		// row says the same thing twice. (The MCP EDITOR panel keeps its
-		// descs — it has no third column of its own on a narrow terminal,
-		// and it shares the section id.)
-		hubMCP := d.Kind == "pconfig" && d.CurPsec() == PsecMCP
 		switch {
-		case !isDetail || (!isMarket && !hubMCP):
-			// The desc column. Narrow, every row has it. Wide, only the
-			// hub's MCP section goes without: its detail lives in the third
-			// column instead. (The marketplace is excluded there because
-			// its wide layout carries a star chip, not a desc.)
-			// The desc column. On a wide hub MCP section there is no desc
-			// (the third column carries the detail instead), but on a
-			// narrow one there is no third column either, so the desc has
-			// to come back — otherwise the row is a bare server name with
-			// no state, exposure or scope on screen at all.
+		case !isDetail:
+			// The desc column, and only where there is no third column to
+			// carry the detail instead. `isDetail` already covers the hub's
+			// MCP section and the MCP editor panel, so it needs no clause
+			// of its own here: narrow, every row gets its desc back — which
+			// is the point, because below mcpHubDetailW there is nowhere
+			// else to put the state · exposure · scope.
 			desc := DescOf(d, ri)
 			// The armed-remove prompt rides the Remove row here too, for
 			// the same reason as in the hub: the instruction belongs on
@@ -1846,9 +1874,11 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 			// runs the highlighted action. Saying only "Enter run" sent
 			// people looking for an action that had not been reached yet.
 			if m.mcpActColumnDrawn(d) {
-				foot = "↑↓ select · → actions · Tab switch · type filters · Enter focus · Enter again runs · Esc close"
+				foot = "↑↓ select · → actions · ← sections · type filters · Enter focus · then Enter runs · Esc close"
 			} else {
-				foot = "↑↓ select · ← sections · Tab switch · type filters · Enter open · Esc close"
+				// Tab is intercepted on this section, so promising it here
+				// would be a key that does nothing at all.
+				foot = "↑↓ select · ← sections · type filters · Enter open · Esc close"
 			}
 		}
 	}
@@ -2061,7 +2091,10 @@ func (m Model) mcpHubActions(d *Dialog) (labels, descs, payload []string) {
 // Enter asked for one. Exported: the handler that runs an MCP row lives
 // in src/builtin, which cannot see the dialog's fields directly.
 func McpHubAction(d *Dialog) (string, bool) {
-	if !d.McpActRun || d.McpActCursor < 0 || d.McpActCursor >= len(d.McpActPayload) {
+	// Belt and braces: every key handler already refuses an undrawn column,
+	// but this is the only place that can actually return a payload, so it
+	// asks too rather than trusting four call sites to stay in agreement.
+	if !d.McpActDrawn || !d.McpActRun || d.McpActCursor < 0 || d.McpActCursor >= len(d.McpActPayload) {
 		return "", false
 	}
 	d.McpActRun = false
@@ -2113,19 +2146,29 @@ func (m Model) mcpHubServersMenu(d *Dialog) (opts, descs, payload []string, msg 
 	// not above the panes, where they pushed the layout around.
 	// pi's config errors stay in the message slot; the hint joins them
 	// rather than replacing them.
-	// Only advertise the column when it is drawn: below mcpHubDetailW the
-	// actions live nowhere on screen, so promising them is a lie the keys
-	// then refuse to honour.
-	if m.mcpActColumnDrawn(d) {
+	// The hint is not cached into Message: it depends on the terminal
+	// width, and a resize does not rebuild the rows. The base message is
+	// kept instead, and the hint is derived on every render.
+	d.McpBaseMsg = msg
+	msg = m.mcpHubSectionHint(d, msg)
+	return opts, descs, payload, msg
+}
+
+// mcpHubSectionHint appends the actions hint to whatever the section
+// already says, and says nothing about a column that is not drawn. It also
+// does not say "Enter runs one": the first Enter only takes focus.
+func (m Model) mcpHubSectionHint(d *Dialog, msg string) string {
+	switch {
+	case m.mcpActColumnDrawn(d):
 		if msg == "" {
-			msg = "→ its actions · Enter runs one · Esc close"
+			msg = "→ its actions · Enter focus · then Enter runs · Esc close"
 		} else {
-			msg += " · → its actions · Enter runs one · Esc close"
+			msg += " · → its actions · Enter focus · then Enter runs · Esc close"
 		}
-	} else if msg == "" {
+	case msg == "":
 		msg = "Enter open · Esc close"
 	}
-	return opts, descs, payload, msg
+	return msg
 }
 
 // mcpListIfStale triggers `pi mcp list --json` when the hub is sitting on
