@@ -158,8 +158,8 @@ func TestTidyLeavesPlainTextAlone(t *testing.T) {
 // The render cache must key on Tidy, or flipping it would repaint stale rows.
 func TestTidyInvalidatesRenderCache(t *testing.T) {
 	bl := tidyEditBlock()
-	k1 := blockKey(bl, 90, false, false, "default", false)
-	k2 := blockKey(bl, 90, false, false, "default", true)
+	k1 := blockKey(bl, 90, false, false, "default", false, "tail")
+	k2 := blockKey(bl, 90, false, false, "default", true, "tail")
 	if k1 == k2 {
 		t.Error("blockKey must differ when Tidy changes (stale cache otherwise)")
 	}

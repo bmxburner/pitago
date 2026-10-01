@@ -129,7 +129,7 @@ func TestExpandedSummaryIsNotMarkedCut(t *testing.T) {
 func TestBlockKeyCoversTokensBefore(t *testing.T) {
 	a := Block{Kind: "compaction", Text: "s", TokensBefore: 100}
 	b := Block{Kind: "compaction", Text: "s", TokensBefore: 200}
-	if blockKey(a, 60, false, false, "", false) == blockKey(b, 60, false, false, "", false) {
+	if blockKey(a, 60, false, false, "", false, "tail") == blockKey(b, 60, false, false, "", false, "tail") {
 		t.Error("two token counts must not share a render-cache key")
 	}
 }

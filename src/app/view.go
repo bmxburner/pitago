@@ -123,6 +123,7 @@ func (m *Model) renderBlocks() string {
 	}
 	hide, expand, theme := m.HideThinking, m.expandTools, m.ThemeName
 	tidy := m.Tidy
+	thinkingView := m.ThinkingView
 	// Two parallel start-line tables, same values for the same block:
 	//   m.blockRows — mouse hit-tests (right-click copy menu, drag selection)
 	//   m.blockLine — JumpToEntry scroll anchor
@@ -156,7 +157,7 @@ func (m *Model) renderBlocks() string {
 		// Image-bearing blocks bypass the cache: their first render embeds a
 		// one-time upload, and a cached replay would resend the payload on
 		// every frame. Re-rendering them is a few string concats.
-		key := blockKey(bl, cw, hide, expand, theme, tidy)
+		key := blockKey(bl, cw, hide, expand, theme, tidy, thinkingView)
 		if len(bl.Images) == 0 && m.renderCacheKey[i] == key {
 			s := m.renderCache[i]
 			b.WriteString(s)
@@ -270,7 +271,7 @@ func (m *Model) chatRowToBlock(screenY int) int {
 
 // blockKey fingerprints one block's rendered output: every field
 // renderOneBlock reads, plus the width and global render flags.
-func blockKey(bl Block, cw int, hide, expand bool, theme string, tidy bool) uint64 {
+func blockKey(bl Block, cw int, hide, expand bool, theme string, tidy bool, thinkingView string) uint64 {
 	h := fnv.New64a()
 	h.Write([]byte(bl.Kind))
 	h.Write([]byte{0})
@@ -298,7 +299,7 @@ func blockKey(bl Block, cw int, hide, expand bool, theme string, tidy bool) uint
 		h.Write([]byte{0})
 	}
 	fmt.Fprintf(h, "\x00images\x00%d", len(bl.Images))
-	fmt.Fprintf(h, "\x00%d\x00%v\x00%v\x00%v\x00%s", cw, hide, expand, tidy, theme)
+	fmt.Fprintf(h, "\x00%d\x00%v\x00%v\x00%v\x00%s\x00%s", cw, hide, expand, tidy, theme, thinkingView)
 	return h.Sum64()
 }
 
@@ -336,12 +337,7 @@ func (m *Model) renderOneBlock(bl Block, cw int) (string, bool) {
 		// gutter so "● " doesn't push the first row 2 cells past the rest.
 		boxed = startsPreformatted(bl.Text)
 	case "thinking":
-		t := bl.Text
-		if len(t) > 300 {
-			t = t[:300] + "…"
-		}
-		icon = statusBarStyle.Render("○")
-		body = toolStyle.Render(Short(t, 160)) + "\n\n"
+		body = renderThinkingBody(m, bl.Text, cw)
 	case "tool":
 		// Every tool call is one bounded block: header, detail line and
 		// body preview inside a rounded frame with a background fill, so
@@ -562,7 +558,10 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 	// "● edit src/app/view.go" with no args line and no result, diff or
 	// preview underneath — the whole point of the mode.
 	if m.Tidy {
-		return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+		if m.expandTools {
+			return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+		}
+		return toolPillBlock(bl, w)
 	}
 	if d := toolDetail(bl); d != "" {
 		rows = append(rows, toolStyle.Render(d))
@@ -620,7 +619,10 @@ func (m Model) renderShellBlock(bl Block, w int) string {
 	// Tidy mode keeps the command line (that IS the call) and drops the
 	// output section, so a long transcript of shell calls stays scannable.
 	if m.Tidy {
-		return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+		if m.expandTools {
+			return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
+		}
+		return toolPillBlock(bl, w)
 	}
 	inner := blockInner(w) // clamped to the same floor framedBlock uses
 	if out := m.shellOutput(bl); out != "" {

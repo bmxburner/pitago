@@ -30,6 +30,7 @@ type ModelRef struct {
 // Prefs is the persisted pitago-local display prefs (zero = pi defaults).
 type Prefs struct {
 	HideThinking          bool              `json:"hideThinking,omitempty"`
+	ThinkingView          string            `json:"thinkingView,omitempty"` // collapsed | tail | full (missing = tail)
 	AutocompleteMax       int               `json:"autocompleteMax,omitempty"`
 	CurrentSubagent       string            `json:"currentSubagent,omitempty"`       // last-picked /subagents entry (● marker)
 	Pet                   string            `json:"pet,omitempty"`                   // sidebar ASCII pet name (missing = default "cat")

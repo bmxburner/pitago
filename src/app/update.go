@@ -1507,6 +1507,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.SwitchToRecent(n)
 			}
 		}
+		// Alt+T cycles the thinking display. A default, not a claim: an
+		// explicit hub assignment to another /command still wins below,
+		// because findCmdShortcut is consulted first.
+		if label, ok := shortcutLabelOf(msg); ok && label == "alt+t" {
+			if _, assigned := m.findCmdShortcut(label); !assigned {
+				m.CycleThinkingView()
+				return m, nil
+			}
+		}
 		// Hub-assigned Alt shortcuts: stage the /command for review
 		// (Enter sends, like palette Enter). Stale entries (uninstalled
 		// since) toast instead of firing into "unknown command".

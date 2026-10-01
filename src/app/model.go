@@ -125,6 +125,7 @@ type SettingsState struct {
 	Theme                  string
 	Vals                   map[string]string // file-backed pi rows (dotted path → display)
 	HideThinking           bool              // pitago-local "Hide thinking" row
+	ThinkingView           string            // pitago-local "Thinking view" row: collapsed | tail | full
 	Tidy                   bool              // tidy mode: tool blocks render header-only (global pref, all projects)
 	AutocompleteMax        int               // pitago-local "Autocomplete max" row
 }
@@ -226,6 +227,7 @@ type Model struct {
 	probe               startupProbe            // startup readiness budget (zero = defaultProbe)
 	connected           bool                    // a connect landed (session identity/state came from pi)
 	HideThinking        bool                    // /settings: skip thinking blocks in chat (pi parity, pitago-local)
+	ThinkingView        string                  // how much of a thinking block renders: collapsed | tail | full (pitago-local)
 	ShowImages          bool                    // terminal.showImages
 	ImageWidthCells     int                     // terminal.imageWidthCells
 	ImageProtocol       terminal_image.Protocol // detected inline-image capability
@@ -304,6 +306,7 @@ type Model struct {
 	blockRows           []int          // rendered start line of each block (mouse hit-testing)
 	chatLines           []string       // absolute rendered chat content lines (selection source)
 	gutterCols          []int          // leading gutter cells per chat line (0 or 2), parallel to chatLines
+	frameCols           []int          // per-chat-line frame classification (frameNone/frameRow/frameRule), parallel to chatLines
 	sel                 Selection      // chat-column drag selection state
 	LastPressAt         time.Time      // last single-click timestamp (double-click detection)
 	LastPressLine       int            // line of last single-click
@@ -1186,6 +1189,43 @@ func (m *Model) ToggleTidy() bool {
 	return on
 }
 
+// SetThinkingView sets how much of a thinking block renders, and
+// persists it with the rest of the display prefs. Returns the stored
+// mode, normalized — an unknown value cannot reach the render path.
+func (m *Model) SetThinkingView(v string) string {
+	mode := normalizeThinkingView(v)
+	m.ThinkingView = mode
+	m.renderCache = nil
+	prefs := LoadPrefs(m.prefsPath)
+	prefs.ThinkingView = mode
+	_ = SavePrefs(m.prefsPath, prefs)
+	m.Refresh()
+	return mode
+}
+
+// CycleThinkingView advances collapsed → tail → full and reports the new
+// mode. The cycle is the primary control because the useful state is
+// usually "show me more than last time", not a named setting.
+func (m *Model) CycleThinkingView() string {
+	mode := m.SetThinkingView(nextThinkingView(m.ThinkingView))
+	m.AddBlock(Block{Kind: "notice", Text: "thinking view → " + thinkingViewLabel(mode) +
+		" — " + thinkingViewBlurb(mode)})
+	return mode
+}
+
+// thinkingViewBlurb explains a mode in the notice line, so the cycle
+// teaches its own names instead of requiring a lookup.
+func thinkingViewBlurb(mode string) string {
+	switch normalizeThinkingView(mode) {
+	case thinkingCollapsed:
+		return "one line per thought"
+	case thinkingFull:
+		return "every reasoning block in full"
+	default:
+		return "the last few lines of each thought"
+	}
+}
+
 // TogglePlugins collapses/expands the sidebar PLUGINS list (click its
 // header or /plugins). When the section is hidden (Sidebar tab default)
 // the first toggle reveals it expanded instead of flipping blind state.
@@ -1435,6 +1475,7 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.prefsPath = PrefsPath()
 	prefs := LoadPrefs(m.prefsPath)
 	m.HideThinking = prefs.HideThinking
+	m.ThinkingView = normalizeThinkingView(prefs.ThinkingView)
 	m.Tidy = prefs.Tidy
 	m.CurAgent = prefs.CurrentSubagent
 	// Resolve, not raw read: a hand-edited or stale prefs.json must still
