@@ -13,7 +13,7 @@ import (
 
 func TestSelectionTextSingleLine(t *testing.T) {
 	lines := []string{"hello world", "second line"}
-	got := selectionText(lines, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 5})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 5})
 	if got != "hello" {
 		t.Fatalf("got %q, want \"hello\"", got)
 	}
@@ -21,7 +21,7 @@ func TestSelectionTextSingleLine(t *testing.T) {
 
 func TestSelectionTextMultiLine(t *testing.T) {
 	lines := []string{"aaaa", "bbbb", "cccc"}
-	got := selectionText(lines, nil, Point{Line: 0, Col: 1}, Point{Line: 2, Col: 2})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 1}, Point{Line: 2, Col: 2})
 	want := "aaa\nbbbb\ncc"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
@@ -30,7 +30,7 @@ func TestSelectionTextMultiLine(t *testing.T) {
 
 func TestSelectionTextReversedAnchor(t *testing.T) {
 	lines := []string{"xxxxxx"}
-	got := selectionText(lines, nil, Point{Line: 0, Col: 5}, Point{Line: 0, Col: 2})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 5}, Point{Line: 0, Col: 2})
 	if got != "xxx" {
 		t.Fatalf("reversed drag must normalize, got %q", got)
 	}
@@ -38,7 +38,7 @@ func TestSelectionTextReversedAnchor(t *testing.T) {
 
 func TestSelectionTextStripsANSI(t *testing.T) {
 	lines := []string{"\x1b[38;2;1;2;3mred\x1b[0m \x1b]8;;https://x\x07link\x1b]8;;\x07 rest"}
-	got := selectionText(lines, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 100})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 100})
 	if got != "red link rest" {
 		t.Fatalf("ANSI/OSC not stripped: %q", got)
 	}
@@ -46,14 +46,14 @@ func TestSelectionTextStripsANSI(t *testing.T) {
 
 func TestSelectionTextStripsSTHyperlinksWithoutConsumingText(t *testing.T) {
 	lines := []string{"\x1b]8;;https://one\x1b\\one\x1b]8;;\x1b\\ after \x1b]8;;https://two\x1b\\two\x1b]8;;\x1b\\ tail"}
-	got := selectionText(lines, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 100})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 0}, Point{Line: 0, Col: 100})
 	if got != "one after two tail" {
 		t.Fatalf("ST OSC stripping consumed visible text: %q", got)
 	}
 }
 
 func TestSelectionTextClampsLines(t *testing.T) {
-	got := selectionText([]string{"a"}, nil, Point{Line: 0, Col: 0}, Point{Line: 5, Col: 2})
+	got := selectionText([]string{"a"}, nil, nil, Point{Line: 0, Col: 0}, Point{Line: 5, Col: 2})
 	if !strings.Contains(got, "a") {
 		t.Fatalf("out-of-range lines must clamp cleanly, got %q", got)
 	}
@@ -63,7 +63,7 @@ func TestSelectionTextSkipsGutter(t *testing.T) {
 	lines := []string{"● hello", "world", "  nope"}
 	// A drag spanning the whole middle line must not copy the leading
 	// gutter glyph even when the selection starts at column zero.
-	got := selectionText(lines, []int{2, 0, 2}, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 7})
+	got := selectionText(lines, []int{2, 0, 2}, nil, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 7})
 	if got != "hello\nworld\nnope" {
 		t.Fatalf("gutter not skipped: %q", got)
 	}
@@ -235,28 +235,6 @@ func TestMotionExtendsAndReleaseCopies(t *testing.T) {
 	// frame), so the release must copy all three lines.
 	if want := "alpha\nbeta\ngamma"; copied != want {
 		t.Fatalf("release copied %q, want %q", copied, want)
-	}
-}
-
-// TestReleaseRecordsLastSelection pins the field /annotate-selection reads.
-// YankText only reaches the clipboard; without LastSelection being set on the
-// same release, that command always answered "select chat text first" even
-// with a live selection — and the rest of this package passed anyway.
-func TestReleaseRecordsLastSelection(t *testing.T) {
-	defer stubClipboard(func(string) clipboard.Status {
-		return clipboard.Status{Channel: clipboard.Atoto}
-	})()
-
-	m := New(nil, t.TempDir())
-	m.Mouse = true
-	m.chatLines = []string{"alpha", "beta"}
-	m.vp.Width = 30
-	m.vp.Height = 5
-	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
-	got, _, _ := m.updateSelection(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
-	got, _, _ = got.updateSelection(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
-	if want := "alpha\nbeta"; got.LastSelection != want {
-		t.Fatalf("LastSelection = %q, want %q", got.LastSelection, want)
 	}
 }
 
@@ -467,7 +445,7 @@ func TestSelectionSkipsGutterWhenTableIsStale(t *testing.T) {
 	lines := []string{"● first block", "plain continuation", "● second block"}
 
 	// Table missing entirely (no Refresh yet).
-	got := selectionText(lines, nil, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 8})
+	got := selectionText(lines, nil, nil, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 8})
 	if strings.Contains(got, "●") {
 		t.Errorf("gutter glyph copied when the gutter table is absent: %q", got)
 	}
@@ -477,7 +455,7 @@ func TestSelectionSkipsGutterWhenTableIsStale(t *testing.T) {
 
 	// Table present but too short to cover every line.
 	short := []int{2}
-	got = selectionText(lines, short, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 8})
+	got = selectionText(lines, short, nil, Point{Line: 0, Col: 0}, Point{Line: 2, Col: 8})
 	if strings.Contains(got, "●") {
 		t.Errorf("gutter glyph copied when the gutter table is short: %q", got)
 	}
@@ -485,7 +463,7 @@ func TestSelectionSkipsGutterWhenTableIsStale(t *testing.T) {
 	// The table records block gutters; a line outside the block loop has no
 	// entry, and the glyph it carries is what gives it one.
 	withZero := []int{0, 0, 0}
-	got = selectionText(lines, withZero, Point{Line: 1, Col: 0}, Point{Line: 1, Col: 5})
+	got = selectionText(lines, withZero, nil, Point{Line: 1, Col: 0}, Point{Line: 1, Col: 5})
 	if got != "plain" {
 		t.Errorf("a line with no gutter glyph must not be clipped: got %q", got)
 	}
@@ -538,7 +516,7 @@ func TestGutterCoversPreambleStatusAndLogo(t *testing.T) {
 			if found < 0 {
 				t.Fatalf("precondition: no %q gutter line was rendered: %q", tc.icon, m.chatLines)
 			}
-			got := selectionText(m.chatLines, m.gutterCols, Point{found, 0}, Point{found, 3})
+			got := selectionText(m.chatLines, m.gutterCols, m.frameCols, Point{found, 0}, Point{found, 3})
 			if strings.Contains(got, tc.icon) {
 				t.Errorf("%q glyph copied: %q", tc.icon, got)
 			}
@@ -674,5 +652,147 @@ func TestHighlightKeepsEscapesOutsideSelectedRange(t *testing.T) {
 	}
 	if inside := strings.TrimSpace(stripSelectionANSI(got[k+4 : j])); inside != "selected text" {
 		t.Errorf("inverse span covers %q, want %q", inside, "selected text")
+	}
+}
+
+// TestFramedBlockSelectionDropsChrome pins the fix for framed tool/bash
+// bodies: the rounded box is decoration, so a drag across one must yield the
+// inner content with no "│", "╭", or "─" anywhere. Before, cmd-C and
+// /annotate-selection both received the whole box.
+func TestFramedBlockSelectionDropsChrome(t *testing.T) {
+	defer stubClipboard(func(string) clipboard.Status {
+		return clipboard.Status{Channel: clipboard.Atoto}
+	})()
+
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.vp.Width, m.vp.Height = 60, 10
+	m.AddBlock(Block{Kind: "bash", Text: "echo hi\necho there"})
+	m.Refresh()
+	m.chatLines = strings.Split(strings.TrimSuffix(m.renderBlocks(), "\n"), "\n")
+
+	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
+	got, _, _ := m.updateSelection(tea.MouseMsg{X: 58, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	got, _, _ = got.updateSelection(tea.MouseMsg{X: 58, Y: 2, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
+	sel := got.LastSelection
+	for _, bad := range []string{"│", "╭", "╮", "╰", "╯", "─"} {
+		if strings.Contains(sel, bad) {
+			t.Fatalf("selection leaked frame chrome %q: %q", bad, sel)
+		}
+	}
+	if !strings.Contains(sel, "echo hi") || !strings.Contains(sel, "echo there") {
+		t.Fatalf("selection lost frame content: %q", sel)
+	}
+}
+
+// TestFrameRuleRowDetected pins the ╭──╮/╰──╯ classifier.
+func TestFrameRuleRowDetected(t *testing.T) {
+	for _, s := range []string{"╭────────╮", "╰────────╯"} {
+		if !frameRuleRow(s) {
+			t.Fatalf("frameRuleRow(%q) = false, want true", s)
+		}
+	}
+	for _, s := range []string{"│ echo hi │", "echo hi", "╭", ""} {
+		if frameRuleRow(s) {
+			t.Fatalf("frameRuleRow(%q) = true, want false", s)
+		}
+	}
+}
+
+// TestGlamourTableRowsAreNotFrameRows guards the reason frame geometry is
+// recorded in renderBlocks instead of sniffed: a rendered table row carries
+// the same "│ ... │" shape as a framed content row, and its pipes ARE the
+// content the user wants.
+func TestGlamourTableRowsAreNotFrameRows(t *testing.T) {
+	if frameRuleRow("│  cell  │") {
+		t.Fatal("a table row must not classify as a frame rule")
+	}
+}
+
+// TestGutteredFrameSelectionDropsChrome is the real-terminal regression: a
+// user block is framed *and* sits behind a "● " gutter, so the frame edge is
+// at col 4, not col 2. Keying frame detection off block kind missed it and
+// the box leaked into /annotate-selection.
+func TestGutteredFrameSelectionDropsChrome(t *testing.T) {
+	defer stubClipboard(func(string) clipboard.Status {
+		return clipboard.Status{Channel: clipboard.Atoto}
+	})()
+
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.vp.Width, m.vp.Height = 90, 12
+	m.AddBlock(Block{Kind: "user", Text: "hello we are testing /annotate-selection"})
+	m.Refresh()
+	m.chatLines = strings.Split(strings.TrimSuffix(m.renderBlocks(), "\n"), "\n")
+
+	// The frame must actually be recognised, or the assertions below pass
+	// for the wrong reason.
+	if m.frameCols[1] != frameRow {
+		t.Fatalf("user block content row should be a frame row, frameCols=%v", m.frameCols)
+	}
+	if m.frameCols[0] != frameRule || m.frameCols[2] != frameRule {
+		t.Fatalf("user block rules not detected, frameCols=%v", m.frameCols)
+	}
+
+	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
+	got, _, _ := m.updateSelection(tea.MouseMsg{X: 88, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	got, _, _ = got.updateSelection(tea.MouseMsg{X: 88, Y: 2, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
+	sel := got.LastSelection
+	for _, bad := range []string{"│", "╭", "╮", "╰", "╯", "─"} {
+		if strings.Contains(sel, bad) {
+			t.Fatalf("selection leaked frame chrome %q: %q", bad, sel)
+		}
+	}
+	if !strings.Contains(sel, "hello we are testing") {
+		t.Fatalf("selection lost user text: %q", sel)
+	}
+}
+
+// A finished drag must leave the text on the model, not only on the
+// clipboard. /annotate-selection reads LastSelection (see OpenAnnotateSelection)
+// and refuses with "select chat text first" when it is empty — so a release
+// that yanks and forgets makes that command unreachable, which is exactly
+// how the two frame-selection tests above failed while the yank itself
+// looked fine.
+func TestDragReleaseRecordsLastSelection(t *testing.T) {
+	defer stubClipboard(func(string) clipboard.Status {
+		return clipboard.Status{Channel: clipboard.Atoto, Chars: 12}
+	})()
+
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.vp.Width, m.vp.Height = 60, 10
+	m.chatLines = []string{"alpha bravo", "charlie delta"}
+	m.gutterCols = make([]int, len(m.chatLines))
+	m.frameCols = make([]int, len(m.chatLines))
+	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
+
+	got, _, _ := m.updateSelection(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	got, _, _ = got.updateSelection(tea.MouseMsg{X: 5, Y: 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
+
+	if got.LastSelection != "alpha" {
+		t.Errorf("release must record the dragged text for /annotate-selection, got %q", got.LastSelection)
+	}
+}
+
+// An empty or whitespace-only drag must not publish a selection: an empty
+// LastSelection would let /annotate-selection through its guard and then
+// annotate nothing.
+func TestBlankDragDoesNotRecordSelection(t *testing.T) {
+	defer stubClipboard(func(string) clipboard.Status { return clipboard.Status{Channel: clipboard.Atoto} })()
+
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.vp.Width, m.vp.Height = 60, 10
+	m.chatLines = []string{"   "}
+	m.gutterCols = make([]int, 1)
+	m.frameCols = make([]int, 1)
+	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
+
+	got, _, _ := m.updateSelection(tea.MouseMsg{X: 2, Y: 1, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	got, _, _ = got.updateSelection(tea.MouseMsg{X: 2, Y: 1, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
+
+	if got.LastSelection != "" {
+		t.Errorf("a blank drag must not publish a selection, got %q", got.LastSelection)
 	}
 }

@@ -75,7 +75,76 @@ func (m Model) mousePoint(x, y int) Point {
 // gutterFor reports the leading gutter width for a rendered chat line (0
 // or 2), so selection can clamp past it. See gutterAt for why a zero table
 // entry defers to the line itself.
+// Rounded-frame row classes, recorded per rendered chat line by
+// renderBlocks. A framed tool/bash body is chrome around the content:
+// "╭──╮"/"╰──╯" rules and a "│ " / " │" border on every content row.
+const (
+	frameNone = 0 // not a framed row
+	frameRule = 1 // a "╭──╮" or "╰──╯" rule: no content at all
+	frameRow  = 2 // a content row between a "│ " and a " │" border
+)
+
+// frameRuleRow reports whether a rendered line is one of a rounded frame's
+// horizontal rules, which contribute no selectable content. The gutter is
+// stepped over first: framed blocks sit behind "● "/"  " or flush left.
+func frameRuleRow(rendered string) bool {
+	p := []rune(strings.TrimLeft(stripSelectionANSI(rendered), " \t"))
+	// Slice by rune: the gutter glyph is multi-byte ("●" is 3 bytes), so a
+	// byte offset here would cut through the character it is skipping.
+	if g := gutterFromLine(string(p)); g > 0 {
+		if g >= len(p) {
+			return false
+		}
+		p = []rune(strings.TrimLeft(string(p[g:]), " "))
+	}
+	if len(p) < 2 {
+		return false
+	}
+	corner := func(c rune) bool { return c == '╭' || c == '╮' || c == '╰' || c == '╯' }
+	return corner(p[0]) && corner(p[len(p)-1])
+}
+
+// frameGeometry classifies one block's rendered rows as frame chrome, or returns
+// nil when the block is not framed at all. A framed block opens with a
+// "╭──╮" rule and closes with "╰──╯"; every row between them is content
+// boxed by a "│ " and a " │". Glamour tables use ┌┬┐ and ─┼, so they are
+// never mistaken for a frame — which is why this reads the corner glyphs
+// rather than the presence of a vertical bar.
+func frameGeometry(rendered string) []int {
+	lines := strings.Split(rendered, "\n")
+	first, last := -1, -1
+	for i, ln := range lines {
+		if strings.TrimSpace(stripSelectionANSI(ln)) == "" {
+			continue
+		}
+		if first < 0 {
+			first = i
+		}
+		last = i
+	}
+	if first < 0 || last <= first || !frameRuleRow(lines[first]) || !frameRuleRow(lines[last]) {
+		return nil
+	}
+	out := make([]int, len(lines))
+	out[first] = frameRule
+	for i := first + 1; i < last; i++ {
+		if strings.TrimSpace(stripSelectionANSI(lines[i])) == "" {
+			continue // blank filler row inside the box: no content
+		}
+		out[i] = frameRow
+	}
+	out[last] = frameRule
+	return out
+}
+
+// frameLead is the left-edge width a framed content row hides behind its
+// border and padding.
+const frameLead = 2 // "│ "
+
 func (m Model) gutterFor(line int) int {
+	if line >= 0 && line < len(m.frameCols) && m.frameCols[line] == frameRow {
+		return frameLead
+	}
 	if line < 0 {
 		return 0
 	}
@@ -140,11 +209,13 @@ func (m Model) updateSelection(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 			m.sel.Focus = p
 		}
 		if m.sel.HadDrag {
-			text := selectionText(m.chatLines, m.gutterCols, m.sel.Anchor, m.sel.Focus)
+			text := selectionText(m.chatLines, m.gutterCols, m.frameCols, m.sel.Anchor, m.sel.Focus)
 			if strings.TrimSpace(text) != "" {
-				// Keep the text on the Model too: YankText only reaches
-				// the clipboard, and /annotate-selection reads LastSelection
-				// rather than re-deriving a selection that is already gone.
+				// Record before the yank: /annotate-selection reads
+				// LastSelection, and a plain yank-to-clipboard would
+				// otherwise leave the field empty forever. Assigned on the
+				// receiver copy that is returned, so the caller's model
+				// carries it.
 				m.LastSelection = text
 				m.YankText(text)
 			}
@@ -283,8 +354,10 @@ func normalizePoints(a, b Point) (Point, Point) {
 // lines. Lines outside the content are treated as empty.
 // selectionText extracts ANSI/OSC-free visible text for a range of rendered
 // lines, skipping each line's gutter (passed in as gutters, parallel to
-// lines) so a drag that crosses block starts never copies the glyph.
-func selectionText(lines []string, gutters []int, anchor, focus Point) string {
+// lines) so a drag that crosses block starts never copies the glyph, and
+// stripping the rounded chrome around framed tool/bash bodies (frames,
+// parallel to lines) so the copied text is the content, not its box.
+func selectionText(lines []string, gutters, frames []int, anchor, focus Point) string {
 	a, b := normalizePoints(anchor, focus)
 	if a == b {
 		return ""
@@ -294,6 +367,12 @@ func selectionText(lines []string, gutters []int, anchor, focus Point) string {
 		line := ""
 		if i >= 0 && i < len(lines) {
 			line = stripSelectionANSI(lines[i])
+		}
+		// A frame rule row is pure chrome: it contributes an empty line
+		// so the selection still spans the rows it visually covers.
+		if frames != nil && i >= 0 && i < len(frames) && frames[i] == frameRule {
+			out = append(out, "")
+			continue
 		}
 		start, end := 0, visibleWidth(line)
 		if i == a.Line {
@@ -305,9 +384,39 @@ func selectionText(lines []string, gutters []int, anchor, focus Point) string {
 		if g := gutterAt(gutters, i, line); start < g {
 			start = g
 		}
+		// A framed content row hides its content behind "│ ", on top of
+		// whatever block gutter already applies. gutterAt knows only the
+		// gutter table, so compose the two here.
+		if frames != nil && i >= 0 && i < len(frames) && frames[i] == frameRow {
+			if lead := gutterAt(gutters, i, line) + frameLead; start < lead {
+				start = lead
+			}
+		}
+		// Frame content rows carry a trailing " │" that no gutter covers.
+		// end is inclusive of the border column, so pull it in.
+		if frames != nil && i >= 0 && i < len(frames) && frames[i] == frameRow {
+			if t := frameTrailAt(line, end); t > 0 && end-t >= start {
+				end -= t
+			}
+		}
 		out = append(out, strings.TrimRight(sliceColumns(line, start, end), " \t"))
 	}
 	return strings.TrimSpace(strings.Join(out, "\n"))
+}
+
+// frameTrail reports the width of the " │" right border on a framed content
+// row, or 0 when end does not reach into it.
+func frameTrailAt(line string, end int) int {
+	const trail = 2 // " │"
+	if end >= visibleWidth(line) {
+		return trail
+	}
+	// A selection stopping inside the border still has to lose the glyphs
+	// it actually covers; anything narrower is real content.
+	if end <= visibleWidth(line)-trail {
+		return 0
+	}
+	return visibleWidth(line) - end
 }
 
 // gutterIcons are the glyphs gutter() prefixes onto the first non-blank row of

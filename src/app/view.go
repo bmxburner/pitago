@@ -189,19 +189,29 @@ func (m *Model) renderBlocks() string {
 	// Track its width per line so selection (drag / double-click) can
 	// clamp past it instead of copying the glyph.
 	m.gutterCols = make([]int, len(m.chatLines))
+	m.frameCols = make([]int, len(m.chatLines))
 	for i, bl := range m.blocks {
 		s := m.renderCache[i]
 		if s == "" {
 			continue // skipped/streaming leftover: no lines rendered
 		}
 		start := m.blockRows[i]
+		// Framing is a *style* property, not a block-kind one: userStyle
+		// carries a RoundedBorder and framedBlock draws one for tool/bash, so
+		// any block can arrive wrapped. Decide from the rendered rows rather
+		// than from bl.Kind, or the next styled block re-leaks its box.
+		rows := frameGeometry(s)
+		if rows != nil {
+			for li, kind := range rows {
+				idx := start + li
+				if idx < len(m.frameCols) {
+					m.frameCols[idx] = kind
+				}
+			}
+		}
 		boxed := bl.Kind == "user"
 		if bl.Kind == "assistant" {
 			boxed = startsPreformatted(bl.Text)
-		}
-		// Tool/bash frames are flush-left (no external gutter).
-		if bl.Kind == "tool" || bl.Kind == "bash" {
-			continue
 		}
 		first := true
 		for li, ln := range strings.Split(s, "\n") {
