@@ -278,6 +278,15 @@ var builtins = []Theme{
 		HiBg: "#292E42", HiFg: "#C0CAF5",
 		Plan: "#BB9AF7",
 	},
+	{
+		Name:   "titanium",
+		Accent: "#00b4ff", Border: "#2a3038", Muted: "#9ca3b0", Text: "#e8ecf4", Code: "#9ca3b0",
+		Green: "#00ff88", Red: "#ff4757", Yellow: "#ffb347", Cyan: "#00b4ff",
+		Input: "#00b4ff", InputDim: "#6b7280",
+		ToolPending: "#151820", ToolSuccess: "#0f1216", ToolError: "#1a0f10",
+		HiBg: "#0082b3", HiFg: "#e8ecf4",
+		Plan: "#d4c090",
+	},
 }
 
 // Names lists theme names in order.
