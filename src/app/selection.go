@@ -142,6 +142,10 @@ func (m Model) updateSelection(msg tea.MouseMsg) (Model, tea.Cmd, bool) {
 		if m.sel.HadDrag {
 			text := selectionText(m.chatLines, m.gutterCols, m.sel.Anchor, m.sel.Focus)
 			if strings.TrimSpace(text) != "" {
+				// Keep the text on the Model too: YankText only reaches
+				// the clipboard, and /annotate-selection reads LastSelection
+				// rather than re-deriving a selection that is already gone.
+				m.LastSelection = text
 				m.YankText(text)
 			}
 		}

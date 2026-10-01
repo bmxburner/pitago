@@ -238,6 +238,28 @@ func TestMotionExtendsAndReleaseCopies(t *testing.T) {
 	}
 }
 
+// TestReleaseRecordsLastSelection pins the field /annotate-selection reads.
+// YankText only reaches the clipboard; without LastSelection being set on the
+// same release, that command always answered "select chat text first" even
+// with a live selection — and the rest of this package passed anyway.
+func TestReleaseRecordsLastSelection(t *testing.T) {
+	defer stubClipboard(func(string) clipboard.Status {
+		return clipboard.Status{Channel: clipboard.Atoto}
+	})()
+
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.chatLines = []string{"alpha", "beta"}
+	m.vp.Width = 30
+	m.vp.Height = 5
+	m.sel = Selection{Active: true, Anchor: Point{Line: 0, Col: 0}, Focus: Point{Line: 0, Col: 0}}
+	got, _, _ := m.updateSelection(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionMotion, Button: tea.MouseButtonLeft})
+	got, _, _ = got.updateSelection(tea.MouseMsg{X: 5, Y: 2, Action: tea.MouseActionRelease, Button: tea.MouseButtonNone})
+	if want := "alpha\nbeta"; got.LastSelection != want {
+		t.Fatalf("LastSelection = %q, want %q", got.LastSelection, want)
+	}
+}
+
 // stubClipboard redirects the clipboard transport for the duration of a test
 // and returns a restore func. No test in this package may write to the real
 // system clipboard.
