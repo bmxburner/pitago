@@ -162,8 +162,7 @@ script/release.sh v0.0.1
 ### Copying text and messages
 
 <div align="center">
-  <sub>Video demo</sub><br />
-  https://github.com/user-attachments/assets/35d59f05-45b7-407c-a212-552ca61c1b07
+  <sub>▶ <a href="https://github.com/user-attachments/assets/35d59f05-45b7-407c-a212-552ca61c1b07">Video demo</a></sub>
 </div>
 
 | Action | How |
