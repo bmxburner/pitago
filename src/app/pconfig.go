@@ -231,6 +231,21 @@ func hubWindow(m *Model) int {
 	return win
 }
 
+// mcpHubDetailW is the box width at or above which the hub's MCP section
+// spends its middle pane on names and draws the actions in a third column.
+const mcpHubDetailW = 110
+
+// mcpActColumnDrawn reports whether that third column is actually on
+// screen. The middle pane drops the desc text whenever the column exists,
+// so on a narrower terminal there is no desc AND no column — and an
+// undrawn column must not be enterable or runnable, or the user runs a
+// state-changing action (Disable) against a server whose state, exposure
+// and scope are nowhere on screen.
+func (m Model) mcpActColumnDrawn(d *Dialog) bool {
+	return d.Kind == "pconfig" && d.CurPsec() == PsecMCP &&
+		hubBoxW(&m) >= mcpHubDetailW
+}
+
 // hubBoxW is the hub dialog's outer width. One source of truth: the
 // renderer lays the box out at this width, and psecRows clamps its
 // section message to it so a long line cannot wrap and stretch the box.
@@ -1405,7 +1420,8 @@ func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.
 		return m, nil
 	case tea.KeyRight:
 		// → steps into the actions column when the MCP section has some.
-		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus && len(d.McpAct) > 0 {
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus && len(d.McpAct) > 0 &&
+			m.mcpActColumnDrawn(d) {
 			d.McpActFocus, d.McpActRun = true, false
 			m.Refresh()
 			return m, nil
@@ -1414,7 +1430,10 @@ func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.
 		return m, nil
 	case tea.KeyTab:
 		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus {
-			d.McpActFocus, d.McpActRun = !d.McpActFocus, false
+			// A resize can leave the focus parked on a column that is no
+			// longer drawn, so it is re-checked here rather than trusted.
+			d.McpActFocus = !d.McpActFocus && m.mcpActColumnDrawn(d)
+			d.McpActRun = false
 			return m, nil
 		}
 		d.ProvFocus = !d.ProvFocus
@@ -1502,7 +1521,8 @@ func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.
 			d.ProvFocus = false
 			return m, nil
 		}
-		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && len(d.McpAct) > 0 {
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && len(d.McpAct) > 0 &&
+			m.mcpActColumnDrawn(d) {
 			if !d.McpActFocus {
 				// Same move pi makes with Enter (open the server's
 				// actions), except the actions are already on screen: it
@@ -1595,7 +1615,7 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 	// spec block, they are navigable (→/←) and Enter runs them, so pi's
 	// second menu does not have to open at all.
 	isMarket := d.CurPsec() == PsecMarket && len(m.Market) > 0
-	isDetail := boxW >= 110 && (d.Kind == mcpKind || d.CurPsec() == PsecMCP || (d.CurPsec() == PsecPlugin && len(m.Plugins) > 0) ||
+	isDetail := boxW >= mcpHubDetailW && (d.Kind == mcpKind || d.CurPsec() == PsecMCP || (d.CurPsec() == PsecPlugin && len(m.Plugins) > 0) ||
 		isMarket)
 	// The hub's MCP section's middle pane is names only (the details are in
 	// the third column), so its room goes to that column instead.
@@ -1698,7 +1718,16 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		// and it shares the section id.)
 		hubMCP := d.Kind == "pconfig" && d.CurPsec() == PsecMCP
 		switch {
-		case !isDetail && !hubMCP:
+		case !isDetail || (!isMarket && !hubMCP):
+			// The desc column. Narrow, every row has it. Wide, only the
+			// hub's MCP section goes without: its detail lives in the third
+			// column instead. (The marketplace is excluded there because
+			// its wide layout carries a star chip, not a desc.)
+			// The desc column. On a wide hub MCP section there is no desc
+			// (the third column carries the detail instead), but on a
+			// narrow one there is no third column either, so the desc has
+			// to come back — otherwise the row is a bare server name with
+			// no state, exposure or scope on screen at all.
 			desc := DescOf(d, ri)
 			// The armed-remove prompt rides the Remove row here too, for
 			// the same reason as in the hub: the instruction belongs on
@@ -1711,9 +1740,9 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 			if desc != "" {
 				row += "  " + psecDesc(payloadOf(d, ri), desc, listW-4-optW-3)
 			}
-		case isMarket:
-			// the wide layout drops the desc column, so the star count
-			// rides the row itself ("" while still unknown)
+		case isDetail && isMarket:
+			// The wide layout drops the desc column, so the star count
+			// rides the row itself ("" while still unknown).
 			chip := ""
 			if ri >= 0 && ri < len(m.Market) {
 				chip = marketChip(m.Market[ri])
@@ -1811,6 +1840,16 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		if d.CurPsec() == PsecMarket {
 			// the filter is a remote npm search, not a local one
 			foot = "↑↓ select · ← sections · Tab switch · type to search npm · Enter install · Esc clears"
+		}
+		if d.CurPsec() == PsecMCP {
+			// Enter on a server takes focus on its actions; the second one
+			// runs the highlighted action. Saying only "Enter run" sent
+			// people looking for an action that had not been reached yet.
+			if m.mcpActColumnDrawn(d) {
+				foot = "↑↓ select · → actions · Tab switch · type filters · Enter focus · Enter again runs · Esc close"
+			} else {
+				foot = "↑↓ select · ← sections · Tab switch · type filters · Enter open · Esc close"
+			}
 		}
 	}
 	if d.Kind == mcpKind {
@@ -2074,10 +2113,17 @@ func (m Model) mcpHubServersMenu(d *Dialog) (opts, descs, payload []string, msg 
 	// not above the panes, where they pushed the layout around.
 	// pi's config errors stay in the message slot; the hint joins them
 	// rather than replacing them.
-	if msg == "" {
-		msg = "→ its actions · Enter runs one · Esc close"
-	} else {
-		msg += " · → its actions · Enter runs one · Esc close"
+	// Only advertise the column when it is drawn: below mcpHubDetailW the
+	// actions live nowhere on screen, so promising them is a lie the keys
+	// then refuse to honour.
+	if m.mcpActColumnDrawn(d) {
+		if msg == "" {
+			msg = "→ its actions · Enter runs one · Esc close"
+		} else {
+			msg += " · → its actions · Enter runs one · Esc close"
+		}
+	} else if msg == "" {
+		msg = "Enter open · Esc close"
 	}
 	return opts, descs, payload, msg
 }

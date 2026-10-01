@@ -2890,3 +2890,111 @@ func TestMcpFormDiscardPromptExpiresWithTheGate(t *testing.T) {
 		t.Errorf("an armed gate with no visible prompt — the form looks frozen:\n%s", f)
 	}
 }
+
+// Below mcpHubDetailW the hub's MCP section has no third column, so the
+// middle pane must keep the desc text — and, crucially, the actions column
+// must be neither enterable nor runnable. It used to be reachable anyway:
+// the desc was suppressed unconditionally, so at 100 columns you saw a bare
+// server name and could still -> ↓ Enter a state-changing action on it.
+func TestHubMcpActionsAreUnreachableWhenTheColumnIsNotDrawn(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t) // winW 140: the column IS drawn here
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true, Scope: "user", Exposure: "tools"},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+
+	// Narrow: hubBoxW(100) == 90 < 110.
+	m.winW = 100
+	m.loadRows(d) // the row build caches the header hint, so rebuild it
+	if m.mcpActColumnDrawn(d) {
+		t.Fatalf("winW=100 should not draw the actions column")
+	}
+
+	// The row still says what it is, and the header no longer promises a
+	// column that is not there. The whole hub is rendered, not just the
+	// detail pane — this is about the row the user is looking at.
+	pane := stripANSI(m.renderPconfigDialog(d))
+	if !strings.Contains(pane, "vault-tools") {
+		t.Fatalf("the server row vanished:\n%s", pane)
+	}
+	if !strings.Contains(pane, "connected") {
+		t.Errorf("narrow, the row lost its state · exposure · scope:\n%s", pane)
+	}
+	if strings.Contains(pane, "→ its actions") {
+		t.Errorf("the header advertises a column that is not drawn:\n%s", pane)
+	}
+
+	// -> must not take focus on it.
+	mm, _ := m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyRight}, d)
+	m = ptr(mm.(Model))
+	if d.McpActFocus {
+		t.Fatal("-> focused an undrawn column")
+	}
+	// Tab likewise.
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyTab}, d)
+	m = ptr(mm.(Model))
+	if d.McpActFocus {
+		t.Fatal("Tab focused an undrawn column")
+	}
+	// Enter must not run one either.
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyEnter}, d)
+	m = ptr(mm.(Model))
+	if d.McpActFocus || d.McpActRun {
+		t.Fatal("Enter ran an action on an undrawn column")
+	}
+
+	// Same keys, same model, wide: the column is drawn and reachable, or
+	// the guards above would be passing for the wrong reason.
+	m.winW = 140
+	if !m.mcpActColumnDrawn(d) {
+		t.Fatal("winW=140 should draw the actions column")
+	}
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyRight}, d)
+	m = ptr(mm.(Model))
+	if !d.McpActFocus {
+		t.Fatal("-> should focus the drawn column")
+	}
+}
+
+// A terminal narrowed while the actions column has focus must not leave
+// Enter able to run an action from a column that is no longer on screen.
+func TestHubMcpFocusIsDroppedWhenTheColumnStopsBeingDrawn(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true, Scope: "user", Exposure: "tools"},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+
+	mm, _ := m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyRight}, d)
+	m = ptr(mm.(Model))
+	if !d.McpActFocus {
+		t.Fatal("setup: -> should focus the column at 140")
+	}
+
+	// The window shrinks under it.
+	m.winW = 100
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyTab}, d)
+	m = ptr(mm.(Model))
+	if d.McpActFocus {
+		t.Fatal("Tab must drop a focus the terminal can no longer show")
+	}
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyEnter}, d)
+	m = ptr(mm.(Model))
+	if d.McpActRun {
+		t.Fatal("Enter must not run an action on a column that is gone")
+	}
+
+	// And from a clean narrow state, Tab must not focus it either: it
+	// toggles, so without the guard the second Tab would put the focus on
+	// a column that is not there.
+	d.McpActFocus = false
+	mm, _ = m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyTab}, d)
+	m = ptr(mm.(Model))
+	if d.McpActFocus {
+		t.Fatal("Tab focused a column that is not drawn")
+	}
+}
