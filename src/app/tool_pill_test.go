@@ -98,3 +98,22 @@ func TestToolPillYieldsToExpandedFrame(t *testing.T) {
 		t.Error("ctrl+g under tidy mode must restore the framed render, not the pill")
 	}
 }
+
+// ctrl+g is an EXPAND axis, not a third view: under tidy mode it must
+// reach the same full block a non-tidy expanded call gets. Returning a
+// header-only frame here would show strictly less than the
+// already-collapsed non-tidy view, so tidy+ctrl+g matched neither state
+// and looked broken.
+func TestTidyPlusCtrlGReachesTheFullBlock(t *testing.T) {
+	bl := readBlock("done")
+	full := Model{expandTools: true}.renderToolBlock(bl, 100)
+	tidyFull := Model{Tidy: true, expandTools: true}.renderToolBlock(bl, 100)
+
+	if tidyFull != full {
+		t.Errorf("tidy must not alter an EXPANDED call:\n tidy: %q\n full: %q",
+			stripSelectionANSI(tidyFull), stripSelectionANSI(full))
+	}
+	if !strings.Contains(stripSelectionANSI(tidyFull), "package app") {
+		t.Errorf("tidy+ctrl+g hid the result body: %q", stripSelectionANSI(tidyFull))
+	}
+}

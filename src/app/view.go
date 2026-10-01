@@ -554,13 +554,15 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 	}
 	inner := blockInner(w)
 	rows := []string{toolHeaderRow(bl, toolHead(bl), inner)}
-	// Tidy mode: the header IS the block. A tool call reads as
+	// Tidy mode, collapsed: the header IS the block. A tool call reads as
 	// "● edit src/app/view.go" with no args line and no result, diff or
 	// preview underneath — the whole point of the mode.
-	if m.Tidy {
-		if m.expandTools {
-			return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
-		}
+	//
+	// ctrl+g skips tidy entirely rather than landing between the two
+	// views: the pill and the full block are the ends of one axis, and a
+	// header-only frame would be strictly less than what a NON-tidy
+	// collapsed call already shows.
+	if m.Tidy && !m.expandTools {
 		return toolPillBlock(bl, w)
 	}
 	if d := toolDetail(bl); d != "" {
@@ -618,10 +620,8 @@ func (m Model) renderShellBlock(bl Block, w int) string {
 	rows := []string{shellCommandRow(bl)}
 	// Tidy mode keeps the command line (that IS the call) and drops the
 	// output section, so a long transcript of shell calls stays scannable.
-	if m.Tidy {
-		if m.expandTools {
-			return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
-		}
+	// ctrl+g overrides, as in renderToolBlock: expanded means expanded.
+	if m.Tidy && !m.expandTools {
 		return toolPillBlock(bl, w)
 	}
 	inner := blockInner(w) // clamped to the same floor framedBlock uses
