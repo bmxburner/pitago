@@ -10,6 +10,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -430,19 +431,43 @@ func McpFirstLine(s string) string {
 // after an edit (refreshHubUnderneath).
 type mcpHubDefCache map[string]pirpc.McpDef
 
-// refreshMcpHubDefs re-reads mcp.json into the cache. Best-effort: a file
-// that cannot be read leaves the cache empty, and the column then says
-// so instead of failing the render.
+// refreshMcpHubDefs re-reads the configs into the cache, one file per
+// source pi reported. Reading only the agent dir's mcp.json was wrong in
+// a way the UI could not show: a project-scoped server has its entry in
+// <project>/.pi/mcp.json, so it missed the cache and the DETAILS column
+// reported "not in mcp.json" for a server that plainly exists — no
+// command, no args, no env, nothing to edit.
+//
+// Best-effort per file: one that cannot be read leaves the cache empty
+// rather than failing the render. The agent dir's file is always read
+// too, so a server pi has not listed yet still resolves.
 func (m *Model) refreshMcpHubDefs() {
 	m.mcpHubDefs = nil
-	doc, err := pirpc.LoadMcpConfig(mcpTargetPath(nil))
-	if err != nil {
-		return
+	cache := mcpHubDefCache{}
+	paths := []string{mcpTargetPath(nil)}
+	// pi's report is the authority on where each entry lives, and it spans
+	// as many files as the session has: the agent dir, any project dir, and
+	// one per extension-registered server.
+	for _, s := range m.McpInfo {
+		if s.Source != "" && !slices.Contains(paths, s.Source) {
+			paths = append(paths, s.Source)
+		}
 	}
-	m.mcpHubDefs = mcpHubDefCache{}
-	for _, n := range doc.Servers() {
-		m.mcpHubDefs[n] = doc.Get(n)
+	for _, path := range paths {
+		doc, err := pirpc.LoadMcpConfig(path)
+		if err != nil {
+			continue
+		}
+		for _, n := range doc.Servers() {
+			// First writer wins, and the agent dir goes first: that is the
+			// file pi's own `mcp add` writes to by default, so on the rare
+			// name collision this resolves the way pi would.
+			if _, seen := cache[n]; !seen {
+				cache[n] = doc.Get(n)
+			}
+		}
 	}
+	m.mcpHubDefs = cache
 }
 
 // mcpHubDef is one cached entry (ok=false when the cache has no such

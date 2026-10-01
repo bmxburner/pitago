@@ -1487,6 +1487,15 @@ func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.
 				m.applyMcpFilter(d) // the filter narrows the SERVER list here
 				return m, nil
 			}
+			if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+				// Widening the filter has to rebuild the rows for the same
+				// reason typing does, or backspace leaves the narrowed view
+				// on screen with a shorter filter in the box.
+				m.clearMcpArm()
+				d.McpActCursor = 0
+				m.loadRows(d)
+				return m, nil
+			}
 			// marketplace typing is a remote search: re-arm the debounce
 			return m, m.marketSearchTick()
 		}
@@ -2130,13 +2139,27 @@ func (m Model) mcpHubServersMenu(d *Dialog) (opts, descs, payload []string, msg 
 	if notice := m.mcpHubNotices(); notice != "" {
 		msg = notice
 	}
+	// The filter belongs to the server list, the way it does in the /mcp
+	// panel: typing is how you find one. It used to be ignored here, so
+	// every rebuild after a keystroke put the whole list back — the filter
+	// box looked live and nothing narrowed.
+	filter := strings.ToLower(strings.TrimSpace(d.Filter))
 	servers := m.mcpHubServers()
+	matched := 0
 	for _, s := range servers {
+		if filter != "" && !strings.Contains(strings.ToLower(s.Name), filter) {
+			continue
+		}
+		matched++
 		opts = append(opts, s.Name)
 		descs = append(descs, fmt.Sprintf("%s · %s · %s", m.mcpState(s, true), mcpExposureName(s), mcpScopeName(s)))
 		payload = append(payload, psecActMCPSel+s.Name)
 	}
-	if len(servers) == 0 {
+	if matched == 0 && filter != "" {
+		opts = append(opts, fmt.Sprintf("— no server matches %q —", d.Filter))
+		descs = append(descs, "Esc clears the filter")
+		payload = append(payload, "")
+	} else if matched == 0 {
 		opts = append(opts, "— no MCP servers configured —")
 		descs = append(descs, "")
 		payload = append(payload, "")

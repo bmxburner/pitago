@@ -3178,3 +3178,99 @@ func TestMcpHubActionRefusesAnUndrawnColumn(t *testing.T) {
 		t.Fatal("a drawn column refused its action — the guard is too broad")
 	}
 }
+
+// A project-scoped server's entry lives in the project's mcp.json, not in
+// the agent dir's. The hub used to read only the agent dir, so every such
+// server missed the cache and the DETAILS column said "not in mcp.json" —
+// no command, no args, no env, nothing to edit, on a server that plainly
+// exists.
+func TestHubDetShowsProjectScopedEntries(t *testing.T) {
+	mcpPanelEnv(t)
+	dir := t.TempDir()
+	t.Setenv("PI_CODING_AGENT_DIR", dir)
+	proj := t.TempDir()
+	projFile := filepath.Join(proj, ".pi", "mcp.json")
+	if err := os.MkdirAll(filepath.Dir(projFile), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(projFile,
+		[]byte(`{"mcpServers":{"proj-one":{"command":"proj-bin","args":["--stdio"],"env":{"K":"V"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &Model{MCP: []McpServer{{Name: "proj-one"}}}
+	m.winW, m.winH = 140, 40
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "proj-one", Scope: "project", Source: projFile, Enabled: true},
+	}})
+	m.refreshMcpHubDefs()
+
+	d, ok := m.mcpHubDef("proj-one")
+	if !ok {
+		t.Fatal("a project-scoped server missed the cache: its entry is in the project's mcp.json")
+	}
+	if d.Command != "proj-bin" {
+		t.Errorf("command = %q, want %q", d.Command, "proj-bin")
+	}
+
+	// And the column that renders it must actually show the entry.
+	m.OpenHubSection(PsecMCP)
+	d2 := m.Dialogs[0]
+	m.syncMcpActDrawn(d2)
+	out := stripANSI(strings.Join(m.mcpHubPane(d2, 60), "\n"))
+	if strings.Contains(out, "not in") {
+		t.Errorf("the details column says the entry is missing:\n%s", out)
+	}
+	if !strings.Contains(out, "proj-bin") {
+		t.Errorf("the command is not on screen:\n%s", out)
+	}
+}
+
+// Typing in the hub's MCP section must narrow the server list. It used to
+// call applyMcpFilter and then loadRows, and the hub's row builder never
+// read the filter — so every rebuild after a keystroke restored the full
+// list and the filter box looked live while nothing filtered.
+func TestHubMcpFilterNarrowsTheServerList(t *testing.T) {
+	mcpPanelEnv(t)
+	m := mcpPanelModel(t)
+	m.SetMcpInfo(McpMsg{Servers: []pirpc.McpServerInfo{
+		{Name: "vault-tools", State: "connected", Enabled: true},
+		{Name: "slack", State: "connected", Enabled: true},
+		{Name: "notion", State: "connected", Enabled: true},
+	}})
+	m.OpenHubSection(PsecMCP)
+	d := m.Dialogs[0]
+	typeIn := func(s string) {
+		for _, r := range s {
+			mm, _ := m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}}, d)
+			m = ptr(mm.(Model))
+		}
+	}
+	typeIn("sl")
+	if d.Filter != "sl" {
+		t.Fatalf("filter = %q", d.Filter)
+	}
+	if strings.Contains(strings.Join(d.Options, ","), "notion") ||
+		strings.Contains(strings.Join(d.Options, ","), "vault-tools") {
+		t.Errorf("the filter did not narrow the list: %v", d.Options)
+	}
+	if len(d.Options) != 1 || d.Options[0] != "slack" {
+		t.Fatalf("rows = %v, want just [slack]", d.Options)
+	}
+	// A filter that matches nothing says so rather than showing everything.
+	typeIn("zz")
+	if !strings.Contains(strings.Join(d.Options, " "), "no server matches") {
+		t.Errorf("an empty match should say so: %v", d.Options)
+	}
+	// Backspace widens it again: "slzz" -> "slz" -> "sl" matches slack.
+	for _, want := range []string{"slz", "sl"} {
+		mm, _ := m.updatePconfigDialogKey(tea.KeyMsg{Type: tea.KeyBackspace}, d)
+		m = ptr(mm.(Model))
+		if d.Filter != want {
+			t.Fatalf("after backspace filter = %q, want %q", d.Filter, want)
+		}
+	}
+	if len(d.Options) != 1 || d.Options[0] != "slack" {
+		t.Errorf("backspace did not widen the list back to slack: %v", d.Options)
+	}
+}
