@@ -1409,6 +1409,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Refresh()
 		return m, tea.Batch(m.RespawnPi(), pluginTickCmd())
 
+	case McpPanelMsg:
+		if msg.Err != nil {
+			m.Status = "MCP: " + msg.Err.Error()
+		}
+		m.Refresh()
+		return m, nil
+
 	case tea.MouseMsg:
 		// App-owned chat drag selection (left press/motion/release).
 		// Sidebar clicks/wheel/dialogs fall through untouched.
@@ -2729,6 +2736,12 @@ func (m Model) updateDialog(km tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if d.Kind == "pconfig" && len(d.Provs) > 0 {
 		return m.updatePconfigDialog(km, d)
 	}
+	if d.Kind == mcpKind && len(d.Provs) > 0 {
+		return m.updatePconfigDialog(km, d) // same two-pane navigation
+	}
+	if d.Kind == mcpFormKind {
+		return m.updateMcpForm(km, d)
+	}
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.updateModelDialog(km, d)
 	}
@@ -3225,6 +3238,14 @@ func (m Model) dismissDialog(d *Dialog) (tea.Model, tea.Cmd) {
 		m.answerInput(d, true)
 	} else {
 		m.Dialogs = m.Dialogs[1:]
+		// The MCP remove gate lives on the model so the hub and the
+		// editor share it, which means it must be dropped when a surface
+		// closes: half-arming a delete and walking away to another
+		// surface must not turn its first Enter into the delete.
+		m.clearMcpArm()
+		// Whatever was waiting underneath may show state this dialog just
+		// changed (the settings hub's rows are built once at open).
+		m.refreshHubUnderneath()
 		// Reading a notification pauses its countdown. Only release when the
 		// history is actually gone: dismissDialog runs for EVERY dialog
 		// close, so an unrelated dialog stacked on the open history (the
@@ -3384,6 +3405,20 @@ func (d *Dialog) selProv() string {
 // empty Filter the right pane previews the cursor provider's models.
 // Login dialogs filter providers into PIdx (right pane is keys, unfiltered).
 func (d *Dialog) Reindex() {
+	if d.Kind == mcpKind {
+		// The MCP panel's filter text belongs to the SERVER pane (see
+		// applyMcpFilter): the action rows are a fixed set for whatever is
+		// highlighted, and filtering them would leave Toggle/Edit/Remove
+		// unreachable exactly when the user has found the server.
+		d.FIdx = d.FIdx[:0]
+		for i := range d.Options {
+			d.FIdx = append(d.FIdx, i)
+		}
+		if d.Cursor >= len(d.FIdx) {
+			d.Cursor = 0
+		}
+		return
+	}
 	if d.Kind == "login" {
 		d.PIdx = d.PIdx[:0]
 		f := strings.ToLower(strings.TrimSpace(d.Filter))

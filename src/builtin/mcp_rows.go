@@ -179,11 +179,12 @@ func loadMcp(m *app.Model) tea.Cmd {
 		// row at the wrong server.
 		ordered := mcpOrdered(list.Servers)
 		return app.McpMsg{
-			Options: mcpRowLabels(ordered),
-			Descs:   mcpRowDescs(ordered),
-			Payload: mcpRowDetails(ordered),
-			Servers: ordered,
-			Notice:  mcpNotice(list.Errors, err),
+			Options:    mcpRowLabels(ordered),
+			Descs:      mcpRowDescs(ordered),
+			Payload:    mcpRowDetails(ordered),
+			Servers:    ordered,
+			ConfigErrs: list.Errors,
+			Notice:     mcpNotice(list.Errors, ordered, err),
 		}
 	}
 }
@@ -192,9 +193,38 @@ func loadMcp(m *app.Model) tea.Cmd {
 // rows: its config errors, or the failure of the list call itself
 // (a dead `pi` binary, a timeout). A non-empty exit with a readable
 // document is not an error — that is just "a server is broken".
-func mcpNotice(errs []string, exitErr error) string {
+// mcpNotice is the one line the list leaves behind. The important case
+// is the boring one: `pi mcp list` exits 1 whenever ANY server is wrong
+// but still prints the whole document (a broken server is a row, not a
+// failure), so a bare "exited with an error: exit status 1" reads like
+// the command failed when four of five servers are connected. Prefer the
+// server count; keep the raw status only for a list that really did fail.
+func mcpNotice(errs []string, servers []pirpc.McpServerInfo, exitErr error) string {
 	if len(errs) > 0 {
 		return "config errors: " + strings.Join(errs, "; ")
+	}
+	if exitErr != nil && len(servers) > 0 {
+		bad, live := 0, 0
+		for _, s := range servers {
+			// A disabled server is the user's own choice, not something
+			// that needs attention, so it is out of the count entirely —
+			// and only a server pi actually reached can be called
+			// "connected", so anything else (failed, needs-auth,
+			// connecting, unreported) counts as needing a human.
+			if !s.Enabled {
+				continue
+			}
+			live++
+			if s.State != "connected" {
+				bad++
+			}
+		}
+		switch {
+		case bad > 0:
+			return fmt.Sprintf("%d of %d MCP servers need attention — the list itself is complete", bad, live)
+		case live > 0:
+			return fmt.Sprintf("pi mcp list reported %v, but all %d of its servers are connected", exitErr, live)
+		}
 	}
 	if exitErr != nil {
 		return "pi mcp list exited with an error: " + exitErr.Error()

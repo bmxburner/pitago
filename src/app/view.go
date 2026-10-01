@@ -1648,6 +1648,12 @@ func (m Model) renderDialog() string {
 	if d.Kind == "pconfig" && len(d.Provs) > 0 {
 		return m.renderPconfigDialog(d)
 	}
+	if d.Kind == mcpKind && len(d.Provs) > 0 {
+		return m.renderPconfigDialog(d)
+	}
+	if d.Kind == mcpFormKind {
+		return m.renderMcpForm(d)
+	}
 	if d.Kind == "model" && len(d.Provs) > 0 {
 		return m.renderModelDialog(d)
 	}
