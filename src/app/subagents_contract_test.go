@@ -103,7 +103,14 @@ func TestTrackSubagentStartIgnoresOtherTools(t *testing.T) {
 
 // Stock pi with no subagent extension at all: the section is hidden by default,
 // the overlay opens, and an empty list is a normal state rather than a crash.
+//
+// The agent dir is redirected to an empty temp dir: opening the overlay scans
+// the real one, so on a developer machine that has actually used subagents
+// this test would see leftover rows and fail for a reason that has nothing to
+// do with what it is testing. Same convention as subagents_live_test.go.
 func TestNoSubagentExtensionIsANoOp(t *testing.T) {
+	t.Setenv("PI_AGENT_DIR", t.TempDir())
+	t.Setenv("PI_CODING_AGENT_DIR", "")
 	if DefaultSideVisible(SideSubagents) {
 		t.Error("the SUBAGENTS section should be hidden by default; there is nothing to show")
 	}
@@ -124,6 +131,8 @@ func TestNoSubagentExtensionIsANoOp(t *testing.T) {
 
 // Every key path that touches a row must tolerate having none.
 func TestHerdOverlayKeysAreSafeWithNoRows(t *testing.T) {
+	t.Setenv("PI_AGENT_DIR", t.TempDir())
+	t.Setenv("PI_CODING_AGENT_DIR", "")
 	m := &Model{}
 	m.OpenSubagentHerd()
 	for _, r := range []rune("jkwxfXstR") {

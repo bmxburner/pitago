@@ -23,6 +23,25 @@ jobs:
       - run: go vet ./...
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+  # Upstream runs tests only on release tags (release.yml), so a PR here can
+  # go green on quality + build while breaking a test. This job restores the
+  # gate locally: it mirrors script/test-cicd.sh, and the same two steps
+  # release.yml runs at tag time.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Unit and integration tests
+        run: go test ./... -race -count=1
+      # JSONL wire contract against pi. The real pi binary is not on the
+      # runner, so script/test-wire.sh puts the stdlib fake pi on PI_BIN,
+      # which makes the live-pi tests actually run.
+      - name: Wire test
+        run: bash script/test-wire.sh
+
   # Tests run only on release tags, in release.yml. Pushes and PRs stay on
   # quality + build.
   build:
