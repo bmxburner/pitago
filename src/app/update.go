@@ -1659,6 +1659,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.Refresh()
 				return m, nil
 			}
+		case tea.KeyTab:
+			// Tab toggles plan mode (/plan), opencode-style. Sits below
+			// the @/palette popup handlers (which own Tab for completion)
+			// and above the textarea tail, so it can neither steal their
+			// Tab nor leak a tab character into the prompt.
+			return m, m.togglePlanMode()
 		case tea.KeyCtrlO:
 			return m, m.OpenYank()
 		case tea.KeyCtrlG:
@@ -3218,6 +3224,18 @@ func (m Model) confirmDialog(d *Dialog) (tea.Model, tea.Cmd) {
 		// free-text prompt (ui.input / ui.editor): Enter submits the typed
 		// value (even empty — the extension treats empty as back/cancel).
 		m.answerInput(d, false)
+		return m, nil
+	}
+	if d.Kind == suggestAddKind {
+		// Ctrl+F's prompt: the typed name joins the ★ list in prefs.json
+		// and the hub rows rebuild underneath (empty = cancel).
+		name := strings.TrimSpace(d.Filter)
+		m.Dialogs = m.Dialogs[1:]
+		if name != "" {
+			m.AddSuggestPlugin(name) // saves prefs + mirrors the list
+		}
+		m.reloadHubRows("") // the ★ rows must see the new pick
+		m.Refresh()
 		return m, nil
 	}
 	if len(d.FIdx) == 0 {
