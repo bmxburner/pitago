@@ -44,6 +44,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// Toasts expire by wall clock: prune on every message so a missed
 	// dismissal tick still clears (the tick itself just triggers repaint).
 	m.pruneToasts()
+	// A plan gate parks its handoff command in handleUIRequest, which cannot
+	// return one. Drain it here: the extension is blocked on the response
+	// until this runs, so nothing else may be returned first.
+	if cmd := m.takePlanGateCmd(); cmd != nil {
+		return m, cmd
+	}
 	// SGR mouse-report leakage: a trackpad/mouse-wheel burst can split
 	// across input reads, losing the ESC prefix — the "[<65;50;31M…"
 	// remainder then arrives as plain KeyRunes. Scrub it before dialogs,
@@ -2462,6 +2468,12 @@ func (m Model) fireUI(cmd pirpc.Command) {
 // Protocol knowledge (methods, defaults, response shape) lives in
 // src/extension; this only mutates UI state.
 func (m Model) handleUIRequest(raw []byte) Model {
+	// A plan gate is not a dialog: it is a request to borrow the terminal. It is
+	// routed before the generic path because it parks a request id and returns a
+	// tea.Cmd for the handoff, neither of which a Dialog models.
+	if extension.IsPlanGate(raw) {
+		return m.planGateRequest(raw)
+	}
 	var req pirpc.UIRequest
 	if err := json.Unmarshal(raw, &req); err != nil {
 		// A payload we cannot read must still resolve on pi's side: the

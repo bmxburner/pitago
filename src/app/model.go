@@ -177,6 +177,9 @@ type Model struct {
 	TeamWidgetVisible   bool            // explicit /team visibility preference
 	TeamWidgetSeen      bool            // widget state exists in the current cycle
 	planOn              bool            // plan-mode latch, live only: set on Start choice, cleared on /new (heuristic, extension has no plan flag in get_state)
+	planGateID          string          // extension_ui_request id parked by a plannotator plan gate, answered when its TUI review exits
+	planGateName        string          // label for the plan-gate feedback heading
+	planGateCmd         tea.Cmd         // pending plan-gate terminal hand-off, drained at the top of Update
 	ready               bool
 	winW                int
 	winH                int

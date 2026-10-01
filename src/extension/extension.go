@@ -187,7 +187,38 @@ func FallbackResponse(id string) pirpc.Command {
 // (select/confirm/input/editor). Anything else (notify/setStatus/setWidget/…)
 // never disrupts input routing. Unreadable payloads stay on the safe side
 // (true = hold behind the open dialog, the historical behavior).
+// PlanGateTitle is the sentinel an extension uses to borrow pitago's terminal
+// for a TUI review. Pi's extension API exposes no generic way to invoke a host
+// method — ctx.ui is a closed set (select/confirm/input/notify plus a few
+// setters) — so the one request/response channel available is overloaded.
+//
+// A select carrying this title is NOT rendered as a picker: pitago runs the
+// review and answers with the outcome. It is deliberately versioned, because
+// the wire shape of the payload and the response is a contract between this
+// fork and the extension, and both have to move together.
+const PlanGateTitle = "pitago-plan-gate:v1"
+
+// IsPlanGate reports whether a UI request is a plan-gate hand-off. Only the
+// exact sentinel title counts: a real picker that happens to be titled
+// "plan review" must not be hijacked.
+func IsPlanGate(raw json.RawMessage) bool {
+	var req struct {
+		Method string `json:"method"`
+		Title  string `json:"title"`
+	}
+	if err := json.Unmarshal(raw, &req); err != nil {
+		return false
+	}
+	return req.Method == "select" && req.Title == PlanGateTitle
+}
+
 func IsDialogRequest(raw json.RawMessage) bool {
+	// A plan gate borrows the select transport but opens no dialog and must not
+	// be parked: it has to reach the handler that can return a tea.Cmd for the
+	// terminal handoff, not the dialog queue.
+	if IsPlanGate(raw) {
+		return false
+	}
 	var req struct {
 		Method string `json:"method"`
 	}

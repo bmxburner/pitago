@@ -465,6 +465,12 @@ func (m *Model) restoreMouseCmd() tea.Cmd {
 // no surface implementation has to know how feedback reaches the agent.
 func (m *Model) handleReviewDone(msg reviewDoneMsg) tea.Cmd {
 	if msg.Err != nil {
+		if m.answerPlanGate(ReviewCapture{}, msg.Err) {
+			m.AddBlock(Block{Kind: "notice", Text: "annotate tui failed: " + msg.Err.Error(), Err: true})
+			m.PendingReview = nil
+			m.Refresh()
+			return nil
+		}
 		m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("annotate %s failed: %s", msg.Surface, msg.Err), Err: true})
 		m.Refresh()
 		return nil
@@ -480,6 +486,17 @@ func (m *Model) handleReviewDone(msg reviewDoneMsg) tea.Cmd {
 		capture.Surface = msg.Surface
 		if capture.Outcome == reviewOutcomeDismissed {
 			m.AddBlock(Block{Kind: "notice", Text: "annotate tui closed · nothing was sent"})
+			m.PendingReview = nil
+			if m.answerPlanGate(capture, nil) {
+				m.Refresh()
+				return nil
+			}
+			m.Refresh()
+			return nil
+		}
+		// A plan gate is the caller: answer the extension and stop. The record
+		// on disk plus this response is the single delivery path.
+		if m.answerPlanGate(capture, nil) {
 			m.PendingReview = nil
 			m.Refresh()
 			return nil
