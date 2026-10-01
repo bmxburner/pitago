@@ -15,6 +15,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -730,12 +731,13 @@ func (m Model) updateSubagentsDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.C
 				}
 			}
 			row, ok := subagentRowByID(m, id)
-			name := id
-			if ok {
-				name = fmt.Sprintf("\"%s\" (%s)", row.Name, row.ID)
+			if !ok {
+				m.AddBlock(Block{Kind: "notice", Text: "That subagent row is gone.", Err: true})
+				m.Refresh()
+				return m, nil
 			}
 			m.Refresh()
-			return m, m.sendCmd(m.thinking, fmt.Sprintf("Send the following message to subagent %s via your subagent message path:\n\n%s", name, text), nil)
+			return m, m.sendSubagentMessage(row, text)
 		case tea.KeyBackspace:
 			if d.Filter != "" {
 				r := []rune(d.Filter)
@@ -1058,4 +1060,63 @@ func otherScopeName(scope string) string {
 		return "active"
 	}
 	return "finished"
+}
+
+// subagentMessageMsg reports the outcome of delivering a steer message from
+// the detail view. Separate from sentAckMsg because this is not a chat send:
+// the text must never fall back into the editor, and success needs its own
+// notice rather than silence.
+type subagentMessageMsg struct {
+	name string
+	err  error
+}
+
+// sendSubagentMessage delivers text to a running subagent through pi's
+// /subagent-message command bridge.
+//
+// It used to inject "send this to subagent X via your subagent message path"
+// into the chat, but no such tool has ever existed — pi-agents only ships
+// subagent / subagent_interrupt / subagent_wait / subagents_list /
+// subagent_resume, and the messaging-shaped tools (caller_ping,
+// subagent_done) are child→parent. The main agent was being told to use a
+// capability that did not exist.
+//
+// pi has no extension-callable RPC method, but `prompt` dispatches extension
+// commands immediately, so the command bridge is the supported route. Rows
+// are addressed by session path: pitago's row IDs are toolCallIds or
+// "disk-<hex>", while pi-agents uses ip-/ra-/fork-/own- ids, and the session
+// file is the only key both sides hold.
+// subagentMessageCommand builds the /subagent-message invocation. JSON is
+// used rather than positional args because session paths can contain spaces.
+func subagentMessageCommand(sessionPath, text string) (string, error) {
+	payload, err := json.Marshal(map[string]string{
+		"sessionPath": sessionPath,
+		"message":     text,
+	})
+	if err != nil {
+		return "", fmt.Errorf("could not encode message: %w", err)
+	}
+	return "/subagent-message " + string(payload), nil
+}
+
+func (m *Model) sendSubagentMessage(row SubagentRow, text string) tea.Cmd {
+	name := row.Name
+	if row.SessionFile == "" {
+		return func() tea.Msg {
+			return subagentMessageMsg{name: name, err: errors.New("this row has no session file to address")}
+		}
+	}
+	command, err := subagentMessageCommand(row.SessionFile, text)
+	if err != nil {
+		return func() tea.Msg { return subagentMessageMsg{name: name, err: err} }
+	}
+	return func() tea.Msg {
+		// Success here means pi accepted the command; whether the subagent
+		// took delivery is reported by the extension's own notification, so
+		// the wording must not overclaim.
+		if _, perr := m.Pi.Prompt(command); perr != nil {
+			return subagentMessageMsg{name: name, err: perr}
+		}
+		return subagentMessageMsg{name: name}
+	}
 }

@@ -1038,3 +1038,53 @@ func TestSubagentXPromptHandleFallback(t *testing.T) {
 		t.Errorf("cmux row must still offer SIGINT: %q", text)
 	}
 }
+
+// The steer box used to inject "send this via your subagent message path"
+// into the chat, but no such tool exists — pi-agents ships only subagent /
+// subagent_interrupt / subagent_wait / subagents_list / subagent_resume, and
+// the messaging-shaped tools are child→parent. It now goes through pi's
+// /subagent-message command bridge, addressed by session path (the only key
+// pitago and pi-agents share).
+func TestSendSubagentMessageUsesCommandBridge(t *testing.T) {
+	m := New(nil, t.TempDir())
+	row := SubagentRow{ID: "p1", Name: "pane", SessionFile: "/a/pane.jsonl", Status: SubagentActive}
+
+	// A row with no session file cannot be addressed at all.
+	msg := m.sendSubagentMessage(SubagentRow{ID: "p1", Name: "pane"}, "continue")()
+	got, ok := msg.(subagentMessageMsg)
+	if !ok {
+		t.Fatalf("msg = %T, want subagentMessageMsg", msg)
+	}
+	if got.err == nil {
+		t.Error("a row with no session file must be refused, not sent blindly")
+	}
+
+	// The encoded command must carry the session path and the text verbatim.
+	if !strings.Contains(got.name, "pane") {
+		t.Errorf("notice should name the subagent, got %q", got.name)
+	}
+	cmdText, encErr := subagentMessageCommand(row.SessionFile, "continue please")
+	if encErr != nil {
+		t.Fatalf("encode: %v", encErr)
+	}
+	if !strings.HasPrefix(cmdText, "/subagent-message ") {
+		t.Errorf("command = %q", cmdText)
+	}
+	var payload struct{ SessionPath, Message string }
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(cmdText, "/subagent-message ")), &payload); err != nil {
+		t.Fatalf("payload is not JSON: %v", err)
+	}
+	if payload.SessionPath != "/a/pane.jsonl" || payload.Message != "continue please" {
+		t.Errorf("payload = %+v", payload)
+	}
+}
+
+// A vanished row must be reported, not silently turned into a message
+// addressed to nothing.
+func TestSubagentSteerOnMissingRowIsReported(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.OpenSubagentHerd()
+	if _, ok := subagentRowByID(m, "nope"); ok {
+		t.Fatal("expected no such row")
+	}
+}

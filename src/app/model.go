@@ -1358,6 +1358,21 @@ func (m *Model) OpenThinking() tea.Cmd {
 func (m *Model) SessionFile() string { return m.sessionFile }
 
 // NoSession reports whether this TUI runs without persisting sessions.
+// applyPersistedDismissals seeds the in-memory dismissed set from prefs so
+// an X pressed in a previous run still suppresses the disk rescan. Split out
+// of Configure (which hardcodes PrefsPath) so it can be tested without
+// touching the real prefs file.
+func (m *Model) applyPersistedDismissals(prefs Prefs) {
+	if m.dismissed == nil {
+		m.dismissed = make(map[string]bool)
+	}
+	for _, id := range prefs.DismissedSubagents {
+		if id != "" {
+			m.dismissed[id] = true
+		}
+	}
+}
+
 func (m *Model) NoSession() bool { return m.spawnOpts.NoSession }
 
 // Builtin is one locally-executed slash command.
@@ -1431,6 +1446,9 @@ func (m *Model) Configure(opts pirpc.Options, keyPath string) {
 	m.savedModel = prefs.CurrentModel
 	m.Side = prefs.Side
 	m.CmdShortcuts = prefs.CmdShortcuts
+	// Replay persisted dismissals so X survives a restart. Without this the
+	// map is empty on every launch and the disk rescan resurrects the row.
+	m.applyPersistedDismissals(prefs)
 	m.hideTaskWidget = !prefs.TaskWidgetVisible()
 	m.loadTaskDisplay()
 	m.RecentCmds = prefs.RecentCmds

@@ -486,6 +486,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.Refresh()
 		return m, nil
 
+	case subagentMessageMsg:
+		if msg.err != nil {
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("could not message %s: %v", msg.name, msg.err), Err: true})
+		} else {
+			m.AddBlock(Block{Kind: "notice", Text: fmt.Sprintf("message sent to %s", msg.name)})
+		}
+		m.Refresh()
+		return m, nil
+
 	case sentAckMsg:
 		if msg.err != nil {
 			// A refused send must not cost the user their words: pi took

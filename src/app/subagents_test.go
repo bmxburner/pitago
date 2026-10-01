@@ -1237,3 +1237,115 @@ func TestDismissSubagentRowSticks(t *testing.T) {
 		}
 	}
 }
+
+// A session that ended on a clean turn but never got a trailing
+// session_shutdown entry (the child was killed, not quit) and never produced
+// an activity file classifies as stalled forever. Once it has been quiet
+// longer than subagentDiskQuietDoneMs it must read as done instead.
+func TestSubagentQuietSessionIsDoneNotStalled(t *testing.T) {
+	agentDir := t.TempDir()
+	sdir := filepath.Join(agentDir, "subagent-sessions")
+	if err := os.MkdirAll(sdir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	quiet := filepath.Join(sdir, "quiet.jsonl")
+	busy := filepath.Join(sdir, "busy.jsonl")
+	for _, f := range []string{quiet, busy} {
+		if err := os.WriteFile(f, []byte("{\"type\":\"message\"}\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// No activity sibling for either, and no shutdown marker in either.
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(quiet, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// Written 10 minutes ago: inside the grace window, so still "stalled" —
+	// this is the agent-you-stepped-away-from case the long window protects.
+	recent := now.Add(-10 * time.Minute)
+	if err := os.Chtimes(busy, recent, recent); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := scanSubagentArtifacts("", agentDir, now)
+	byID := map[string]SubagentRow{}
+	for _, r := range rows {
+		byID[r.ID] = r
+	}
+	q, ok := byID["disk-quiet"]
+	if !ok {
+		t.Fatalf("quiet session missing from scan: %+v", rows)
+	}
+	if q.Status != SubagentDone {
+		t.Errorf("quiet, marker-less session status = %v, want done", q.Status)
+	}
+	if q.DoneAt == nil {
+		t.Error("a done row should carry DoneAt")
+	}
+	b, ok := byID["disk-busy"]
+	if !ok {
+		t.Fatalf("recent session missing from scan: %+v", rows)
+	}
+	if b.Status != SubagentStalled {
+		t.Errorf("session inside the grace window status = %v, want stalled", b.Status)
+	}
+}
+
+// X must survive a restart: the dismissal is written to prefs, and replaying
+// prefs on the next launch re-seeds the set that blocks the disk rescan.
+func TestDismissedSubagentsPersistAcrossRestart(t *testing.T) {
+	prefsPath := filepath.Join(t.TempDir(), "prefs.json")
+	m := New(nil, t.TempDir())
+	m.prefsPath = prefsPath
+	row := SubagentRow{ID: "disk-x", Name: "subagent-x", SessionFile: "/a/subagent-x.jsonl", Status: SubagentStalled}
+	m.Subagents = []SubagentRow{row}
+	m.dismissSubagentRow(row)
+
+	prefs := LoadPrefs(prefsPath)
+	if len(prefs.DismissedSubagents) != 2 {
+		t.Fatalf("persisted dismissals = %v, want the row ID and the session file", prefs.DismissedSubagents)
+	}
+
+	// Restart: a fresh Model replaying the same prefs must suppress the row.
+	restarted := New(nil, t.TempDir())
+	restarted.applyPersistedDismissals(prefs)
+	if !restarted.dismissed[row.ID] || !restarted.dismissed[row.SessionFile] {
+		t.Fatalf("dismissal did not survive restart: %v", restarted.dismissed)
+	}
+	restarted.Subagents = mergeSubagentDisk(nil, []SubagentRow{
+		{ID: "disk-x", Name: "subagent-x", SessionFile: "/a/subagent-x.jsonl"},
+	})
+	restarted.refreshSubagents(true)
+	for _, r := range restarted.Subagents {
+		if r.SessionFile == row.SessionFile {
+			t.Fatalf("rescan resurrected a dismissal from a previous run: %+v", restarted.Subagents)
+		}
+	}
+}
+
+// The persisted list is capped so prefs.json cannot grow without bound, and
+// trimming drops the oldest entries rather than arbitrary map order.
+func TestPersistedDismissalsAreCappedOldestFirst(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.prefsPath = filepath.Join(t.TempDir(), "prefs.json")
+	seed := make([]string, 0, maxPersistedDismissals)
+	for i := 0; i < maxPersistedDismissals; i++ {
+		seed = append(seed, fmt.Sprintf("old-%d", i))
+	}
+	if err := SavePrefs(m.prefsPath, Prefs{DismissedSubagents: seed}); err != nil {
+		t.Fatal(err)
+	}
+	m.dismissSubagentRow(SubagentRow{ID: "newest", SessionFile: "/a/newest.jsonl"})
+
+	got := LoadPrefs(m.prefsPath).DismissedSubagents
+	if len(got) != maxPersistedDismissals {
+		t.Fatalf("len = %d, want the cap %d", len(got), maxPersistedDismissals)
+	}
+	if n := len(got); got[n-2] != "newest" || got[n-1] != "/a/newest.jsonl" {
+		t.Errorf("new entries should be appended last, tail = %v", got[n-2:])
+	}
+	if got[0] == "old-0" {
+		t.Error("oldest entry should have been trimmed")
+	}
+}

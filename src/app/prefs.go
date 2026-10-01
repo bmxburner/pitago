@@ -43,7 +43,20 @@ type Prefs struct {
 	AnnotatePlacement     string            `json:"annotatePlacement,omitempty"`     // native TUI placement
 	AnnotateTUIExecutable string            `json:"annotateTUIExecutable,omitempty"` // optional explicit plannotator-tui path
 	TaskWidgetOff         bool              `json:"taskWidgetOff,omitempty"`         // hide the above-editor task widget
+	// DismissedSubagents records X-dismissed subagent row IDs and session
+	// files so a dismissal survives a restart. Without this the disk rescan
+	// (scanSubagentArtifacts) re-adds every row the moment pitago relaunches,
+	// because the in-memory dismissed map starts empty. Capped — see
+	// maxPersistedDismissals; these are only ever a "don't reshow me this"
+	// set, so trimming the oldest is safe.
+	DismissedSubagents []string `json:"dismissedSubagents,omitempty"`
 }
+
+// maxPersistedDismissals bounds the persisted dismissal list. Rows are keyed
+// by session file, so the list grows with every subagent ever dismissed;
+// without a cap prefs.json grows without bound. 500 is far more than any
+// real session dismisses.
+const maxPersistedDismissals = 500
 
 // TaskWidgetVisible reports whether the above-editor task widget should paint.
 // Default is on: that is upstream behaviour, and the widget carries live

@@ -641,6 +641,22 @@ func restoreSubagentsFromMessages(msgs []pirpc.AgentMessage) []SubagentRow {
 // the current session's finished rows.
 const subagentDiskRecentMs = int64(24 * 3600 * 1000)
 
+// subagentDiskQuietDoneMs is how long a session file with NO activity file
+// must sit untouched before it is called finished rather than wedged.
+//
+// This is deliberately long. The failure it fixes is a run that ended on a
+// clean turn but never got its trailing session_shutdown entry written (the
+// child was killed, not quit) and never produced an activity file at all —
+// which classifies as "stalled" forever. A short window (pi-agents uses a
+// 5-minute active window) would mislabel agents you left running while you
+// stepped away, so this has to clear real work: a live subagent writes to its
+// session file continuously, so silence this long means the process is gone.
+//
+// The residual false positive is a single very long tool call that produces
+// no output — rare, and "done" is the cheaper error than a permanent
+// phantom row.
+const subagentDiskQuietDoneMs = int64(45 * 60 * 1000)
+
 // subagentTaskKey normalizes a task string for identity matching: first
 // line, lowercased, whitespace collapsed, capped length.
 func subagentTaskKey(s string) string {
@@ -743,6 +759,16 @@ func scanSubagentArtifacts(sessionFile, agentDir string, now time.Time) []Subage
 		actPath := filepath.Join(filepath.Dir(f), "subagent-activity", id+".json")
 		act, ok := readSubagentActivity(actPath)
 		status, label := subagentStatusFromActivity(act, ok, startMs, nowMs)
+		// No activity file + nothing written for a long while + no trailing
+		// shutdown marker below = the run ended without a marker, not a run
+		// that wedged. Reclassify so it shows as a finished row (dismissible,
+		// and inside the 24h recent window) instead of a permanent phantom.
+		// The shutdown-marker check runs first; this only applies to files
+		// that genuinely lack a closing marker.
+		if !ok && status == SubagentStalled &&
+			nowMs-st.ModTime().UnixMilli() > subagentDiskQuietDoneMs {
+			status, label = SubagentDone, ""
+		}
 		if hasSubagentShutdownMarker(f) {
 			continue // finished: history restore covers this session
 		}
@@ -981,6 +1007,33 @@ func (m *Model) refreshSubagents(force bool) {
 	}
 }
 
+// persistDismissals appends newly dismissed row keys to prefs so the
+// dismissal outlives the process. Without it the in-memory map is empty on
+// every launch and scanSubagentArtifacts re-adds the row on the first tick.
+//
+// Order is preserved (oldest first, trim from the front at the cap) so the
+// cap drops genuinely ancient entries rather than an arbitrary map order.
+func (m *Model) persistDismissals(keys ...string) {
+	if m.prefsPath == "" {
+		return
+	}
+	prefs := LoadPrefs(m.prefsPath)
+	seen := make(map[string]bool, len(prefs.DismissedSubagents)+len(keys))
+	list := make([]string, 0, len(prefs.DismissedSubagents)+len(keys))
+	for _, k := range append(append(make([]string, 0, len(prefs.DismissedSubagents)+len(keys)), prefs.DismissedSubagents...), keys...) {
+		if k == "" || seen[k] {
+			continue
+		}
+		seen[k] = true
+		list = append(list, k)
+	}
+	if len(list) > maxPersistedDismissals {
+		list = list[len(list)-maxPersistedDismissals:]
+	}
+	prefs.DismissedSubagents = list
+	_ = SavePrefs(m.prefsPath, prefs)
+}
+
 // dismissSubagentRow removes a row from the sidebar/overlay and records it
 // so refreshSubagents will not resurrect it via disk rescan. Both the row
 // ID and session file are recorded: disk rows are keyed "disk-<hex>" while
@@ -995,6 +1048,7 @@ func (m *Model) dismissSubagentRow(row SubagentRow) {
 	if row.SessionFile != "" {
 		m.dismissed[row.SessionFile] = true
 	}
+	m.persistDismissals(row.ID, row.SessionFile)
 	kept := m.Subagents[:0]
 	for _, r := range m.Subagents {
 		if r.ID == row.ID {
