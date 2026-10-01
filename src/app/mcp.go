@@ -10,6 +10,7 @@ package app
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ import (
 type McpMsg struct {
 	Options, Descs, Payload []string
 	Servers                 []pirpc.McpServerInfo // parallel to Options
+	ConfigErrs              []string              // pi's "errors" from the list: an invalid mcp.json entry
 	Notice                  string
 	Err                     error
 }
@@ -117,6 +119,17 @@ func (m *Model) openMcpListMsg(msg McpMsg) {
 		m.Refresh()
 		return
 	}
+	// Keep the rows on the model, not just in the dialog: the settings
+	// hub's MCP section renders from them, so opening settings after a
+	// /mcp (or an action taken from it) shows the same state.
+	m.SetMcpInfo(msg)
+	if m.hubWantsMcpList() {
+		// The hub asked for this list to render its own rows. Pushing
+		// pi's modal manager on top of the settings the user is standing
+		// in is the one thing the fold-in is meant to stop.
+		m.Refresh()
+		return
+	}
 	if msg.Notice != "" {
 		m.AddBlock(Block{Kind: "notice", Text: msg.Notice})
 	}
@@ -137,6 +150,98 @@ func (m *Model) openMcpListMsg(msg McpMsg) {
 // the server by NAME: pi puts servers needing attention first, so a
 // re-read reorders the rows and a cursor kept by index would silently
 // select a different server.
+// hubWantsMcpList reports whether the settings hub is open WITHOUT pi's
+// manager on top of it: that is the case where the list belongs to the
+// hub's own rows, not to a manager dialog.
+func (m *Model) hubWantsMcpList() bool {
+	hub := -1
+	for i, d := range m.Dialogs {
+		switch d.Kind {
+		case "mcp", "mcpAction", "mcpExposure", "mcpTools":
+			return false // pi's manager owns the screen
+		case "pconfig":
+			hub = i
+		}
+	}
+	return hub >= 0
+}
+
+// SetMcpInfo stores pi's server list on the model for the settings hub
+// (which renders state, tools and exposure from it) and records when it
+// was read. The hub's MCP section uses it to decide whether the list is
+// stale: there is no `pi mcp reconnect`, so listing IS the reconnect.
+func (m *Model) SetMcpInfo(msg McpMsg) {
+	m.McpInfo = msg.Servers
+	m.McpInfoAt = time.Now()
+	m.McpInfoNotice = msg.Notice
+	m.McpConfigErrs = msg.ConfigErrs
+	m.refreshMcpHubDefs()
+	// Any settings hub underneath is showing the same servers from the
+	// older list: rebuild its rows so the section the user is looking at
+	// is the one that just refreshed.
+	for _, d := range m.Dialogs {
+		if d.Kind != "pconfig" {
+			continue
+		}
+		filter, keep := d.Filter, d.Cursor // before the rebuild resets them
+		// The server the user is looking at, by NAME. A list refresh can
+		// REORDER the list — enabling or disabling a server changes its
+		// attention rank, so it moves. Restoring the row index would slide
+		// the highlight (and pane 3's whole contents) onto a neighbour,
+		// which is how "I disabled this and it jumped somewhere else"
+		// happens. The row order may change; the subject must not.
+		subject := ""
+		if d.CurPsec() == PsecMCP {
+			subject = m.mcpHubTarget(d)
+		}
+		m.LoadPsecRows(d)
+		if d.CurPsec() != PsecMCP {
+			return
+		}
+		if d.Filter != filter {
+			d.Filter = filter
+			d.Reindex()
+		}
+		restored := false
+		if subject != "" {
+			for f, ri := range d.FIdx {
+				if payloadOf(d, ri) == psecActMCPSel+subject {
+					d.Cursor = f
+					restored = true
+					break
+				}
+			}
+		}
+		if !restored && keep < len(d.Options) {
+			d.Cursor = keep
+		}
+		// Pane 3 now describes the server the user is still looking at,
+		// with the state the action just changed.
+		m.refreshMcpActions(d)
+		return
+	}
+}
+
+// McpInfoStale reports whether the hub should re-list: never listed, or
+// listed long enough ago that a reconnect is worth a run.
+func (m *Model) McpInfoStale() bool {
+	return m.McpInfoAt.IsZero() || time.Since(m.McpInfoAt) > mcpInfoTTL
+}
+
+// mcpInfoTTL is how long a list stays good enough to render without a
+// reconnect.
+const mcpInfoTTL = 60 * time.Second
+
+// McpInfoFor returns pi's row for a server name (zero when unknown).
+func (m *Model) McpInfoFor(name string) (pirpc.McpServerInfo, bool) {
+	for _, s := range m.McpInfo {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return pirpc.McpServerInfo{}, false
+}
+
 func (m *Model) SetMcpRows(msg McpMsg) {
 	keep := ""
 	if i := m.mcpListIndex(); i >= 0 {
@@ -318,4 +423,56 @@ func mcpItoa(n int) string {
 // (possibly multi-line) connection error.
 func McpFirstLine(s string) string {
 	return strings.SplitN(strings.TrimSpace(s), "\n", 2)[0]
+}
+
+// mcpHubDefs is the mcp.json snapshot behind the hub's DETAILS column.
+// Rendering runs per frame, so it reads this rather than the file; it is
+// refreshed whenever pi's list lands (SetMcpInfo) or the hub is rebuilt
+// after an edit (refreshHubUnderneath).
+type mcpHubDefCache map[string]pirpc.McpDef
+
+// refreshMcpHubDefs re-reads the configs into the cache, one file per
+// source pi reported. Reading only the agent dir's mcp.json was wrong in
+// a way the UI could not show: a project-scoped server has its entry in
+// <project>/.pi/mcp.json, so it missed the cache and the DETAILS column
+// reported "not in mcp.json" for a server that plainly exists — no
+// command, no args, no env, nothing to edit.
+//
+// Best-effort per file: one that cannot be read leaves the cache empty
+// rather than failing the render. The agent dir's file is always read
+// too, so a server pi has not listed yet still resolves.
+func (m *Model) refreshMcpHubDefs() {
+	m.mcpHubDefs = nil
+	cache := mcpHubDefCache{}
+	paths := []string{mcpTargetPath(nil)}
+	// pi's report is the authority on where each entry lives, and it spans
+	// as many files as the session has: the agent dir, any project dir, and
+	// one per extension-registered server.
+	for _, s := range m.McpInfo {
+		if s.Source != "" && !slices.Contains(paths, s.Source) {
+			paths = append(paths, s.Source)
+		}
+	}
+	for _, path := range paths {
+		doc, err := pirpc.LoadMcpConfig(path)
+		if err != nil {
+			continue
+		}
+		for _, n := range doc.Servers() {
+			// First writer wins, and the agent dir goes first: that is the
+			// file pi's own `mcp add` writes to by default, so on the rare
+			// name collision this resolves the way pi would.
+			if _, seen := cache[n]; !seen {
+				cache[n] = doc.Get(n)
+			}
+		}
+	}
+	m.mcpHubDefs = cache
+}
+
+// mcpHubDef is one cached entry (ok=false when the cache has no such
+// server, or has no snapshot at all).
+func (m Model) mcpHubDef(name string) (pirpc.McpDef, bool) {
+	d, ok := m.mcpHubDefs[name]
+	return d, ok
 }

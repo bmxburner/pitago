@@ -37,6 +37,7 @@ func Confirmers() map[string]app.ConfirmFunc {
 		"live":         confirmLive,
 		"mcp":          confirmMcp,
 		"mcpAction":    confirmMcpAction,
+		"mcpedit":      confirmMcpEdit,
 		"mcpExposure":  confirmMcpExposure,
 		"mcpTools":     confirmMcpBack,
 	}
@@ -238,6 +239,11 @@ func confirmSettings(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 // runnable rows (skill/prompt/extension, connected MCP) stage the /command
 // in the input; info-only rows explain where to manage them.
 func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	// The MCP actions column is a pane of the hub, so Enter on one of its
+	// rows is dispatched before the middle pane's row is even looked at.
+	if ap, ok := app.McpHubAction(d); ok {
+		return confirmMcpHubAction(m, strings.TrimPrefix(ap, "@mcpact:"))
+	}
 	if ri < 0 || ri >= len(d.Payload) {
 		return m, nil
 	}
@@ -310,6 +316,23 @@ func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 		m.Dialogs = m.Dialogs[1:]
 		m.Refresh()
 		return m, openLogin(m, "")
+	case strings.HasPrefix(p, "@mcpact:"): // app.PsecActMCPAct
+		return confirmMcpHubAction(m, strings.TrimPrefix(p, "@mcpact:"))
+	case strings.HasPrefix(p, "@mcpedit:"): // app.PsecActMCPEdit
+		// The editor opens on its own: it reads and writes mcp.json
+		// directly, so it is not at the mercy of pi's CLI.
+		m.OpenMcpPanelOn(strings.TrimPrefix(p, "@mcpedit:"))
+		return m, nil
+	case p == "@mcp":
+		m.OpenMcpPanel()
+		return m, nil
+	case p == "@mcpcli":
+		// pi's own /mcp manager: sign-in, tools, exposure. It shells out
+		// to `pi mcp list --json`, so it needs a pi that ships the
+		// command; on an older pi the user gets that error in the chat
+		// rather than a silent nothing.
+		m.FillCommand("mcp")
+		return m, nil
 	case p != "":
 		m.FillCommand(p)
 		return m, nil
@@ -320,7 +343,7 @@ func confirmPconfig(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 	case app.PsecMarket:
 		m.AddBlock(app.Block{Kind: "notice", Text: "already installed — Enter on a new entry installs it"})
 	case app.PsecMCP:
-		m.AddBlock(app.Block{Kind: "notice", Text: "edit ~/.pi/agent/mcp.json, then /reload"})
+		m.AddBlock(app.Block{Kind: "notice", Text: "the first row opens the MCP manager — add, edit, toggle or remove servers"})
 	case app.PsecKeys:
 		m.AddBlock(app.Block{Kind: "notice", Text: "reference row — Ctrl+S on a custom ⌥ row re-assigns it"})
 	default:
@@ -445,6 +468,148 @@ func confirmSecret(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
 		pirpc.PushActiveToPi(keyPath, env)
 		return msg
 	}
+}
+
+// confirmMcpHubAction runs one row of the hub's MCP action group. pi's
+// arms call the same operations the /mcp menu does (mcpSaveCmd,
+// McpLoginCmd, McpLogoutCmd, the tools and exposure menus); the
+// entry-edit arms are the config editor's.
+//
+// The arg is "<kind>@<server>" — the row carries its target, so the
+// group stays unambiguous while the cursor moves through it.
+func confirmMcpHubAction(m *app.Model, arg string) (tea.Model, tea.Cmd) {
+	kind, name, _ := strings.Cut(arg, "@")
+	srv, known := m.McpInfoFor(name)
+	// mcpSource is the file an entry edit must write: pi reported where the
+	// server actually lives, which is not always the agent dir (a
+	// project-scoped server comes from the repo's own mcp.json).
+	mcpSource := ""
+	if known && srv.Source != "" {
+		mcpSource = srv.Source
+	}
+	switch kind {
+	case "reload":
+		return m, m.RunBuiltin(app.BuiltinMcpList, "")
+	case "edit":
+		// Editing happens IN pane 3, not in an overlay: the settings hub is
+		// one surface, and opening a different-looking dialog on top of it
+		// is what broke the flow.
+		m.OpenMcpEditHub(name)
+		return m, nil
+	case "remove":
+		if !m.ArmMcpRemove(name) {
+			return m, nil
+		}
+		msg, err := m.McpRemove(mcpSource, name)
+		if err != nil {
+			m.Status = "MCP: " + err.Error()
+			m.Refresh()
+			return m, nil
+		}
+		m.Status = msg + " — run /reload so pi picks it up"
+		return m, m.RunBuiltin(app.BuiltinMcpList, "")
+	case "add":
+		m.OpenMcpPanelOn("")
+		return m, nil
+	}
+	if !known {
+		// The list is stale or the server is gone: re-list rather than
+		// guessing at what the action would have done (the builtin sets
+		// its own "loading MCP servers…" status).
+		return m, m.RunBuiltin(app.BuiltinMcpList, "")
+	}
+	switch kind {
+	case "signin":
+		m.Status = "signing in to " + name + " — approve access in your browser…"
+		m.Refresh()
+		return m, m.McpLoginCmd(name)
+	case "signout":
+		m.Status = "signing out of " + name + "…"
+		m.Refresh()
+		return m, m.McpLogoutCmd(name)
+	case "reconnect":
+		// There is no `pi mcp reconnect`; listing is what connects.
+		return m, m.RunBuiltin(app.BuiltinMcpList, "")
+	case "tools":
+		m.OpenMcpMenu(mcpToolsMenu(srv))
+		return m, nil
+	case "exposure":
+		m.OpenMcpMenu(mcpExposureMenu(srv))
+		return m, nil
+	case "enable":
+		on := true
+		return m, mcpSaveCmd(m, srv, pirpc.McpConfigPatch{Enabled: &on},
+			"enabled "+name+" — connecting…")
+	case "disable":
+		off := false
+		return m, mcpSaveCmd(m, srv, pirpc.McpConfigPatch{Enabled: &off},
+			"disabled "+name+" — its tools are no longer registered")
+	}
+	return m, nil
+}
+
+// confirmMcpEdit runs one action of the config editor (Kind "mcpedit",
+// Payload prefix "mcp:"). pi's own /mcp manager (Kind "mcp") owns
+// sign-in, tools, exposure and enable/disable; this one owns the entry
+// itself — add, edit, remove.
+//
+// Writes stay in the editor: every mutating action re-reads mcp.json,
+// saves it (with a .bak), refreshes the rows in place and reports what
+// changed. Reload stays the user's call, like Claude Code's
+// `claude mcp add` — the editor never restarts pi behind their back.
+func confirmMcpEdit(m *app.Model, d *app.Dialog, ri int) (tea.Model, tea.Cmd) {
+	if ri < 0 || ri >= len(d.Payload) {
+		return m, nil
+	}
+	p := strings.TrimPrefix(d.Payload[ri], "mcp:")
+	sel := d.McpSelected()
+	switch p {
+	case "add":
+		m.OpenMcpForm(d, "")
+		return m, nil
+	case "edit":
+		if sel == "" {
+			m.AddBlock(app.Block{Kind: "notice", Text: "pick a server first"})
+			m.Refresh()
+			return m, nil
+		}
+		m.OpenMcpForm(d, sel)
+		return m, nil
+	case "toggle":
+		if sel == "" {
+			return m, nil
+		}
+		msg, err := m.McpToggle(d.McpPath, sel)
+		if err != nil {
+			m.Status = "MCP: " + err.Error()
+			m.Refresh()
+			return m, nil
+		}
+		m.Status = msg + " — run /reload so pi picks it up"
+		m.ReloadMcpPanel(d)
+		return m, nil
+	case "remove":
+		if sel == "" {
+			return m, nil
+		}
+		if !m.ArmMcpRemove(sel) {
+			return m, nil // first press arms
+		}
+		msg, err := m.McpRemove(d.McpPath, sel)
+		if err != nil {
+			m.Status = "MCP: " + err.Error()
+			m.Refresh()
+			return m, nil
+		}
+		m.Status = msg + " — run /reload so pi picks it up"
+		m.ReloadMcpPanel(d)
+		return m, nil
+	case "reload":
+		return m, m.McpReloadCmd()
+	case "open":
+		return m, m.McpOpen(d.McpPath)
+	}
+	return m, nil
 }
 
 // confirmUpdate installs the picked release (ri==0) or dismisses it.

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -46,6 +47,18 @@ const (
 const (
 	psecActAgent = "@agent"
 	psecActLogin = "@login"
+	psecActMCP   = "@mcp"
+	// psecActMCPEdit+"@<server>" opens the editor on that server;
+	// psecActMCPCLI fills pi's own /mcp command.
+	psecActMCPEdit = "@mcpedit:"
+	// psecActMCPAdd is the editor row at the bottom of the server list.
+	// It is the one row pitago adds to pi's menu.
+	psecActMCPAdd = "@mcpedit"
+	psecActMCPCLI = "@mcpcli"
+	// psecActMCPSel+"<server>" is a server row in the hub's MCP section;
+	// psecActMCPAct+"<kind>@<server>" is an action on that server.
+	psecActMCPSel = "@mcpsel:"
+	psecActMCPAct = "@mcpact:"
 )
 
 // CountCmds tallies extension catalog commands per source (skill/prompt/
@@ -86,6 +99,9 @@ func psecCount(m *Model, id string) int {
 		}
 		return len(m.Market)
 	case PsecMCP:
+		if len(m.McpInfo) > 0 {
+			return len(m.McpInfo) // the section lists pi's rows, so count those
+		}
 		return len(m.MCP)
 	case PsecTool:
 		return m.Stats.ToolCalls
@@ -215,6 +231,47 @@ func hubWindow(m *Model) int {
 	return win
 }
 
+// mcpHubDetailW is the box width at or above which the hub's MCP section
+// spends its middle pane on names and draws the actions in a third column.
+const mcpHubDetailW = 110
+
+// syncMcpActDrawn keeps the column's reachability in one place. A focus
+// can outlive the column — a resize, moving off the MCP section, cancelling
+// the inline editor — and a focus on an undrawn column is worse than none:
+// ↑↓ move an invisible cursor and ← is swallowed. So the drawn-ness is
+// stamped on the dialog for the package-level helpers to consult, and a
+// focus that no longer has a column under it is dropped.
+func (m Model) syncMcpActDrawn(d *Dialog) {
+	d.McpActDrawn = m.mcpActColumnDrawn(d)
+	if !d.McpActDrawn {
+		d.McpActFocus, d.McpActRun = false, false
+	}
+}
+
+// SyncMcpHubActions stamps the column's reachability onto the dialog.
+// Exported because anything that drives the hub's actions outside its own
+// key handling — src/builtin's confirm runner, and its tests — has to
+// establish the same invariant before asking for an action, exactly as a
+// keypress or a render does.
+func (m *Model) SyncMcpHubActions(d *Dialog) { m.syncMcpActDrawn(d) }
+
+// mcpActColumnDrawn reports whether that third column is actually on
+// screen. The middle pane drops the desc text whenever the column exists,
+// so on a narrower terminal there is no desc AND no column — and an
+// undrawn column must not be enterable or runnable, or the user runs a
+// state-changing action (Disable) against a server whose state, exposure
+// and scope are nowhere on screen.
+func (m Model) mcpActColumnDrawn(d *Dialog) bool {
+	// The MCP manager panel lays its own actions column out, so it is drawn
+	// whatever the width. Only the hub's section has to trade the middle
+	// pane's width against the third one.
+	if d.Kind == mcpKind {
+		return true
+	}
+	return d.Kind == "pconfig" && d.CurPsec() == PsecMCP &&
+		hubBoxW(&m) >= mcpHubDetailW
+}
+
 // hubBoxW is the hub dialog's outer width. One source of truth: the
 // renderer lays the box out at this width, and psecRows clamps its
 // section message to it so a long line cannot wrap and stretch the box.
@@ -227,6 +284,241 @@ func hubBoxW(m *Model) int {
 		w = 150
 	}
 	return w
+}
+
+// loadRows rebuilds the focused dialog's right pane. The MCP manager is
+// the only other two-pane dialog and brings its own rows.
+func (m Model) loadRows(d *Dialog) {
+	if d.Kind == mcpKind {
+		m.LoadMcpRows(d)
+		return
+	}
+	m.LoadPsecRows(d)
+}
+
+// detailLines builds the optional third (DETAILS) column. Plugins and
+// Marketplace own their specs; the MCP editor panel shows the selected
+// server. (The hub's MCP section has no third column: pi's row already
+// carries state · exposure · scope, and squeezing it into a narrow
+// column would be a worse trade than one less column.)
+func (m Model) detailLines(d *Dialog, w int) []string {
+	if d.Kind == mcpKind {
+		return m.mcpDetailLines(d, w)
+	}
+	if d.CurPsec() == PsecMarket {
+		return marketDetailLines(&m, d, w)
+	}
+	return pluginDetailLines(&m, d, w)
+}
+
+// detailHead titles the third column. The MCP section's carries the
+// server's name, since its column is about one server.
+func (m Model) detailHead(d *Dialog) string {
+	if d.Kind != "pconfig" || d.CurPsec() != PsecMCP {
+		return "DETAILS"
+	}
+	if sel := m.mcpHubTarget(d); sel != "" {
+		return sel
+	}
+	return "MCP"
+}
+
+// mcpHubPane is the third column for the MCP section, in the same shape as
+// the Plugins column: a label/value block of what the server is, and then —
+// under it, in this column — the actions you can run on it. The block is
+// what tells you why a server is failing; the actions are what fix it.
+//
+// Only the action rows are navigable (→, ↑↓, Enter); the block is read,
+// like every other details block in the hub.
+func (m Model) mcpHubPane(d *Dialog, w int) []string {
+	if w < 30 {
+		w = 30
+	}
+	if d.McpEdit.Active {
+		return mcpEditFormLines(d, w)
+	}
+	lines := m.mcpHubDetailLines(d, w)
+	if len(d.McpAct) == 0 {
+		return lines
+	}
+	// A blank line: the rows above are read (a description), the rows
+	// below run (Enter), and the gap is what says so.
+	lines = append(lines, "")
+	lines = append(lines, "  "+lipgloss.NewStyle().Foreground(cMuted).Render("ACTIONS"))
+	for i, o := range d.McpAct {
+		mark := "  "
+		style := statusBarStyle
+		if i == d.McpActCursor {
+			mark = "▸ "
+			style = rowHiStyle
+			if !d.McpActFocus {
+				style = lipgloss.NewStyle().Foreground(cText)
+			}
+		}
+		label := Short(o, w-4)
+		row := label
+		// An armed remove announces itself on its own row, not in the
+		// message strip at the top: the prompt is about this action, sits
+		// next to it, and leaves when the cursor does. Reading "press
+		// Enter again" against an unrelated top-of-panel line was the
+		// whole reason it was easy to miss. (The per-row descs stay
+		// undrawn on purpose — this column sits beside the detail block,
+		// which already says what each action does.)
+		if m.mcpArmedFor(d, i) && i == d.McpActCursor {
+			const prompt = "press Enter again to remove · any other key cancels"
+			// Room is measured from the label, not from an already-padded
+			// row: padding first left it negative and the prompt never fit.
+			if room := w - 4 - lipgloss.Width(label) - 2; room > 8 {
+				row = label + "  " + Fit(Short(prompt, room), room)
+			} else {
+				// Too narrow for the row: say it on the pane's own line
+				// rather than drop the only warning the user gets.
+				lines = append(lines, "  "+errStyle.Render(Fit(prompt, w-2)))
+			}
+		}
+		lines = append(lines, mark+style.Width(w-2).Render(Fit(row, w-4)))
+	}
+	return lines
+}
+
+// mcpArmedFor reports whether the half-armed remove gate is waiting on
+// the action row at `i` of the highlighted server.
+//
+// The predicate is the SAME one ArmMcpRemove enforces, window included:
+// a prompt that outlived mcpArmWindow would promise a second Enter that
+// re-arms instead of deleting. Scoped to both server and row: an arm on
+// one server must not light up another's row, and it lights only the
+// remove row, matched on the action KIND rather than on the label.
+func (m Model) mcpArmedFor(d *Dialog, i int) bool {
+	if i < 0 || i >= len(d.McpActPayload) {
+		return false
+	}
+	if !strings.HasSuffix(d.McpActPayload[i], psecActMCPAct+"remove@"+m.mcpHubTarget(d)) {
+		return false
+	}
+	return m.McpRemoveArmed(m.mcpHubTarget(d))
+}
+
+// mcpHubDetailLines is pi's detail block for the highlighted server, as
+// label/value rows like the rest of the hub's third column: what pi
+// reports, then the entry it comes from. The entry comes from the snapshot
+// taken when the rows were built — a render must never touch the disk.
+func (m Model) mcpHubDetailLines(d *Dialog, w int) []string {
+	if w < 30 {
+		w = 30
+	}
+	sel := m.mcpHubTarget(d)
+	if sel == "" {
+		return []string{"  " + toolStyle.Width(w-2).Render("— no server selected —")}
+	}
+	srv, known := m.McpInfoFor(sel)
+	if known {
+		return append(mcpHubServerRows(srv, w), mcpHubEntryRows(sel, &m, w)...)
+	}
+	// pi has not listed it (or not at all): say so, and show the entry that
+	// is on disk, which is still worth reading.
+	rows := []string{mcpDetailRow("State", "not listed yet — Reload pi MCPs", w)}
+	return append(rows, mcpHubEntryRows(sel, &m, w)...)
+}
+
+// mcpHubServerRows is pi's own report of the server: state, exposure,
+// which file declared it, and its error if it has one.
+func mcpHubServerRows(srv pirpc.McpServerInfo, w int) []string {
+	// A healthy server is green, the way the Marketplace column greens
+	// "installed": the state is the one value in this pane that is good or
+	// bad at a glance.
+	rows := []string{
+		mcpStyledDetailRow("State", mcpStateOf(srv, true), mcpHealthy(srv), w),
+		mcpDetailRow("Tools", strings.Join(srv.Tools, ", "), w),
+		mcpDetailRow("Exposure", mcpExposureName(srv), w),
+		mcpDetailRow("Scope", mcpScopeLabel(srv), w),
+	}
+	if src := srv.Source; src != "" {
+		rows = append(rows, mcpDetailRow("File", mcpTailPath(src, w-12), w))
+	}
+	if e := mcpServerError(srv); e != "" {
+		rows = append(rows, mcpDetailRow("Error", e, w))
+	}
+	return rows
+}
+
+// mcpHubEntryRows is the entry itself: what pi is running, read from
+// mcp.json's snapshot.
+func mcpHubEntryRows(sel string, m *Model, w int) []string {
+	def, have := m.mcpHubDef(sel)
+	if !have {
+		return []string{mcpDetailRow("Entry", "not in the agent dir's mcp.json", w)}
+	}
+	label, target := "Command", def.Command
+	if def.Transport() != "stdio" {
+		label, target = "URL", def.URL
+	}
+	return []string{
+		mcpDetailRow(label, target, w),
+		mcpDetailRow("Args", mcpJoinArgs(def.Args), w),
+		mcpDetailRow("Env", mcpJoinMap(def.Env), w),
+	}
+}
+
+// mcpHealthy is the one question the colour answers: is this server up?
+func mcpHealthy(s pirpc.McpServerInfo) bool {
+	return s.Enabled && s.State == "connected"
+}
+
+// mcpTailPath shortens a path from the LEFT, so the file name (which is
+// the part that says which config this is) always survives.
+func mcpTailPath(path string, w int) string {
+	if w < 12 || len(path) <= w {
+		return path
+	}
+	return "…" + path[len(path)-w+1:]
+}
+
+// mcpDetailRow is one "Label   value" line, styled like the other third
+// columns.
+func mcpDetailRow(label, value string, w int) string {
+	return mcpStyledDetailRow(label, value, false, w)
+}
+
+// mcpStyledDetailRow is mcpDetailRow with a style for the value, for the
+// ones that carry meaning in their colour (a green "connected").
+func mcpStyledDetailRow(label, value string, ok bool, w int) string {
+	if value == "" {
+		value = "—"
+	}
+	const lw = 8
+	valW := w - 2 - lw - 1
+	if valW < 10 {
+		valW = 10
+	}
+	val := lipgloss.NewStyle().Foreground(cText)
+	if ok {
+		val = okStyle
+	}
+	return "  " + lipgloss.NewStyle().Foreground(cMuted).Render(Fit(label, lw)) + " " +
+		val.Render(Fit(value, valW))
+}
+
+// mcpStateOf is pi's describeState for a row outside the menu.
+func mcpStateOf(s pirpc.McpServerInfo, withError bool) string {
+	var m Model
+	return m.mcpState(s, withError)
+}
+
+// twoPaneHeads returns the left/middle column headers ("SECTIONS" and the
+// section name for the hub; "SERVERS"/"ACTIONS" for the MCP panel).
+func (d *Dialog) twoPaneHeads() (left, mid string) {
+	left, mid = d.LeftHead, d.RightHead
+	if left == "" {
+		left = "SECTIONS"
+	}
+	if mid == "" {
+		mid = d.CurPsec()
+		if d.ProvCursor >= 0 && d.ProvCursor < len(d.Provs) {
+			mid = d.Provs[d.ProvCursor]
+		}
+	}
+	return left, mid
 }
 
 // CurPsec is the selected section id (left pane cursor).
@@ -242,18 +534,31 @@ func (d *Dialog) CurPsec() string {
 
 // LoadPsecRows rebuilds the right pane for the selected section.
 func (m *Model) LoadPsecRows(d *Dialog) {
-	opts, descs, payload, msg := psecRows(m, d.CurPsec())
+	if d.CurPsec() == PsecMCP {
+		// The section's DETAILS column renders from this cache, and a
+		// render must not read the disk — so the read happens here, on
+		// the row build. It also means the column is populated the first
+		// time the section is opened, before pi has ever been listed.
+		m.refreshMcpHubDefs()
+	}
+	opts, descs, payload, msg := psecRows(m, d)
 	d.Options, d.Descs, d.Payload = opts, descs, payload
 	d.Message = msg
 	d.Cursor = 0
 	d.Reindex()
+	// The MCP section's third column is derived from the rows that were
+	// JUST assigned: built inside psecRows it would read the previous
+	// row set (the first build has no payload at all).
+	if d.CurPsec() == PsecMCP {
+		m.refreshMcpActions(d)
+	}
 }
 
 // psecRows builds one section's right pane. Payload parallels Options: the
 // /command name for runnable rows, "@agent"/"@theme"/"@login" for action
 // rows, "" for info-only rows.
-func psecRows(m *Model, id string) (opts, descs, payload []string, msg string) {
-	switch id {
+func psecRows(m *Model, d *Dialog) (opts, descs, payload []string, msg string) {
+	switch d.CurPsec() {
 	case PsecAgent:
 		msg = "Enter opens the agent settings dialog · Esc closes"
 		return []string{"Open agent settings →"},
@@ -456,32 +761,13 @@ func psecRows(m *Model, id string) (opts, descs, payload []string, msg string) {
 			payload = append(payload, "marketmore")
 		}
 	case PsecMCP:
-		// /mcp is a real command now, so every server row is runnable:
-		// the manager is where exposure, sign-in and enable/disable
-		// live, and a disabled server is listed there precisely so it
-		// can be enabled again.
-		msg = "Enter fills /mcp, the server manager (state · tools · exposure · sign-in · enable/disable) · Esc closes"
-		for _, s := range m.MCP {
-			switch {
-			case s.Disabled:
-				opts = append(opts, s.Name)
-				descs = append(descs, "disabled in mcp.json · /mcp can enable it")
-				payload = append(payload, "mcp")
-			case s.Connected:
-				opts = append(opts, s.Name)
-				descs = append(descs, fmt.Sprintf("● %d/%d direct · ~%s tok", s.Direct, s.Total, fmtComma(s.Tokens)))
-				payload = append(payload, "mcp")
-			default:
-				opts = append(opts, s.Name)
-				descs = append(descs, "○ not connected · /mcp shows why")
-				payload = append(payload, "mcp")
-			}
-		}
-		if len(opts) == 0 {
-			opts = []string{"— no servers —"}
-			descs = []string{"add one to ~/.pi/agent/mcp.json"}
-			payload = []string{""}
-		}
+		// pi's /mcp, master-detail: the servers here, that server's
+		// actions in the third column, navigable and runnable with →
+		// and Enter. It used to be a second menu opened with Enter, and
+		// before that the actions nested under every server — which
+		// repeated the same six rows per server and read like a config
+		// file. This is the one shape that neither repeats nor hides.
+		opts, descs, payload, msg = m.mcpHubServersMenu(d)
 	case PsecTool:
 		msg = "Per-tool calls this session (from the transcript) · Ctrl+G expands tool output · Esc closes"
 		for _, t := range toolStats(m) {
@@ -1059,6 +1345,28 @@ func isFilterKind(kind string) bool {
 // typing filters the right pane, Enter on the left focuses the right,
 // Enter on the right runs (confirm lives in src/builtin).
 func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) {
+	mm, cmd := m.updatePconfigDialogKey(km, d)
+	// Sitting on the MCP section asks pi for its list, and the request
+	// RIDES ALONG with the key's own result: it must never be returned
+	// in place of it, or a stale list would eat every keystroke (pi's
+	// list has a 90s timeout, so the pane would read as dead).
+	if cmd == nil {
+		cmd = m.mcpListIfStale(d)
+	}
+	return mm, cmd
+}
+
+// updatePconfigDialogKey handles one key in the two-pane hub.
+func (m Model) updatePconfigDialogKey(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd) {
+	// Before anything reads the actions column: the keyboard must not be
+	// able to reach a column the terminal is too narrow to draw.
+	m.syncMcpActDrawn(d)
+	// While pane 3 is the entry editor, it owns the keyboard: every key is
+	// text or a field action. Handing any of it to the hub would navigate
+	// the panes under the form, which is exactly the "different UI" trap.
+	if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && d.McpEdit.Active {
+		return m.updateMcpEditHub(km, d)
+	}
 	switch km.Type {
 	case tea.KeyUp, tea.KeyDown:
 		down := km.Type == tea.KeyDown
@@ -1069,7 +1377,7 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 				} else {
 					d.ProvCursor = (d.ProvCursor - 1 + n) % n
 				}
-				m.LoadPsecRows(d)
+				m.loadRows(d)
 				// First visit to an unloaded marketplace fetches it in
 				// the background (rows reload when MarketMsg lands).
 				if d.CurPsec() == PsecMarket {
@@ -1085,6 +1393,16 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 					return m, tea.Batch(sortCmd, hyd)
 				}
 			}
+		} else if d.CurPsec() == PsecMCP && d.McpActFocus {
+			if n := len(d.McpAct); n > 0 {
+				if down {
+					d.McpActCursor = (d.McpActCursor + 1) % n
+				} else {
+					d.McpActCursor = (d.McpActCursor - 1 + n) % n
+				}
+				m.clearMcpArm() // arrowing away from a half-armed remove
+				m.Refresh()
+			}
 		} else if n := len(d.FIdx); n > 0 {
 			if down {
 				d.Cursor = (d.Cursor + 1) % n
@@ -1094,6 +1412,24 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 			// Theme rows are the one hub section that previews while
 			// browsing, so ↑↓ repaints in the new palette.
 			m.previewTheme(d)
+			if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+				// The actions column follows the highlighted server, so
+				// arrowing re-targets it (to its first action, which is
+				// what pi pre-selects). The server itself is restored by
+				// NAME across the rebuild: LoadPsecRows resets the cursor,
+				// and pi's list can reorder under us as servers connect.
+				m.clearMcpArm() // arrowing away from a half-armed remove
+				on := mcpTargetOf(payloadOf(d, d.Cursor))
+				d.McpActCursor, d.McpActRun = 0, false
+				m.loadRows(d)
+				for f, ri := range d.FIdx {
+					if payloadOf(d, ri) == psecActMCPSel+on {
+						d.Cursor = f
+						break
+					}
+				}
+				m.refreshMcpActions(d) // now that the cursor is back
+			}
 			// The marketplace hydrates GitHub stars for whatever the
 			// moved cursor brought into view (never from render).
 			if d.CurPsec() == PsecMarket {
@@ -1102,12 +1438,33 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 		}
 		return m, nil
 	case tea.KeyLeft:
+		// ← steps out of the actions column, then out of the servers,
+		// then to the sections — the order the panes sit in.
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus && d.McpActFocus {
+			d.McpActFocus, d.McpActRun = false, false
+			m.Refresh()
+			return m, nil
+		}
 		d.ProvFocus = true
 		return m, nil
 	case tea.KeyRight:
+		// → steps into the actions column when the MCP section has some.
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus && len(d.McpAct) > 0 &&
+			m.mcpActColumnDrawn(d) {
+			d.McpActFocus, d.McpActRun = true, false
+			m.Refresh()
+			return m, nil
+		}
 		d.ProvFocus = false
 		return m, nil
 	case tea.KeyTab:
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && !d.ProvFocus {
+			// A resize can leave the focus parked on a column that is no
+			// longer drawn, so it is re-checked here rather than trusted.
+			d.McpActFocus = !d.McpActFocus && m.mcpActColumnDrawn(d)
+			d.McpActRun = false
+			return m, nil
+		}
 		d.ProvFocus = !d.ProvFocus
 		return m, nil
 	case tea.KeyCtrlS:
@@ -1126,6 +1483,19 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 		if km.Type == tea.KeyBackspace && d.Filter != "" {
 			d.Filter = d.Filter[:len(d.Filter)-1]
 			d.Reindex()
+			if d.Kind == mcpKind {
+				m.applyMcpFilter(d) // the filter narrows the SERVER list here
+				return m, nil
+			}
+			if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+				// Widening the filter has to rebuild the rows for the same
+				// reason typing does, or backspace leaves the narrowed view
+				// on screen with a shorter filter in the box.
+				m.clearMcpArm()
+				d.McpActCursor = 0
+				m.loadRows(d)
+				return m, nil
+			}
 			// marketplace typing is a remote search: re-arm the debounce
 			return m, m.marketSearchTick()
 		}
@@ -1151,6 +1521,12 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 		}
 		return m, nil
 	case tea.KeyEsc:
+		// Focus leaves the third column before it leaves the hub.
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && d.McpActFocus {
+			d.McpActFocus, d.McpActRun = false, false
+			m.Refresh()
+			return m, nil
+		}
 		// Esc in the marketplace clears the search first (one level,
 		// like every other filter dialog); a second Esc closes.
 		if d.CurPsec() == PsecMarket && d.Filter != "" {
@@ -1168,7 +1544,14 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 			return m, tea.Batch(m.fetchMarketCmd(), m.marketSortCmd(""), m.hydrateMarketStarsCmd(d))
 		}
 		m.Dialogs = m.Dialogs[1:]
+		// The remove gate is shared by the hub and the editor, so
+		// leaving a surface must drop it: arming a delete and walking
+		// away must not turn the next surface's first Enter into it.
+		m.clearMcpArm()
 		m.refreshPiTasks()
+		// The hub (or panel) underneath shows rows built at ITS open; a
+		// change made here must not leave it describing the old state.
+		m.refreshHubUnderneath()
 		m.Refresh()
 		return m, m.ReconcileTurnCmd()
 	case tea.KeyEnter:
@@ -1176,11 +1559,42 @@ func (m Model) updatePconfigDialog(km tea.KeyMsg, d *Dialog) (tea.Model, tea.Cmd
 			d.ProvFocus = false
 			return m, nil
 		}
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP && len(d.McpAct) > 0 &&
+			m.mcpActColumnDrawn(d) {
+			if !d.McpActFocus {
+				// Same move pi makes with Enter (open the server's
+				// actions), except the actions are already on screen: it
+				// just takes the focus.
+				d.McpActFocus, d.McpActCursor = true, 0
+				m.Refresh()
+				return m, nil
+			}
+			// Focus is on an action: Enter RUNS it. The flag is what tells
+			// the confirm handler to read the column rather than the row
+			// under the cursor; without the dispatch below it was set and
+			// nothing ever ran it.
+			d.McpActRun = true
+			return m.confirmDialog(d)
+		}
 		return m.confirmDialog(d)
 	}
 	if km.Type == tea.KeyRunes {
 		d.Filter += km.String()
 		d.Reindex()
+		if d.Kind == mcpKind {
+			// Typing a server name is the point of this panel: the filter
+			// narrows the left pane, not just the action rows.
+			m.applyMcpFilter(d)
+		}
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+			// Typing searches the servers (there are few and they are the
+			// thing you are looking for); the actions column belongs to
+			// one server and has nothing to search.
+			m.clearMcpArm()
+			d.McpActCursor = 0
+			m.loadRows(d)
+			return m, nil
+		}
 		// marketplace typing debounces into a remote npm search
 		return m, m.marketSearchTick()
 	}
@@ -1205,10 +1619,18 @@ func (m Model) updatePconfigWheel(d *Dialog, down bool) (tea.Model, tea.Cmd) {
 // mirrors the /model picker (fixed scroll windows so the box never
 // resizes while scrolling).
 func (m Model) renderPconfigDialog(d *Dialog) string {
+	m.syncMcpActDrawn(d)
 	var b strings.Builder
 	b.WriteString(lipgloss.NewStyle().Bold(true).Foreground(cText).Render(d.Title) + "\n")
-	if d.Message != "" {
-		b.WriteString(statusBarStyle.Render(d.Message) + "\n")
+	// The MCP section's hint is derived, not read from d.Message: the
+	// message is cached at row-build time and a resize does not rebuild it,
+	// so a cached hint would still promise a column that just disappeared.
+	msg := d.Message
+	if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+		msg = m.mcpHubSectionHint(d, d.McpBaseMsg)
+	}
+	if msg != "" {
+		b.WriteString(statusBarStyle.Render(msg) + "\n")
 	}
 	// the marketplace filter is a remote npm search, not a local filter
 	filterLabel := "filter: "
@@ -1228,14 +1650,26 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		rightW = 30
 	}
 	// Plugins and Marketplace get a third DETAILS column (oh-my-pi
-	// style, like the /model picker): list + specs side by side. Narrow
-	// terminals keep the classic two panes (spec lives in the row desc).
+	// style, like the /model picker): list + specs side by side, and the
+	// MCP editor panel brings its own. The hub's MCP SECTION does not
+	// take one: pi's row already carries state · exposure · scope, and a
+	// third column squeezes that out of the row. Narrow terminals keep
+	// the classic two panes (the spec lives in the row desc).
 	detW := 42
-	isPlugin := d.CurPsec() == PsecPlugin && len(m.Plugins) > 0
+	// The hub's MCP section uses the third column for the highlighted
+	// server's ACTIONS, like Plugins use theirs for a spec — and unlike a
+	// spec block, they are navigable (→/←) and Enter runs them, so pi's
+	// second menu does not have to open at all.
 	isMarket := d.CurPsec() == PsecMarket && len(m.Market) > 0
-	detailCol := boxW >= 110 && (isPlugin || isMarket)
+	isDetail := boxW >= mcpHubDetailW && (d.Kind == mcpKind || d.CurPsec() == PsecMCP || (d.CurPsec() == PsecPlugin && len(m.Plugins) > 0) ||
+		isMarket)
+	// The hub's MCP section's middle pane is names only (the details are in
+	// the third column), so its room goes to that column instead.
+	if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+		detW = 46
+	}
 	listW := rightW
-	if detailCol {
+	if isDetail {
 		listW = rightW - detW - 3
 		if listW < 20 {
 			listW = 20
@@ -1255,7 +1689,10 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		cw := leftW - 2
 		nm := Short(d.Provs[pi], cw-5)
 		cnt := ""
-		if pi < len(d.PsecIDs) {
+		// Count badge is a hub-section idea (how many rows live in that
+		// section). The MCP panel's left pane is a list of servers, and
+		// a count there reads as noise next to a status dot.
+		if pi < len(d.PsecIDs) && d.Kind != mcpKind {
 			if n := psecCount(&m, d.PsecIDs[pi]); n >= 0 {
 				cnt = fmt.Sprintf("%d", n)
 			}
@@ -1300,12 +1737,13 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 	if optW < 10 {
 		optW = 10
 	}
-	if detailCol {
+	if isDetail {
 		optW = listW - 4
 		if optW < 10 {
 			optW = 10
 		}
 	}
+
 	for fi := start; fi < end; fi++ {
 		ri := d.FIdx[fi]
 		mark := "  "
@@ -1320,13 +1758,28 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		}
 		row := Fit(Short(d.Options[ri], optW), optW)
 		switch {
-		case !detailCol:
-			if desc := DescOf(d, ri); desc != "" {
+		case !isDetail:
+			// The desc column, and only where there is no third column to
+			// carry the detail instead. `isDetail` already covers the hub's
+			// MCP section and the MCP editor panel, so it needs no clause
+			// of its own here: narrow, every row gets its desc back — which
+			// is the point, because below mcpHubDetailW there is nowhere
+			// else to put the state · exposure · scope.
+			desc := DescOf(d, ri)
+			// The armed-remove prompt rides the Remove row here too, for
+			// the same reason as in the hub: the instruction belongs on
+			// the action it belongs to. Same predicate as the gate, window
+			// included, so it cannot promise a second Enter that re-arms.
+			if d.Kind == mcpKind && strings.Contains(payloadOf(d, ri), "mcp:remove") &&
+				m.McpRemoveArmed(d.McpSelected()) {
+				desc = "press Enter again · any other key cancels"
+			}
+			if desc != "" {
 				row += "  " + psecDesc(payloadOf(d, ri), desc, listW-4-optW-3)
 			}
-		case isMarket:
-			// the wide layout drops the desc column, so the star count
-			// rides the row itself ("" while still unknown)
+		case isDetail && isMarket:
+			// The wide layout drops the desc column, so the star count
+			// rides the row itself ("" while still unknown).
 			chip := ""
 			if ri >= 0 && ri < len(m.Market) {
 				chip = marketChip(m.Market[ri])
@@ -1345,14 +1798,11 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		rightLines = append(rightLines, "  "+statusBarStyle.Width(listW-2).Render(""))
 	}
 
-	secName := d.CurPsec()
-	if d.ProvCursor >= 0 && d.ProvCursor < len(d.Provs) {
-		secName = d.Provs[d.ProvCursor]
-	}
+	leftHead, midHead := d.twoPaneHeads()
 	sep := sepStyle.Render("│")
-	if !detailCol {
-		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("SECTIONS") + " │ " +
-			"  " + sideTitleStyle.Width(listW-2).Render(strings.ToUpper(secName)+" · "+fmt.Sprintf("%d", total)) + "\n")
+	if !isDetail {
+		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render(leftHead) + " │ " +
+			"  " + sideTitleStyle.Width(listW-2).Render(strings.ToUpper(midHead)+" · "+fmt.Sprintf("%d", total)) + "\n")
 
 		n := len(leftLines)
 		if len(rightLines) > n {
@@ -1373,18 +1823,18 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 			b.WriteString(l + " " + sep + " " + r + "\n")
 		}
 	} else {
-		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render("SECTIONS") + " │ " +
-			"  " + sideTitleStyle.Width(listW-2).Render(strings.ToUpper(secName)+" · "+fmt.Sprintf("%d", total)) + " │ " +
-			"  " + sideTitleStyle.Width(detW-2).Render("DETAILS") + "\n")
+		b.WriteString("  " + sideTitleStyle.Width(leftW-2).Render(leftHead) + " │ " +
+			"  " + sideTitleStyle.Width(listW-2).Render(strings.ToUpper(midHead)+" · "+fmt.Sprintf("%d", total)) + " │ " +
+			"  " + sideTitleStyle.Width(detW-2).Render(m.detailHead(d)) + "\n")
 
 		// Fixed box height: the detail column never stretches the
 		// dialog — overflow folds into a "…(+N more)" marker, like the
 		// scroll markers of the other two panes.
 		var detLines []string
-		if isMarket {
-			detLines = marketDetailLines(&m, d, detW)
+		if d.Kind == "pconfig" && d.CurPsec() == PsecMCP {
+			detLines = m.mcpHubPane(d, detW)
 		} else {
-			detLines = pluginDetailLines(&m, d, detW)
+			detLines = m.detailLines(d, detW)
 		}
 		if len(detLines) > win {
 			detLines = append(detLines[:win-1],
@@ -1428,6 +1878,21 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 			// the filter is a remote npm search, not a local one
 			foot = "↑↓ select · ← sections · Tab switch · type to search npm · Enter install · Esc clears"
 		}
+		if d.CurPsec() == PsecMCP {
+			// Enter on a server takes focus on its actions; the second one
+			// runs the highlighted action. Saying only "Enter run" sent
+			// people looking for an action that had not been reached yet.
+			if m.mcpActColumnDrawn(d) {
+				foot = "↑↓ select · → actions · ← sections · type filters · Enter focus · then Enter runs · Esc close"
+			} else {
+				// Tab is intercepted on this section, so promising it here
+				// would be a key that does nothing at all.
+				foot = "↑↓ select · ← sections · type filters · Enter open · Esc close"
+			}
+		}
+	}
+	if d.Kind == mcpKind {
+		foot = "↑↓ server · → actions · Tab switch · type filters · Enter run · Esc close"
 	}
 	b.WriteString("\n" + toolStyle.Render(foot))
 	box := dlgStyle.Width(boxW).Render(b.String())
@@ -1440,3 +1905,431 @@ func (m Model) renderPconfigDialog(d *Dialog) string {
 		hint,
 	)
 }
+
+// --- the hub's MCP section -------------------------------------------
+
+// mcpScopeName is where pi found the server (its "scope" column).
+func mcpScopeName(s pirpc.McpServerInfo) string {
+	if s.Scope != "" {
+		return s.Scope
+	}
+	return s.Source // an extension-registered server has no scope
+}
+
+// mcpExposureName is pi's exposure, defaulting to codemode.
+func mcpExposureName(s pirpc.McpServerInfo) string {
+	if s.Exposure == "" {
+		return "codemode"
+	}
+	return s.Exposure
+}
+
+// mcpFileStateLine describes a server from the mcp.json snapshot alone,
+// used before pi has ever been listed.
+func mcpFileStateLine(s McpServer) string {
+	switch {
+	case s.Disabled:
+		return "disabled in mcp.json · state unknown until listed"
+	case s.Connected:
+		return fmt.Sprintf("● %d/%d direct · ~%s tok", s.Direct, s.Total, fmtComma(s.Tokens))
+	default:
+		return "○ not connected · state unknown until listed"
+	}
+}
+
+// mcpHubNames is the server list the section shows: pi's list when it has
+// been read (its own order, needs-attention first), otherwise the
+// mcp.json snapshot, so the section is never blank before the first list.
+func (m Model) mcpHubNames() []string {
+	if len(m.McpInfo) > 0 {
+		out := make([]string, 0, len(m.McpInfo))
+		for _, s := range m.McpInfo {
+			out = append(out, s.Name)
+		}
+		return out
+	}
+	out := make([]string, 0, len(m.MCP))
+	for _, s := range m.MCP {
+		out = append(out, s.Name)
+	}
+	return out
+}
+
+// mcpHubFileServer is the server's entry in the mcp.json snapshot.
+func (m Model) mcpHubFileServer(name string) (McpServer, bool) {
+	for _, s := range m.MCP {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return McpServer{}, false
+}
+
+// mcpHubActionRows builds one server's action rows, in pi's order and pi's
+// wording. The action KIND is passed explicitly, never derived from the
+// label: deriving it turned "Edit server…" into the payload
+// "@mcpact:editserver…@alpha", which matched no dispatch case — so the row
+// did nothing at all.
+func mcpHubActionRows(m *Model, sel string, opts, descs, payload []string) ([]string, []string, []string) {
+	add := func(kind, label, desc string) {
+		opts = append(opts, label)
+		descs = append(descs, desc)
+		payload = append(payload, psecActMCPAct+kind+"@"+sel)
+	}
+	srv, known := m.McpInfoFor(sel)
+	if !known {
+		// pi has not listed this server (or not at all): re-reading the
+		// list is the only thing that can be offered.
+		add("reload", "Reload pi MCPs", sel+" · re-reads mcp.json after an edit")
+		return opts, descs, payload
+	}
+	// A server pi found in another file (a repo-local project mcp.json, or
+	// one an extension registered) still gets pi's actions — those are not
+	// file-scoped. Only the ENTRY edit is, and it names that file: an edit
+	// that resolved the agent dir instead would open a different server, or
+	// create a second one under the same name.
+	elsewhere := srv.Scope != "" && srv.Scope != "global" && srv.Source != ""
+	if !srv.Enabled {
+		add("enable", "Enable", sel+" · "+mcpScopeFile(srv))
+	} else {
+		if srv.State == "needs-auth" {
+			add("signin", "Sign in", sel+" · opens the browser")
+		}
+		if srv.State == "connected" {
+			add("tools", "Tools", sel+" · "+fmt.Sprintf("%d offered", len(srv.Tools)))
+		}
+		switch srv.State {
+		case "failed", "disconnected", "connected", "needs-auth":
+			add("reconnect", "Reconnect", sel+" · listing is what connects")
+		}
+		// pi offers Sign out when the connection carries an oauthUrl. The
+		// CLI list has no such flag, so its signal is the URL transport:
+		// a stdio server can hold no stored credentials.
+		if srv.State == "connected" && srv.IsHTTP() {
+			add("signout", "Sign out", sel+" · deletes the stored credentials")
+		}
+		add("exposure", "Exposure", sel+" · "+mcpExposureName(srv))
+		add("disable", "Disable", sel+" · "+mcpScopeFile(srv))
+	}
+	// The entry itself: pi can add and remove from the CLI, but pitago
+	// never surfaced it, and there is no verb for editing args or env.
+	editDesc := "command · args · env · transport · headers"
+	if elsewhere {
+		editDesc = srv.Source
+	}
+	add("edit", "Edit server…", sel+" · "+editDesc)
+	if !elsewhere {
+		add("remove", "Remove server…", sel+" · delete the entry (.bak kept)")
+	}
+	return opts, descs, payload
+}
+
+// mcpSourceName is the file pi read the entry from (pi's details block
+// prints scope: source). Falls back to the scope when the CLI omitted it.
+func mcpSourceName(s pirpc.McpServerInfo) string {
+	if s.Source != "" {
+		return s.Source
+	}
+	return s.Scope
+}
+
+// mcpScopeLabel is pi's `entry.scope ?? "config"`.
+func mcpScopeLabel(s pirpc.McpServerInfo) string {
+	if s.Scope == "" {
+		return "config"
+	}
+	return s.Scope
+}
+
+// mcpServerError is pi's error block: the server's own message, plus the
+// connection error when it is not connected.
+func mcpServerError(s pirpc.McpServerInfo) string {
+	if s.State == "connected" {
+		return ""
+	}
+	return McpFirstLine(s.Error)
+}
+
+// mcpHubNotices is pi's error slot: config errors and overridden
+// servers, one per line, prefixed the way pi prefixes them.
+func (m Model) mcpHubNotices() string {
+	var lines []string
+	for _, e := range m.McpConfigErrs {
+		lines = append(lines, "config: "+e)
+	}
+	for _, o := range m.McpOverridden {
+		lines = append(lines, "overridden: "+o)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// piEmptyServers is pi's empty-state wording, with our path.
+func piEmptyServers(path string) string {
+	return fmt.Sprintf("No MCP servers configured. Add them to %s or .pi/mcp.json.", path)
+}
+
+// refreshMcpActions re-derives the MCP section's third column from the
+// cursor as it is NOW. It has to be callable after a cursor move, not only
+// from the row build: LoadPsecRows resets the cursor to the top, so a
+// column derived there would describe the first server, not the one the
+// user just moved to.
+func (m *Model) refreshMcpActions(d *Dialog) {
+	d.McpAct, d.McpActDesc, d.McpActPayload = m.mcpHubActions(d)
+	if d.McpActCursor >= len(d.McpAct) || d.McpActCursor < 0 {
+		d.McpActCursor = 0
+	}
+	d.McpActRun = false // a rebuilt column is not a pending action
+	// A rebuild is a fresh surface: an arm must not survive an async
+	// listing landing under the user, or a later Enter deletes with no
+	// confirmation they saw.
+	m.clearMcpArm()
+}
+
+// mcpHubActions is the third column: the highlighted server's actions, in
+// pi's order and pi's wording. Every row's payload names its own target,
+// so the column cannot act on a different server than the one on screen.
+func (m Model) mcpHubActions(d *Dialog) (labels, descs, payload []string) {
+	sel := m.mcpHubTarget(d)
+	if sel == "" {
+		return nil, nil, nil
+	}
+	return mcpHubActionRows(&m, sel, nil, nil, nil)
+}
+
+// McpHubAction is the payload Enter should run in the actions column, if
+// Enter asked for one. Exported: the handler that runs an MCP row lives
+// in src/builtin, which cannot see the dialog's fields directly.
+func McpHubAction(d *Dialog) (string, bool) {
+	// Belt and braces: every key handler already refuses an undrawn column,
+	// but this is the only place that can actually return a payload, so it
+	// asks too rather than trusting four call sites to stay in agreement.
+	if !d.McpActDrawn || !d.McpActRun || d.McpActCursor < 0 || d.McpActCursor >= len(d.McpActPayload) {
+		return "", false
+	}
+	d.McpActRun = false
+	return d.McpActPayload[d.McpActCursor], true
+}
+
+// McpHubSelected is the action row Enter would run right now (the cursor's
+// payload), for callers that dispatch without the pending-action flag.
+func McpHubSelected(d *Dialog) (string, bool) {
+	if d.McpActFocus {
+		return McpHubAction(d)
+	}
+	return "", false
+}
+
+// McpRemoveArmed reports whether the two-press remove gate is waiting on
+// a second Enter for `name` (Exported: the Enter actions live in
+// src/builtin, and the gate is now announced on the row itself).
+func (m Model) McpRemoveArmed(name string) bool {
+	return name != "" && m.mcpArmName == name &&
+		!m.mcpArmAt.IsZero() && time.Since(m.mcpArmAt) < mcpArmWindow
+}
+
+// clearMcpArm drops a half-armed remove: the gate lives on the model so
+// the hub and the editor share it, so every surface that navigates away
+// from it must say so.
+func (m *Model) clearMcpArm() { m.mcpArmName, m.mcpArmAt = "", time.Time{} }
+
+// mcpHubServersMenu is the middle pane: pi's server list, verbatim —
+// servers needing the user first, then by name, each row carrying
+// `state · exposure · scope`.
+func (m Model) mcpHubServersMenu(d *Dialog) (opts, descs, payload []string, msg string) {
+	if notice := m.mcpHubNotices(); notice != "" {
+		msg = notice
+	}
+	// The filter belongs to the server list, the way it does in the /mcp
+	// panel: typing is how you find one. It used to be ignored here, so
+	// every rebuild after a keystroke put the whole list back — the filter
+	// box looked live and nothing narrowed.
+	filter := strings.ToLower(strings.TrimSpace(d.Filter))
+	servers := m.mcpHubServers()
+	matched := 0
+	for _, s := range servers {
+		if filter != "" && !strings.Contains(strings.ToLower(s.Name), filter) {
+			continue
+		}
+		matched++
+		opts = append(opts, s.Name)
+		descs = append(descs, fmt.Sprintf("%s · %s · %s", m.mcpState(s, true), mcpExposureName(s), mcpScopeName(s)))
+		payload = append(payload, psecActMCPSel+s.Name)
+	}
+	if matched == 0 && filter != "" {
+		opts = append(opts, fmt.Sprintf("— no server matches %q —", d.Filter))
+		descs = append(descs, "Esc clears the filter")
+		payload = append(payload, "")
+	} else if matched == 0 {
+		opts = append(opts, "— no MCP servers configured —")
+		descs = append(descs, "")
+		payload = append(payload, "")
+		msg = strings.TrimSpace(msg + " · " + piEmptyServers(mcpDocPath(piAgentDir())))
+	}
+	// One line of hints. The server's own details live in the third column,
+	// not above the panes, where they pushed the layout around.
+	// pi's config errors stay in the message slot; the hint joins them
+	// rather than replacing them.
+	// The hint is not cached into Message: it depends on the terminal
+	// width, and a resize does not rebuild the rows. The base message is
+	// kept instead, and the hint is derived on every render.
+	d.McpBaseMsg = msg
+	msg = m.mcpHubSectionHint(d, msg)
+	return opts, descs, payload, msg
+}
+
+// mcpHubSectionHint appends the actions hint to whatever the section
+// already says, and says nothing about a column that is not drawn. It also
+// does not say "Enter runs one": the first Enter only takes focus.
+func (m Model) mcpHubSectionHint(d *Dialog, msg string) string {
+	switch {
+	case m.mcpActColumnDrawn(d):
+		if msg == "" {
+			msg = "→ its actions · Enter focus · then Enter runs · Esc close"
+		} else {
+			msg += " · → its actions · Enter focus · then Enter runs · Esc close"
+		}
+	case msg == "":
+		msg = "Enter open · Esc close"
+	}
+	return msg
+}
+
+// mcpListIfStale triggers `pi mcp list --json` when the hub is sitting on
+// the MCP section and the list is missing or old. The clock is stamped on
+// the REQUEST, not on the response: pi's list has a 90s timeout, and
+// without that every keystroke during it would start another.
+//
+// The returned command rides ALONG with a key's own result — it must
+// never be returned in its place, or a stale list would swallow
+// navigation (see updatePconfigDialog).
+func (m *Model) mcpListIfStale(d *Dialog) tea.Cmd {
+	if d.CurPsec() != PsecMCP || !m.McpInfoStale() {
+		return nil
+	}
+	m.McpInfoAt = time.Now()
+	return m.RunBuiltin(BuiltinMcpList, "")
+}
+
+// mcpScopeFile is where a write for this server lands, as pi words it.
+func mcpScopeFile(s pirpc.McpServerInfo) string {
+	switch s.Scope {
+	case "global", "project":
+		return "saved to the " + s.Scope + " mcp.json"
+	case "extension":
+		return "for this session" // an extension registered it: not persisted
+	default:
+		return "saved to mcp.json"
+	}
+}
+
+// mcpHubTarget is the server the actions column acts on: the highlighted
+// row's own payload names it — a server row names itself, and there is
+// nothing else in this pane. Reading the payload (never a row index) is
+// what makes it immune to the filter: the cursor counts rows the filter
+// has hidden, but a payload is absolute.
+func (m Model) mcpHubTarget(d *Dialog) string {
+	i := psecCursor(d)
+	if i < 0 || i >= len(d.Payload) {
+		return ""
+	}
+	return mcpTargetOf(d.Payload[i])
+}
+
+// mcpTargetOf pulls the server name out of a hub MCP payload: both
+// "@mcpsel:<name>" and "@mcpact:<kind>@<name>" carry it. The prefix is
+// stripped first, then the name is what follows the FIRST '@' of what is
+// left — the prefix's own '@' is already gone, and a name may contain
+// more. This must agree with confirmMcpHubAction in src/builtin, which
+// splits the same way; a divergence runs an action against a server that
+// does not exist.
+func mcpTargetOf(payload string) string {
+	switch {
+	case strings.HasPrefix(payload, psecActMCPSel):
+		return strings.TrimPrefix(payload, psecActMCPSel)
+	case strings.HasPrefix(payload, psecActMCPAct):
+		// Cut at the FIRST separator after the prefix, not the last: a
+		// server name may contain "@" (scoped npm/pypi ids), and the
+		// runner in src/builtin splits the same way. Taking the last "@"
+		// resolved "remove@foo@bar" to "bar".
+		if _, name, ok := strings.Cut(strings.TrimPrefix(payload, psecActMCPAct), "@"); ok {
+			return name
+		}
+	}
+	return ""
+}
+
+// mcpHubServers is pi's server list: what `pi mcp list` reported, sorted so
+// the ones needing the user come first. Before the list lands, the
+// mcp.json snapshot names them — pi shows "starting" in that window.
+func (m Model) mcpHubServers() []pirpc.McpServerInfo {
+	out := append([]pirpc.McpServerInfo(nil), m.McpInfo...)
+	if len(out) == 0 {
+		for _, s := range m.MCP {
+			out = append(out, pirpc.McpServerInfo{Name: s.Name, State: "starting"})
+		}
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		ri, rj := mcpAttentionRank(out[i]), mcpAttentionRank(out[j])
+		if ri != rj {
+			return ri < rj
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
+}
+
+// mcpAttentionRank is pi's: needs-auth first, then failed, disconnected,
+// connecting, connected, and disabled last (a server the user turned off
+// is not something needing their attention).
+func mcpAttentionRank(s pirpc.McpServerInfo) int {
+	if !s.Enabled {
+		return 5
+	}
+	switch s.State {
+	case "needs-auth":
+		return 0
+	case "failed":
+		return 1
+	case "disconnected":
+		return 2
+	case "connected":
+		return 4
+	default:
+		return 3
+	}
+}
+
+// mcpState is pi's describeState, with its exact wording.
+func (m Model) mcpState(s pirpc.McpServerInfo, withError bool) string {
+	if !s.Enabled {
+		return "disabled"
+	}
+	switch s.State {
+	case "needs-auth":
+		return "needs sign-in"
+	case "failed":
+		if withError {
+			if line := McpFirstLine(s.Error); line != "" {
+				return "failed: " + line
+			}
+		}
+		return "failed"
+	case "connected":
+		out := fmt.Sprintf("connected · %s", mcpPlural(len(s.Tools), "tool"))
+		if s.Resources > 0 {
+			out += " · " + mcpPlural(s.Resources, "resource")
+		}
+		return out
+	case "connecting":
+		return "connecting…"
+	case "":
+		return "starting"
+	default:
+		return s.State
+	}
+}
+
+// mcpTransport is pi's describeTransport: `pi mcp list` puts the URL in
+// `transport` for an http server and the command line for a stdio one,
+// which is exactly what pi assembles from the entry.
+func mcpTransport(s pirpc.McpServerInfo) string { return s.Transport }

@@ -29,29 +29,41 @@ type Block = chat.Block
 // Dialog is a modal: extension permission prompt or native picker/settings.
 
 type Dialog struct {
-	ID                string
-	Method            string // select | confirm (extension UI)
-	Kind              string // "ui" | "model" | "thinking" | "settings" | "pconfig" | "login" | "loginDone" | "secret" | "rename" | "sessions" | ...
-	Title             string
-	Message           string
-	Options           []string
-	Descs             []string
-	Providers         []string              // model picker: parallel provider per option
-	Models            []pirpc.ModelInfo     // model picker: full specs parallel to Options
-	Provs             []string              // model picker: left pane (unique providers, [0]="All")
-	ProvConn          map[string]bool       // model picker: connected providers (green dot)
-	ProvCursor        int                   // model picker: left-pane cursor
-	ProvFocus         bool                  // model picker: true = providers focused
-	PsecIDs           []string              // pitago-setting: section id parallel to Provs (left pane)
-	Paths             []string              // sessions picker: parallel session file per option
-	Scope             string                // sessions picker: "current" | "all" (Tab toggles)
-	Payload           []string              // yank picker: full text per option; login: raw keys ("" for action rows)
-	BlockIdx          int                   // blockactions: target chat block index (for Payload kinds)
-	TreeJump          []int                 // tree: index of the row's user/assistant message among the transcript's user/assistant blocks, in order; -1 = no such block
-	TreeRole          []string              // tree: role ("user"/"assistant") of a message row, "" for every other entry type
-	McpServers        []pirpc.McpServerInfo // mcp: full server record per list row (transport, source, state, tools)
-	McpServer         pirpc.McpServerInfo   // mcp: the server an action/exposure dialog belongs to
-	Current           string                // the value in use, marked in the grid/list (pet: "●" cell)
+	ID         string
+	Method     string // select | confirm (extension UI)
+	Kind       string // "ui" | "model" | "thinking" | "settings" | "pconfig" | "login" | "loginDone" | "secret" | "rename" | "sessions" | ...
+	Title      string
+	Message    string
+	Options    []string
+	Descs      []string
+	Providers  []string              // model picker: parallel provider per option
+	Models     []pirpc.ModelInfo     // model picker: full specs parallel to Options
+	Provs      []string              // model picker: left pane (unique providers, [0]="All")
+	ProvConn   map[string]bool       // model picker: connected providers (green dot)
+	ProvCursor int                   // model picker: left-pane cursor
+	ProvFocus  bool                  // model picker: true = providers focused
+	PsecIDs    []string              // pitago-setting: section id parallel to Provs (left pane)
+	Paths      []string              // sessions picker: parallel session file per option
+	Scope      string                // sessions picker: "current" | "all" (Tab toggles)
+	Payload    []string              // yank picker: full text per option; login: raw keys ("" for action rows)
+	BlockIdx   int                   // blockactions: target chat block index (for Payload kinds)
+	TreeJump   []int                 // tree: index of the row's user/assistant message among the transcript's user/assistant blocks, in order; -1 = no such block
+	TreeRole   []string              // tree: role ("user"/"assistant") of a message row, "" for every other entry type
+	McpServers []pirpc.McpServerInfo // mcp: full server record per list row (transport, source, state, tools)
+	McpServer  pirpc.McpServerInfo   // mcp: the server an action/exposure dialog belongs to
+	// The hub's MCP section is master-detail: servers in the middle pane,
+	// that server's actions in the third (DETAILS) column, navigable with
+	// →/← like a pane — so the actions are visible without a second menu.
+	McpAct            []string    // action labels for the highlighted server
+	McpActDesc        []string    // their descriptions (pi's wording)
+	McpActPayload     []string    // what Enter runs for each
+	McpActCursor      int         // highlighted action
+	McpActFocus       bool        // whether the third column has keyboard focus
+	McpActRun         bool        // Enter asked the actions column to run its highlighted row
+	McpActDrawn       bool        // the third column is actually on screen, so it may be entered or run
+	McpBaseMsg        string      // the MCP section's message without the actions hint, which is derived per render
+	McpEdit           McpEditMode // hub MCP section: pane 3 is editing an entry
+	Current           string      // the value in use, marked in the grid/list (pet: "●" cell)
 	Cursor            int
 	Filter            string // picker filter / secret buffer / rename buffer
 	Placeholder       string // free-text dialog: dim hint shown while the buffer is empty
@@ -69,14 +81,31 @@ type Dialog struct {
 	OAuthConn         map[string]bool // login: provider -> oauth connected in pi
 	LoginCounts       map[string]int  // login: provider -> saved key count
 	Settings          SettingsState
-	LoginProvider     string   // login flow: provider id
-	LoginEnv          string   // login flow: env var
-	TrajOff           int      // trajectory/team dialog: detail scroll offset (lines)
-	TeamTab           string   // team dialog: workers | inspect | console | cost
-	TeamFollow        bool     // team dialog: follow worker activity
-	TeamDetail        bool     // team dialog: focused worker detail view
-	TeamReturnMessage string   // dashboard text restored by Esc from worker detail
-	TeamReturnCursor  int      // selected worker restored by Esc from worker detail
+	LoginProvider     string         // login flow: provider id
+	LoginEnv          string         // login flow: env var
+	TrajOff           int            // trajectory/team dialog: detail scroll offset (lines)
+	TeamTab           string         // team dialog: workers | inspect | console | cost
+	TeamFollow        bool           // team dialog: follow worker activity
+	TeamDetail        bool           // team dialog: focused worker detail view
+	TeamReturnMessage string         // dashboard text restored by Esc from worker detail
+	TeamReturnCursor  int            // selected worker restored by Esc from worker detail
+	LeftHead          string         // two-pane dialog: left column header ("SECTIONS" default)
+	RightHead         string         // two-pane dialog: middle column header (section name default)
+	McpNames          []string       // mcp panel: server names parallel to Provs (stripped labels)
+	McpAll            []string       // mcp panel: every server name, before the filter
+	McpAllDefs        []pirpc.McpDef // mcp panel: definitions parallel to McpAll (pre-filter)
+	McpDefs           []pirpc.McpDef
+	McpPath           string          // mcp panel/form: mcp.json the panel reads and writes
+	FormVals          []string        // mcpForm: value per field row (parallel to Options)
+	FormFocus         int             // mcpForm: focused field index
+	FormErr           string          // mcpForm: last validation/write error
+	FormPath          string          // mcpForm: config file fallback when none resolves
+	FormOrig          string          // mcpForm: entry being edited ("" = add); a rename deletes it
+	FormPristine      []string        // mcpForm: prefill copy, for the Esc discard gate
+	FormTouched       map[string]bool // mcpForm: rows the user actually edited (keep-unless-touched)
+	FormArmed         string          // mcpForm: "esc" while the discard gate waits
+	FormArmedAt       time.Time
+	FormCur           []int    // mcpForm: caret position per field, in RUNES (a byte index would slice multi-byte characters in half)
 	UpdateTo          string   // update flow: target tag (Kind "update")
 	ShortcutCmd       string   // cmdshortcut capture: /command being assigned ("" = none)
 	SubDetail         bool     // subagents overlay: detail pane open
@@ -173,13 +202,22 @@ type Model struct {
 	Stats               pirpc.Stats
 	sessBreak           []pirpc.CostBreak // sidebar COST section (connect + /session refresh)
 	queue               pirpc.Queue
-	Todos               []TodoItem      // tracked from todo-tool calls (sidebar)
-	MCP                 []McpServer     // pi agent-dir MCP snapshot (sidebar)
-	Plugins             []Plugin        // installed pi packages (sidebar PLUGINS toggle)
-	Market              []MarketEntry   // npm registry pi-package list (marketplace tab)
-	MarketErr           string          // last marketplace fetch error ("" = ok/unloaded)
-	showPlugins         bool            // PLUGINS expanded (click header or /plugins)
-	Side                map[string]bool // sidebar section visibility (nil entry = default; MCP + Plugins + Commands hide)
+	Todos               []TodoItem            // tracked from todo-tool calls (sidebar)
+	MCP                 []McpServer           // pi agent-dir MCP snapshot (sidebar)
+	McpInfo             []pirpc.McpServerInfo // pi's `mcp list --json` rows: state, tools, exposure (the settings hub renders from these)
+	McpHubSel           string                // hub MCP section: the server whose ACTIONS are listed. Latched when the cursor is on a server row, so arrowing from the server down into its actions does not re-target them to the next server on the way past
+	mcpArmName          string                // MCP: server awaiting the 2nd Enter (the remove gate lives on the model so the hub and the editor share it)
+	mcpArmAt            time.Time             // MCP: when the remove gate was armed
+	McpInfoAt           time.Time             // when McpInfo was last read ("" = never; pi has no `mcp reconnect`, listing is what connects)
+	McpInfoNotice       string                // last list's notice, e.g. "1 of 5 servers failed"
+	McpConfigErrs       []string              // pi's config errors (an unreadable/invalid mcp.json entry)
+	McpOverridden       []string              // servers an extension registered that mcp.json overrides
+	mcpHubDefs          mcpHubDefCache        // mcp.json snapshot behind the hub's MCP DETAILS column (render must not read the disk)
+	Plugins             []Plugin              // installed pi packages (sidebar PLUGINS toggle)
+	Market              []MarketEntry         // npm registry pi-package list (marketplace tab)
+	MarketErr           string                // last marketplace fetch error ("" = ok/unloaded)
+	showPlugins         bool                  // PLUGINS expanded (click header or /plugins)
+	Side                map[string]bool       // sidebar section visibility (nil entry = default; MCP + Plugins + Commands hide)
 	Dialogs             []*Dialog
 	connErr             string
 	probe               startupProbe            // startup readiness budget (zero = defaultProbe)

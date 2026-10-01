@@ -6,6 +6,13 @@ import (
 	"path/filepath"
 )
 
+// BackupFile copies current file content next to it as <path>.bak,
+// atomically. The MCP panel calls it before every write so a config edit
+// that breaks every server is one rename away from being undone.
+func BackupFile(path string, content []byte) error {
+	return writeFileAtomic(path+".bak", content, 0o600)
+}
+
 // writeFileAtomic replaces path with data through a temp file in the same
 // directory + rename.
 //

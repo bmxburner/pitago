@@ -1,6 +1,8 @@
 package builtin
 
 import (
+	tea "github.com/charmbracelet/bubbletea"
+
 	"strings"
 	"testing"
 
@@ -14,6 +16,17 @@ func hubModel() *app.Model {
 		{Name: "skill:archify", Description: "arch diagrams", Source: "skill"},
 	}
 	m.Plugins = []app.Plugin{{Spec: "npm:pi-lens", Name: "pi-lens"}}
+	// A live session always has a size before the hub is usable, and the
+	// hub's actions column is only reachable once it has one. Sent before
+	// OpenPconfig, matching the real order: the first WindowSizeMsg lands
+	// on the chrome, not on an open dialog.
+	tm, _ := m.Update(tea.WindowSizeMsg{Width: 140, Height: 40})
+	switch got := tm.(type) {
+	case app.Model:
+		m = got
+	case *app.Model:
+		m = *got
+	}
 	m.OpenPconfig()
 	return &m
 }
