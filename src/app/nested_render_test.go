@@ -1,0 +1,150 @@
+package app
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Nested tool calls (pi's codemode) are grouped under their parent block
+// instead of each becoming its own top-level block. These pin the four
+// things that would silently regress and hand the regression back to the
+// user as a lost audit trail: the header count, the "args omitted"
+// degradation, the tail elision, and the copy-menu entry that is the only
+// remaining way to copy what the script actually ran.
+
+func codemodeBlock(n int) Block {
+	bl := Block{
+		Kind:       "tool",
+		ToolName:   "codemode",
+		ToolStatus: "done",
+		ToolArgs:   "collect the files",
+		ToolResult: "Script completed\n",
+	}
+	for i := 0; i < n; i++ {
+		bl.NestedCalls = append(bl.NestedCalls, NestedCall{
+			ID:         "call_1/" + string(rune('a'+i%26)) + string(rune('a'+i/26)),
+			Name:       "read",
+			Status:     "ok",
+			DurationMs: 120 + i,
+		})
+	}
+	return bl
+}
+
+// The header states how many calls the script made, so the collapsed pill
+// and the expanded frame agree on what the block contains. The count is
+// placed differently in each surface: the pill LEADS with it because the
+// pill truncates its tail and would otherwise cut "· 2 calls" to "· 2
+// cal…", while the expanded frame appends it after the args.
+func TestToolHeadCarriesNestedCallCount(t *testing.T) {
+	if got := toolHeadWithNested(codemodeBlock(7), false); !strings.Contains(got, "· 7 calls") {
+		t.Errorf("frame head dropped the nested-call count: %q", got)
+	}
+	if got := toolHeadWithNested(codemodeBlock(7), true); !strings.HasPrefix(got, "· 7 calls") {
+		t.Errorf("pill head must LEAD with the count, got %q", got)
+	}
+	if got := toolHeadWithNested(codemodeBlock(1), false); !strings.Contains(got, "· 1 call") {
+		t.Errorf("singular nested-call count must not take a plural: %q", got)
+	}
+	if got := toolHeadWithNested(readBlock("done"), false); got != toolHead(readBlock("done")) {
+		t.Errorf("a block with no nested calls must be plain toolHead: %q vs %q", got, toolHead(readBlock("done")))
+	}
+}
+
+// pi omits a call's arguments past its 8 KiB budget and sets
+// argumentsBytes instead. The row must say so rather than render blank —
+// a large `write` would otherwise show an empty row.
+func TestNestedRowDegradesWhenArgumentsOmitted(t *testing.T) {
+	bl := Block{
+		Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		NestedCalls: []NestedCall{
+			{ID: "c1", Name: "bash", Status: "ok", ArgumentsBytes: 4200},
+		},
+	}
+	out, _ := (&Model{}).renderOneBlock(bl, 60)
+	row := ""
+	for _, r := range frameRows(t, out) {
+		if strings.Contains(stripANSI(r), "bash") && strings.Contains(stripANSI(r), "omitted") {
+			row = stripANSI(r)
+		}
+	}
+	if row == "" {
+		t.Fatalf("nested call with dropped arguments rendered blank:\n%s", stripANSI(out))
+	}
+	if !strings.Contains(row, "4.1KB") {
+		t.Errorf("omitted arguments must state their size: %q", row)
+	}
+}
+
+// A codemode script can fan out to 256 calls; the frame stays one block by
+// eliding the tail and stating the remainder as a count.
+func TestNestedCallsElidePastTheCap(t *testing.T) {
+	out, _ := (&Model{}).renderOneBlock(codemodeBlock(20), 60)
+	text := stripANSI(out)
+	if !strings.Contains(text, "more calls") {
+		t.Errorf("past-cap nested calls must render a count line:\n%s", text)
+	}
+	if got := strings.Count(text, "read"); got != nestedCallsMaxRows {
+		t.Errorf("want exactly %d child rows, rendered %d:\n%s", nestedCallsMaxRows, got, text)
+	}
+	// Every row stays inside the frame's inner column.
+	for _, r := range frameRows(t, text) {
+		if w := lipgloss.Width(r); w > 60 {
+			t.Errorf("row is %d cells over the 60-cell column: %q", w, r)
+		}
+	}
+}
+
+// Tidy mode collapses a tool call to one chip. Nested calls are children
+// the pill cannot restate at all, so a codemode block with any must not
+// report itself as having nothing hidden.
+func TestCodemodePillDoesNotHideNestedCalls(t *testing.T) {
+	if !toolPillHasHidden(codemodeBlock(1)) {
+		t.Error("tidy mode would drop the nested-call record entirely")
+	}
+	if toolPillHasHidden(Block{Kind: "tool", ToolName: "cd", ToolStatus: "done"}) {
+		t.Error("a tool block with no result, diff or nested calls must still collapse")
+	}
+}
+
+// Grouping removed the per-call top-level blocks the nested calls used to
+// be copyable as. The menu must offer a sibling entry that carries that
+// audit trail, while the common "I want the output" entry stays first and
+// a plain tool block's menu is unchanged.
+func TestCopyMenuOffersNestedCalls(t *testing.T) {
+	opts, payload := buildBlockOptions(collectBlockContent(codemodeBlock(3)))
+	last := opts[len(opts)-1]
+	if payload[len(payload)-1] != "nested" || !strings.Contains(last, "nested calls") {
+		t.Errorf("want a trailing nested-copy entry, got %q / %q", opts, payload)
+	}
+	if strings.Contains(opts[0], "nested") {
+		t.Errorf("the default output copy must stay first, got %q", opts[0])
+	}
+
+	plain, plainPayload := buildBlockOptions(collectBlockContent(readBlock("done")))
+	for _, p := range plainPayload {
+		if p == "nested" {
+			t.Errorf("a tool block with no nested calls must not gain a nested-copy entry: %q", plain)
+		}
+	}
+}
+
+// bash is one of the tools that can drive ctx.executeTool(), so a shell
+// block can be a codemode parent too. renderShellBlock returns early for
+// shell tools, which would drop the nested rows and the header count
+// entirely — the block would read as if the script made no calls.
+func TestShellParentRendersNestedCalls(t *testing.T) {
+	bl := codemodeBlock(3)
+	bl.ToolName = "bash"
+	bl.ToolArgs = "npm test"
+	bl.ToolResult = "ok\n"
+	text := stripANSI(mustRender(t, Model{}, bl, 60))
+	if !strings.Contains(text, "· 3 calls") {
+		t.Errorf("shell parent dropped the nested-call count:\n%s", text)
+	}
+	if got := strings.Count(text, "read"); got != 3 {
+		t.Errorf("want 3 nested rows under the shell parent, got %d:\n%s", got, text)
+	}
+}

@@ -91,6 +91,33 @@ func ImageCount(raw json.RawMessage) int {
 	return n
 }
 
+// NestedCall is one tool call a codemode script made from inside its JS
+// sandbox. It is never a transcript message of its own: pi records these
+// only as a bounded summary on the parent toolResult's `nestedCalls`
+// (NestedCallRecorder in pi's dist/core/nested-tool-calls.js), and its
+// `tool_execution_*` events carry the same record live via
+// `parentToolCallId`. `arguments` is omitted past pi's 8 KiB per-call
+// budget, which sets ArgumentsBytes instead — a caller must never assume
+// the arguments survived.
+type NestedCall struct {
+	ID             string          `json:"id,omitempty"`
+	Name           string          `json:"name,omitempty"`
+	Status         string          `json:"status,omitempty"` // unfinished | ok | error
+	DurationMs     int             `json:"durationMs,omitempty"`
+	Error          string          `json:"error,omitempty"` // pi caps this at 500 chars
+	Arguments      json.RawMessage `json:"arguments,omitempty"`
+	ArgumentsBytes int             `json:"argumentsBytes,omitempty"`
+}
+
+// NestedCalls is pi's per-parent record of the calls a codemode script
+// made. It is marked incomplete when any limit was hit: 256 calls, 8 KiB
+// of arguments per call, 32 KiB of arguments in total. `complete:false`
+// therefore means "this list is a truncation", not "a call failed".
+type NestedCalls struct {
+	Calls    []NestedCall `json:"calls,omitempty"`
+	Complete bool         `json:"complete,omitempty"`
+}
+
 // AgentMessage is one row of get_messages. Pi also emits custom messages for
 // extension command output; Pitago needs their type/display fields to render
 // results such as /team and /team-result.
@@ -109,6 +136,11 @@ type AgentMessage struct {
 	StopReason   string          `json:"stopReason,omitempty"`   // assistant
 	ErrorMessage string          `json:"errorMessage,omitempty"` // assistant
 	Usage        *EntryUsage     `json:"usage,omitempty"`        // final assistant usage (message_end)
+	// NestedCalls is the codemode record: the tool calls the model-issued
+	// call made from inside its script. A pointer so an absent
+	// `nestedCalls` (the overwhelmingly common case) is not a zero-value
+	// record that could be mistaken for "ran, but made no calls".
+	NestedCalls *NestedCalls `json:"nestedCalls,omitempty"`
 	// Summary/TokensBefore/FromID are the payload of the two context
 	// pseudo-messages pi keeps in get_messages instead of as ordinary
 	// messages (createCompactionSummaryMessage / createBranchSummaryMessage,

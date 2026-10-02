@@ -26,6 +26,11 @@ import (
 // Block is one rendered unit in the chat column (see components/chat).
 type Block = chat.Block
 
+// NestedCall is one tool call a codemode script made from inside its JS
+// sandbox (see components/chat). Aliased like Block so app-package code and
+// tests can name it without a chat. qualifier on every site.
+type NestedCall = chat.NestedCall
+
 // Dialog is a modal: extension permission prompt or native picker/settings.
 
 type Dialog struct {

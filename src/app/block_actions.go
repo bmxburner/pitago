@@ -15,6 +15,14 @@ type BlockContent struct {
 	CodeBlocks []string
 	Tables     []string
 	Plain      string
+	// WithNested is the block's script output PLUS a listing of the calls a
+	// codemode script made from inside its sandbox. It is a SEPARATE menu
+	// entry rather than folded into Markdown: grouping nested calls under
+	// the parent removed the per-call copy those calls used to offer as
+	// top-level blocks, and making the default "I want the output" copy
+	// carry the whole audit trail would punish the common case to fix the
+	// uncommon one.
+	WithNested string
 }
 
 // collectBlockContent derives semantic content for a chat Block. Pitago
@@ -30,7 +38,44 @@ func collectBlockContent(bl Block) BlockContent {
 		CodeBlocks: extractCodeBlocks(md),
 		Tables:     extractTables(md),
 		Plain:      toPlainText(md),
+		WithNested: nestedCopyContent(bl, md),
 	}
+}
+
+// nestedCopyContent is the "with nested calls" copy payload: the script's
+// own output followed by one line per nested call.
+//
+// It is NOT bounded like the rendered rows (see renderNestedCalls): a copy
+// exists to be the record, so eliding calls here would delete the very
+// audit trail grouping took away. The rendered frame stays bounded; the
+// copy does not.
+func nestedCopyContent(bl Block, scriptOut string) string {
+	if len(bl.NestedCalls) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	if t := strings.TrimSpace(scriptOut); t != "" {
+		b.WriteString(t)
+		b.WriteString("\n\n")
+	}
+	b.WriteString(fmt.Sprintf("Nested tool calls (%d):\n", len(bl.NestedCalls)))
+	for _, c := range bl.NestedCalls {
+		b.WriteString("\n- ")
+		b.WriteString(c.Name)
+		if c.Status != "" {
+			b.WriteString(" [" + c.Status + "]")
+		}
+		if c.DurationMs > 0 {
+			b.WriteString(" " + formatDurationMs(c.DurationMs))
+		}
+		if hint := nestedArgsHint(c); hint != "" {
+			b.WriteString(" " + hint)
+		}
+		if t := strings.TrimSpace(c.Error); t != "" {
+			b.WriteString("\n  error: " + t)
+		}
+	}
+	return b.String()
 }
 
 var (
@@ -170,6 +215,12 @@ func buildBlockOptions(c BlockContent) ([]string, []string) {
 		opts = append(opts, "Copy plain text")
 		payload = append(payload, "plain")
 	}
+	// Last, so the common "I just want the output" pick stays first: a
+	// codemode block's script result alone is what most copies are for.
+	if strings.TrimSpace(c.WithNested) != "" {
+		opts = append(opts, "Copy result with nested calls")
+		payload = append(payload, "nested")
+	}
 	return opts, payload
 }
 
@@ -239,6 +290,10 @@ func (m *Model) RunBlockAction(d *Dialog, ri int) tea.Cmd {
 		m.YankText(strings.Join(c.CodeBlocks, "\n\n"))
 	case "plain":
 		m.YankText(c.Plain)
+	case "nested":
+		// The audit trail grouping took away from per-call copying: script
+		// output plus every nested call the script made.
+		m.YankText(c.WithNested)
 	}
 	return nil
 }

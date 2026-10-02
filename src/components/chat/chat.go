@@ -31,6 +31,24 @@ func NewImage(data, mime string) Image {
 	return Image{Data: data, Mime: mime, Digest: binary.BigEndian.Uint64(h.Sum(nil)[:8])}
 }
 
+// NestedCall is one tool call a codemode script made from inside its JS
+// sandbox, as pitago renders it: a row under the parent block rather than
+// a block of its own. Status is pi's vocabulary — "unfinished", "ok",
+// "error" — not the block-level "running"/"done".
+//
+// Arguments holds the raw JSON and is empty when pi's byte budget dropped
+// it; ArgumentsBytes is set then instead. The renderer degrades to an
+// "args omitted" note rather than showing a blank row.
+type NestedCall struct {
+	ID             string
+	Name           string
+	Status         string
+	DurationMs     int
+	Error          string
+	Arguments      string
+	ArgumentsBytes int
+}
+
 // Block is one rendered unit in the chat column.
 type Block struct {
 	Kind        string // user, assistant, thinking, tool, bash, notice
@@ -46,8 +64,14 @@ type Block struct {
 	// "Successfully replaced ..." receipt. Plain text, no ANSI.
 	ToolDiff   string
 	ToolCallID string
-	Err        bool
-	Images     []Image
+	// NestedCalls are the tool calls a codemode script made from inside
+	// its JS sandbox, grouped under this parent instead of each becoming
+	// its own top-level block. They are recorded live (via
+	// parentToolCallId) and restored from the parent toolResult's
+	// `nestedCalls` summary.
+	NestedCalls []NestedCall
+	Err         bool
+	Images      []Image
 	// TokensBefore is the pre-compaction context size a compaction block
 	// reports ("Compacted from 12,345 tokens"); Text carries the summary
 	// markdown itself. Zero means unknown, and the block then shows the

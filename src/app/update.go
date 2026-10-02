@@ -1839,13 +1839,34 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 		m.asstDelta, m.thinkDelta = false, false
 	case "tool_execution_start":
 		var p struct {
-			ToolCallID string          `json:"toolCallId"`
-			ToolName   string          `json:"toolName"`
-			Args       json.RawMessage `json:"args"`
-			Details    json.RawMessage `json:"details"`
-			Input      json.RawMessage `json:"input"`
+			ToolCallID       string          `json:"toolCallId"`
+			ToolName         string          `json:"toolName"`
+			Args             json.RawMessage `json:"args"`
+			Details          json.RawMessage `json:"details"`
+			Input            json.RawMessage `json:"input"`
+			ArgumentsBytes   int             `json:"argumentsBytes"`
+			ParentToolCallID string          `json:"parentToolCallId"`
 		}
 		_ = json.Unmarshal(ev.Raw, &p)
+		if pi := m.nestedParentIdx(p.ParentToolCallID); pi >= 0 {
+			// A codemode script's own tool call. It is grouped under the
+			// parent block instead of becoming a top-level block: pi never
+			// showed these to the model, the script made them. Skipping
+			// ensureTool is what stops the ungrouped duplicate render.
+			// pi's wire vocabulary is unfinished|ok|error — a live call
+			// stays "unfinished" until its tool_execution_end arrives.
+			m.upsertNested(pi, chat.NestedCall{
+				ID:             p.ToolCallID,
+				Name:           p.ToolName,
+				Status:         "unfinished",
+				Arguments:      string(p.Args),
+				ArgumentsBytes: p.ArgumentsBytes,
+			})
+			pcmd = m.petSet(petWorking)
+			break // todo/subagent tracking never applies to nested calls
+		}
+		// Unknown parentToolCallID: fall through to the ordinary path so
+		// the call is still rendered rather than silently dropped.
 		i := m.ensureTool(p.ToolCallID, p.ToolName)
 		m.setToolArgs(i, p.ToolName, string(p.Args))
 		m.blocks[i].ToolStatus = "running"
@@ -1862,8 +1883,20 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 			PartialResult struct {
 				Content []pirpc.ContentBlock `json:"content"`
 			} `json:"partialResult"`
+			ParentToolCallID string `json:"parentToolCallId"`
 		}
 		_ = json.Unmarshal(ev.Raw, &p)
+		// Nested-call partial results are dropped deliberately: pi's
+		// per-call nestedCalls record has no partial field, and the
+		// parent's own toolResult is the script's output. Only the parent
+		// block's status line renders anything live here.
+		if pi := m.nestedParentIdx(p.ParentToolCallID); pi >= 0 {
+			m.upsertNested(pi, chat.NestedCall{
+				ID:     p.ToolCallID,
+				Status: "unfinished",
+			})
+			break
+		}
 		i := m.ensureTool(p.ToolCallID, "")
 		m.blocks[i].ToolResult = joinText(p.PartialResult.Content)
 	case "tool_execution_end":
@@ -1874,9 +1907,23 @@ func (m Model) handleEvent(ev pirpc.Event) (tea.Model, tea.Cmd) {
 				Content []pirpc.ContentBlock `json:"content"`
 				Details json.RawMessage      `json:"details"`
 			} `json:"result"`
-			IsError bool `json:"isError"`
+			IsError          bool   `json:"isError"`
+			ParentToolCallID string `json:"parentToolCallId"`
 		}
 		_ = json.Unmarshal(ev.Raw, &p)
+		if pi := m.nestedParentIdx(p.ParentToolCallID); pi >= 0 {
+			nested := chat.NestedCall{
+				ID:     p.ToolCallID,
+				Name:   p.ToolName,
+				Status: "ok",
+			}
+			if p.IsError {
+				nested.Status = "error"
+				nested.Error = capRunes(joinText(p.Result.Content), 500)
+			}
+			m.upsertNested(pi, nested)
+			break
+		}
 		i := m.ensureTool(p.ToolCallID, p.ToolName)
 		if p.IsError {
 			m.blocks[i].ToolStatus = "error"
@@ -2289,6 +2336,91 @@ func (m *Model) reconcileCompacting(st pirpc.State) {
 
 // restore converts get_messages into blocks (two-pass via m.tools map).
 
+// nestedParentIdx maps a tool event's parentToolCallId to the parent tool
+// block's index, or -1 when it cannot be resolved. The block must exist
+// already and must be a real tool block: nested calls are children of a
+// parent that pi started first, so an unresolvable parent means the event
+// is malformed — callers fall through to the ordinary ensureTool path so
+// the call is still rendered instead of silently dropped.
+func (m Model) nestedParentIdx(parentToolCallID string) int {
+	if parentToolCallID == "" {
+		return -1
+	}
+	i, ok := m.tools[parentToolCallID]
+	if !ok || i < 0 || i >= len(m.blocks) || m.blocks[i].Kind != "tool" {
+		return -1
+	}
+	return i
+}
+
+// upsertNested records one nested (codemode) tool call against its parent
+// block. An existing row for the same call id is updated in place so the
+// start/update/end sequence does not grow a row per phase; non-empty fields
+// win over empty ones so a later event carrying nothing leaves the earlier
+// detail (arguments from start) intact.
+func (m *Model) upsertNested(pi int, nc chat.NestedCall) {
+	if pi < 0 || pi >= len(m.blocks) {
+		return
+	}
+	for j := range m.blocks[pi].NestedCalls {
+		cur := &m.blocks[pi].NestedCalls[j]
+		if cur.ID != nc.ID {
+			continue
+		}
+		if nc.Name != "" {
+			cur.Name = nc.Name
+		}
+		if nc.Status != "" {
+			cur.Status = nc.Status
+		}
+		if nc.Arguments != "" {
+			cur.Arguments = nc.Arguments
+		}
+		if nc.ArgumentsBytes != 0 {
+			// pi omits arguments past its byte budget and reports the size;
+			// the row then says "args omitted, N KB" instead of blank.
+			cur.ArgumentsBytes = nc.ArgumentsBytes
+		}
+		if nc.Error != "" {
+			cur.Error = nc.Error
+		}
+		return
+	}
+	m.blocks[pi].NestedCalls = append(m.blocks[pi].NestedCalls, nc)
+}
+
+// nestedCallsFrom converts pi's persisted per-parent summary into display
+// rows. It is a straight field copy: ArgumentsBytes must survive verbatim
+// because the renderer says "args omitted, N KB" when Arguments is empty.
+func nestedCallsFrom(nc *pirpc.NestedCalls) []chat.NestedCall {
+	if nc == nil || len(nc.Calls) == 0 {
+		return nil
+	}
+	out := make([]chat.NestedCall, 0, len(nc.Calls))
+	for _, c := range nc.Calls {
+		out = append(out, chat.NestedCall{
+			ID:             c.ID,
+			Name:           c.Name,
+			Status:         c.Status,
+			DurationMs:     c.DurationMs,
+			Error:          c.Error,
+			Arguments:      string(c.Arguments),
+			ArgumentsBytes: c.ArgumentsBytes,
+		})
+	}
+	return out
+}
+
+// capRunes limits s to n runes, appending an ellipsis when it cut anything.
+// pi caps a nested call's error text at 500 chars for the same reason.
+func capRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 func (m *Model) restore(msgs []pirpc.AgentMessage) {
 	// Summary pseudo-messages are collected, not rendered where the loop
 	// finds them (see the case below); every other role renders in place.
@@ -2342,6 +2474,13 @@ func (m *Model) restore(msgs []pirpc.AgentMessage) {
 				// the receipt line the tool also reported.
 				if d := diffOfDetails(msg.Details); d != "" {
 					m.blocks[i].ToolDiff = d
+				}
+				// Nested calls (codemode) are not transcript messages — pi
+				// never persists them as rows of their own, only as this
+				// bounded summary on the parent toolResult. Fill only when
+				// the live event tail has not already done so.
+				if msg.NestedCalls != nil && len(m.blocks[i].NestedCalls) == 0 {
+					m.blocks[i].NestedCalls = nestedCallsFrom(msg.NestedCalls)
 				}
 			}
 		case "bashExecution":

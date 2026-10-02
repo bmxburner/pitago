@@ -34,7 +34,10 @@ func toolPillRow(bl Block, w int, hint string) string {
 	class := format.ToolStatusClass(bl.ToolStatus)
 	row := toolBullet(bl) + " " + pillBadge(name, class)
 
-	head := strings.TrimSpace(toolHead(bl))
+	// The count leads in the pill (see toolHeadWithNested): args are
+	// truncated to whatever the budget leaves, and a count cut to
+	// "· 2 cal…" would defeat the point of the collapse.
+	head := strings.TrimSpace(toolHeadWithNested(bl, true))
 	if head == "" {
 		// A call with no args yet (still streaming, or a bare status
 		// refresh): the chip IS the block. Return without the separator
@@ -73,9 +76,17 @@ func pillBadge(name string, class string) string {
 // something the expanded block shows. The chip absorbs the header's
 // detail line ("running…", "no output") on its own — that text restates
 // what the status bullet and the chip already carry — so the only real
-// loss is a result or diff body. A call still in flight has none yet, so
-// it shows no hint; the pill re-renders with one the moment it finishes.
+// loss is a result, diff, or nested-call body. A call still in flight has
+// none of the first two yet, so it shows no hint; the pill re-renders with
+// one the moment it finishes. Nested calls are different: the count is
+// carried on the header (see toolHead), but the rows themselves are
+// children the pill cannot show at all, so a codemode block with any
+// nested call must not collapse to a bare chip and lose the calls
+// entirely.
 func toolPillHasHidden(bl Block) bool {
+	if len(bl.NestedCalls) > 0 {
+		return true
+	}
 	return strings.TrimSpace(bl.ToolResult) != "" || strings.TrimSpace(bl.ToolDiff) != ""
 }
 

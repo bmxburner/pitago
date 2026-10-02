@@ -20,6 +20,8 @@
 //	                          data {"cancelled":true} (an extension veto).
 //	FAKEPI_DELAY=<type=1s[,...]> wait that long BEFORE answering those
 //	                          command types (a slow-starting pi).
+//	FAKEPI_SCENARIO=codemode     replay pi's nested-tool-call shape instead
+//	                          of the text-only stream (see codemodeFixtures).
 //
 // Protocol notes honoured on purpose (they are what pirpc.Client relies on):
 //   - responses carry the request id back: {"type":"response","id":...}
@@ -130,6 +132,47 @@ var fixtures = map[string]string{
 	"export_html":             `{"path":"/tmp/fakepi-export.html"}`,
 }
 
+// codemodeFixtures are the fixtures for FAKEPI_SCENARIO=codemode: a session
+// whose one tool call is a codemode script that called three other tools
+// from inside its sandbox.
+//
+// The record is transcribed from pi's own contract, not invented:
+// NestedToolCallRecord (pi-ai/dist/types.d.ts:398) is
+//
+//	{id, name, arguments?, argumentsBytes?, status, durationMs?, error?}
+//
+// with status "ok"|"error"|"unfinished", and it rides the PARENT's
+// toolResult message as nestedCalls: {calls, complete} — never as
+// messages of its own (NestedCallSummary, dist/core/nested-tool-calls.d.ts:25).
+//
+// It deliberately includes all three degradations the decoder must survive:
+// an error call, an unfinished call (the script returned before it
+// finished), and one whose arguments pi OMITTED past the 8 KiB per-call
+// budget (dist/core/nested-tool-calls.d.ts:13), which sets argumentsBytes
+// instead. A decoder that assumes arguments is always there renders that
+// row blank.
+var codemodeFixtures = map[string]string{
+	"get_messages": `{"messages":[` +
+		`{"role":"user","content":"count the files"},` +
+		`{"role":"assistant","content":[` +
+		`{"type":"toolCall","id":"call-codemode-1","name":"codemode",` +
+		`"arguments":{"language":"javascript",` +
+		`"code":"const r = await Promise.all([tools.read(...)]);"}}],` +
+		`"stopReason":"toolUse"},` +
+		`{"role":"toolResult","toolCallId":"call-codemode-1",` +
+		`"toolName":"codemode",` +
+		`"content":[{"type":"text","text":"Script completed (241ms)\n2 files"}],` +
+		`"isError":false,` +
+		`"nestedCalls":{"complete":true,"calls":[` +
+		`{"id":"call-codemode-1/1","name":"read","status":"ok",` +
+		`"durationMs":12,"arguments":{"path":"src/app/view.go"}},` +
+		`{"id":"call-codemode-1/2","name":"bash","status":"error",` +
+		`"durationMs":1180,"argumentsBytes":4192,` +
+		`"error":"exit status 1: cannot find module 'x'"},` +
+		`{"id":"call-codemode-1/3","name":"write","status":"unfinished",` +
+		`"arguments":{"path":"out.txt","content":"hi"}}]}}]}`,
+}
+
 // vetoFixtures are the pi answers for a session switch an extension
 // cancelled through session_before_switch: the command SUCCEEDED and the
 // session did not change. FAKEPI_VETO=<type[,type]> selects them.
@@ -171,6 +214,11 @@ func main() {
 			veto[t] = true
 		}
 	}
+	// FAKEPI_SCENARIO swaps the event burst a prompt produces and, where a
+	// scenario has its own resume state, the fixtures too. Empty keeps the
+	// text-only default every other test relies on.
+	scenario := strings.TrimSpace(os.Getenv("FAKEPI_SCENARIO"))
+
 	busy := map[string]bool{}
 	for _, t := range strings.Split(os.Getenv("FAKEPI_BUSY"), ",") {
 		if t = strings.TrimSpace(t); t != "" {
@@ -263,6 +311,9 @@ func main() {
 		}
 
 		data, ok := fixtures[cmd.Type]
+		if scenarioData, isScenario := codemodeFixtures[cmd.Type]; scenario == "codemode" && isScenario {
+			data, ok = scenarioData, true
+		}
 		if !ok {
 			// No fixture means the test asked for something this harness
 			// does not model. Answer as an error so it fails loudly instead
@@ -284,10 +335,72 @@ func main() {
 			// A prompt is only useful to pitago with the event stream
 			// behind it: two text_delta chunks (the client merges
 			// consecutive streaming chunks) plus message_end.
+			if scenario == "codemode" {
+				emitCodemodeStream(out)
+				continue
+			}
 			emitStream(out)
 		}
 	}
 	// stdin EOF: exit cleanly like pi does when its host closes the pipe.
+}
+
+// emitCodemodeStream writes the burst pi sends when a codemode script ran:
+// the parent tool call, the calls the script made from inside its sandbox
+// (each carrying parentToolCallId and a `<parent>/<n>` id, per
+// ToolCallEventBase, types.d.ts:889), then the parent's own result.
+//
+// The three children cover every terminal status the live path can see, so
+// the decoder is exercised on all of them in one round trip: read finishes
+// ok, bash fails, and write is still running when the script returns — which
+// is exactly the "unfinished" case pi's recorder persists.
+//
+// A live event carries NO durationMs and NO argumentsBytes: both exist only
+// on the persisted record (NestedToolCallRecord), and live args are always
+// sent in full. A fixture that invented them would test nothing real, so
+// this one omits them and the resume fixture is where those fields are
+// pinned.
+func emitCodemodeStream(out *bufio.Writer) {
+	const parent = "call-codemode-1"
+	for _, ev := range []map[string]any{
+		{"type": "agent_start"},
+		{"type": "turn_start"},
+		// The script's own call, made by the model.
+		{"type": "tool_execution_start", "toolCallId": parent, "toolName": "codemode",
+			"args": map[string]any{"language": "javascript", "code": "return 1"}},
+		// --- child 1: a call the script made, which succeeded ---
+		{"type": "tool_execution_start", "toolCallId": parent + "/1", "toolName": "read",
+			"args": map[string]any{"path": "src/app/view.go"}, "parentToolCallId": parent},
+		{"type": "tool_execution_end", "toolCallId": parent + "/1", "toolName": "read",
+			"result": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "package app\n"}}},
+			"isError": false, "parentToolCallId": parent},
+		// --- child 2: a call the script made, which failed ---
+		{"type": "tool_execution_start", "toolCallId": parent + "/2", "toolName": "bash",
+			"args": map[string]any{"command": "go test ./..."}, "parentToolCallId": parent},
+		{"type": "tool_execution_update", "toolCallId": parent + "/2", "toolName": "bash",
+			"args": map[string]any{"command": "go test ./..."},
+			"partialResult": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "FAIL\n"}}},
+			"parentToolCallId": parent},
+		{"type": "tool_execution_end", "toolCallId": parent + "/2", "toolName": "bash",
+			"result": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "FAIL: cannot find module 'x'\n"}}},
+			"isError": true, "parentToolCallId": parent},
+		// --- child 3: still running when the script returned ---
+		{"type": "tool_execution_start", "toolCallId": parent + "/3", "toolName": "write",
+			"args": map[string]any{"path": "out.txt", "content": "hi"}, "parentToolCallId": parent},
+		// The script's own result, once its sandbox finished.
+		{"type": "tool_execution_end", "toolCallId": parent, "toolName": "codemode",
+			"result": map[string]any{"content": []any{
+				map[string]any{"type": "text", "text": "Script completed (241ms)\n2 files"}}},
+			"isError": false},
+		{"type": "message_end", "assistantMessageEvent": map[string]any{
+			"type": "done", "reason": "stop"}},
+	} {
+		writeLine(out, ev)
+	}
+	out.Flush()
 }
 
 // emitStream writes the streaming burst pi sends while answering a prompt.

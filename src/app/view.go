@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/bubbles/viewport"
 	"github.com/charmbracelet/lipgloss"
 
+	"pitago/src/components/chat"
 	"pitago/src/components/format"
 	"pitago/src/components/markdown"
 	"pitago/src/extension"
@@ -309,6 +310,20 @@ func blockKey(bl Block, cw int, hide, expand bool, theme string, tidy bool, thin
 		h.Write([]byte{0})
 	}
 	fmt.Fprintf(h, "\x00images\x00%d", len(bl.Images))
+	// Nested calls: the row shows the name, status, duration, error text
+	// and only the head of the argument JSON (rows are truncated to the
+	// frame's inner width), so the digest covers exactly what the row
+	// renders. Hashing every byte of up to 8 KiB per call would cost more
+	// than the render it protects — 256 calls is 2 MiB of FNV per frame.
+	fmt.Fprintf(h, "\x00nested\x00%d", len(bl.NestedCalls))
+	for _, c := range bl.NestedCalls {
+		a := c.Arguments
+		if len(a) > nestedArgsPreviewMax {
+			a = a[:nestedArgsPreviewMax]
+		}
+		fmt.Fprintf(h, "\x00%s\x00%s\x00%s\x00%d\x00%s\x00%d\x00%s",
+			c.ID, c.Name, c.Status, c.DurationMs, c.Error, c.ArgumentsBytes, a)
+	}
 	fmt.Fprintf(h, "\x00%d\x00%v\x00%v\x00%v\x00%s\x00%s", cw, hide, expand, tidy, theme, thinkingView)
 	return h.Sum64()
 }
@@ -563,7 +578,7 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 		return m.renderShellBlock(bl, w)
 	}
 	inner := blockInner(w)
-	rows := []string{toolHeaderRow(bl, toolHead(bl), inner)}
+	rows := []string{toolHeaderRow(bl, toolHeadWithNested(bl, false), inner)}
 	// Tidy mode, collapsed: the header IS the block. A tool call reads as
 	// "● edit src/app/view.go" with no args line and no result, diff or
 	// preview underneath — the whole point of the mode.
@@ -581,6 +596,9 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 	if r := m.renderToolBody(bl); r != "" {
 		rows = append(rows, r)
 	}
+	if r := renderNestedCalls(bl, inner); r != "" {
+		rows = append(rows, r)
+	}
 	return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
 }
 
@@ -596,6 +614,142 @@ func toolHead(bl Block) string {
 		}
 	}
 	return head
+}
+
+// toolHeadWithNested is toolHead plus the nested-call count, placed where
+// the caller wants it: the expanded frame reads args-then-count, while the
+// tidy pill LEADS with the count — the pill truncates the tail of its head
+// and would otherwise reduce "· 2 calls" to "· 2 cal…", which is the one
+// fact tidy mode exists to keep visible. A block with no nested calls is
+// exactly toolHead.
+func toolHeadWithNested(bl Block, countFirst bool) string {
+	base := toolHead(bl)
+	n := len(bl.NestedCalls)
+	if n == 0 {
+		return base
+	}
+	count := fmt.Sprintf("· %d call%s", n, plural(n))
+	if countFirst {
+		return strings.TrimSpace(count + "  " + base)
+	}
+	return strings.TrimSpace(base + " " + count)
+}
+
+// Bounds on what one nested-call row can claim of the block's inner
+// column. A codemode script can fan out to 256 calls, so the list is
+// elided past nestedCallsMaxRows and the remainder is stated as a count —
+// the same "keep the frame one block" contract the rest of the tool
+// renderer follows. The name, args and error caps keep one row one line.
+const (
+	nestedCallsMaxRows    = 8
+	nestedNameMax         = 24
+	nestedArgsPreviewMax  = 48
+	nestedErrorPreviewMax = 96
+)
+
+// renderNestedCalls renders the tool calls a codemode script made from
+// inside its JS sandbox as child rows under the parent block. They are
+// children because pi never shows them to the model — the script made them
+// — so rendering them as top-level blocks would falsely credit the model
+// with the calls.
+//
+// inner is the frame's inner width; every row is shortened to it so a long
+// path or error cannot push the frame out of its column.
+func renderNestedCalls(bl Block, inner int) string {
+	calls := bl.NestedCalls
+	if len(calls) == 0 {
+		return ""
+	}
+	shown := calls
+	more := 0
+	if len(calls) > nestedCallsMaxRows {
+		shown = calls[:nestedCallsMaxRows]
+		more = len(calls) - nestedCallsMaxRows
+	}
+	rows := make([]string, 0, len(shown)+1)
+	for _, c := range shown {
+		rows = append(rows, nestedCallRow(c, inner))
+	}
+	if more > 0 {
+		rows = append(rows, toolStyle.Render(fmt.Sprintf("  · … %d more call%s", more, plural(more))))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// nestedCallRow is one child row: the status glyph, the tool name, the
+// duration, and a short argument hint. The status class comes from the same
+// classifier the parent's frame uses, so a failed nested call reads red
+// exactly like a failed top-level block would.
+func nestedCallRow(c chat.NestedCall, inner int) string {
+	var b strings.Builder
+	b.WriteString("  ")
+	switch format.ToolStatusClass(c.Status) {
+	case format.StatusSuccess:
+		b.WriteString(okStyle.Render("●"))
+	case format.StatusError:
+		b.WriteString(errStyle.Render("×"))
+	default: // "unfinished", and any status pi has not declared
+		b.WriteString(toolStyle.Render("·"))
+	}
+	b.WriteString(" ")
+	b.WriteString(toolNameStyleFor(c.Name).Render(Short(c.Name, nestedNameMax)))
+	if c.DurationMs > 0 {
+		b.WriteString(toolStyle.Render(" " + formatDurationMs(c.DurationMs)))
+	}
+	if hint := nestedArgsHint(c); hint != "" {
+		b.WriteString(toolStyle.Render("  " + hint))
+	}
+	if c.Status == "error" && strings.TrimSpace(c.Error) != "" {
+		// The error is the one part of a failed nested call worth reading in
+		// place; pi itself caps it at 500 chars, so this is a display cut
+		// on top of pi's own cap rather than the only truncation.
+		b.WriteString(errStyle.Render("  " + Short(c.Error, nestedErrorPreviewMax)))
+	}
+	return Short(b.String(), inner)
+}
+
+// nestedArgsHint describes a nested call's arguments in one short token.
+// Arguments are a JSON RawMessage on the wire and a string here; pi drops
+// them past an 8 KiB per-call budget and sets ArgumentsBytes instead, so an
+// empty Arguments with a non-zero ArgumentsBytes must render as a note, not
+// as a blank — a large `write` would otherwise show an empty row.
+func nestedArgsHint(c chat.NestedCall) string {
+	if c.ArgumentsBytes > 0 && strings.TrimSpace(c.Arguments) == "" {
+		return fmt.Sprintf("(args omitted, %s)", formatBytes(c.ArgumentsBytes))
+	}
+	trimmed := strings.TrimSpace(c.Arguments)
+	if trimmed == "" {
+		return ""
+	}
+	// One line only: arguments are JSON, so newlines and deep indentation
+	// would otherwise blow up the row budget.
+	one := strings.Join(strings.Fields(trimmed), " ")
+	return Short(one, nestedArgsPreviewMax)
+}
+
+// formatDurationMs renders a nested call's runtime the way a shell would:
+// milliseconds below a second, seconds with one decimal above it.
+func formatDurationMs(ms int) string {
+	if ms < 1000 {
+		return fmt.Sprintf("%dms", ms)
+	}
+	return fmt.Sprintf("%.1fs", float64(ms)/1000)
+}
+
+// formatBytes renders a byte count in binary units. It exists because a
+// nested call's arguments can be omitted by pi's budget, and the row has to
+// say how big the dropped payload was.
+func formatBytes(n int) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := unit, 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // toolHeaderRow is one header row: the status bullet, the tool name in
@@ -642,6 +796,13 @@ func (m Model) renderShellBlock(bl Block, w int) string {
 		}
 		rows = append(rows, dividerRow(inner, label), out)
 	}
+	// A shell call can still be a codemode parent: bash is one of the tools
+	// that can drive ctx.executeTool(). These rows are appended after the
+	// output so the command's own result keeps its place, and so a shell
+	// parent renders its nested calls exactly like any other parent.
+	if r := renderNestedCalls(bl, inner); r != "" {
+		rows = append(rows, r)
+	}
 	return framedBlock(rows, w, blockThemeFor(format.ToolStatusClass(bl.ToolStatus)))
 }
 
@@ -651,6 +812,13 @@ func (m Model) renderShellBlock(bl Block, w int) string {
 func shellCommandRow(bl Block) string {
 	row := codeStyle.Render(shellPrompt(bl.ToolName))
 	args := strings.TrimSpace(bl.ToolArgs)
+	if n := len(bl.NestedCalls); n > 0 {
+		// shellCommandRow builds its own header (a bare prompt plus the
+		// command) instead of going through toolHead, so the nested-call
+		// count has to be stated here too — otherwise a shell parent reads
+		// as if it made no calls at all.
+		args = strings.TrimSpace(args + " " + fmt.Sprintf("· %d call%s", n, plural(n)))
+	}
 	if args == "" {
 		return row
 	}
