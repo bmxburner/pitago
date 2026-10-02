@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -232,5 +233,36 @@ func TestNestedParentMustBeToolBlock(t *testing.T) {
 	}
 	if len(m.blocks[0].NestedCalls) != 0 {
 		t.Errorf("non-tool block must not collect nested calls")
+	}
+}
+
+// The live list stops at pi's own record bound. pi drops the overflow and
+// marks its persisted record incomplete, so growing without limit would
+// both diverge from what pi stored and hash an unbounded number of rows on
+// every render frame.
+func TestNestedListStopsAtPiRecordBound(t *testing.T) {
+	m := nestedModel()
+	m = feedToolEvent(t, m, "tool_execution_start",
+		`{"toolCallId":"cm_1","toolName":"codemode","args":{"code":"1"}}`)
+
+	over := pirpc.NestedCallsMaxCalls + 25
+	for i := 0; i < over; i++ {
+		m = feedToolEvent(t, m, "tool_execution_start", fmt.Sprintf(
+			`{"toolCallId":"cm_1/%d","toolName":"grep","args":{"p":%d},"parentToolCallId":"cm_1"}`, i, i))
+	}
+	got := len(m.blocks[0].NestedCalls)
+	if got != pirpc.NestedCallsMaxCalls {
+		t.Fatalf("nested list = %d rows, want pi's bound %d", got, pirpc.NestedCallsMaxCalls)
+	}
+	// The call that WAS recorded must still be updateable — the cap drops
+	// new rows, it must not freeze the ones already there.
+	m = feedToolEvent(t, m, "tool_execution_end",
+		`{"toolCallId":"cm_1/0","toolName":"grep","isError":false,"parentToolCallId":"cm_1",
+		  "result":{"content":[{"type":"text","text":"hit"}]}}`)
+	if got := len(m.blocks[0].NestedCalls); got != pirpc.NestedCallsMaxCalls {
+		t.Fatalf("cap changed on update: %d rows", got)
+	}
+	if s := m.blocks[0].NestedCalls[0].Status; s != "ok" {
+		t.Errorf("recorded row stopped updating past the cap: status = %q", s)
 	}
 }

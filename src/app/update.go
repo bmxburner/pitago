@@ -2358,6 +2358,13 @@ func (m Model) nestedParentIdx(parentToolCallID string) int {
 // start/update/end sequence does not grow a row per phase; non-empty fields
 // win over empty ones so a later event carrying nothing leaves the earlier
 // detail (arguments from start) intact.
+//
+// The list stops at pi's own record bound. pi drops the overflow and marks
+// its record incomplete (NESTED_CALL_LIMITS.maxCalls); matching that here
+// keeps a runaway script from growing the block without limit, and every
+// row is hashed by the render cache on every frame. A call past the bound
+// is dropped rather than kept, so what pitago shows and what pi persisted
+// stay the same length.
 func (m *Model) upsertNested(pi int, nc chat.NestedCall) {
 	if pi < 0 || pi >= len(m.blocks) {
 		return
@@ -2384,6 +2391,9 @@ func (m *Model) upsertNested(pi int, nc chat.NestedCall) {
 		if nc.Error != "" {
 			cur.Error = nc.Error
 		}
+		return
+	}
+	if len(m.blocks[pi].NestedCalls) >= pirpc.NestedCallsMaxCalls {
 		return
 	}
 	m.blocks[pi].NestedCalls = append(m.blocks[pi].NestedCalls, nc)

@@ -118,6 +118,16 @@ type NestedCalls struct {
 	Complete bool         `json:"complete,omitempty"`
 }
 
+// NestedCallsMaxCalls is pi's own bound on one record: past this many
+// calls it drops the overflow and marks the record incomplete
+// (NESTED_CALL_LIMITS.maxCalls, dist/core/nested-tool-calls.d.ts:13).
+//
+// It lives here rather than in the renderer because it is a fact about
+// PI's protocol, not about pitago's display: the live event path needs it
+// too. Without it a runaway script appends to Block.NestedCalls forever,
+// and every one of those rows is hashed by the render cache per frame.
+const NestedCallsMaxCalls = 256
+
 // AgentMessage is one row of get_messages. Pi also emits custom messages for
 // extension command output; Pitago needs their type/display fields to render
 // results such as /team and /team-result.
