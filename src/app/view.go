@@ -666,14 +666,53 @@ func renderNestedCalls(bl Block, inner int) string {
 		shown = calls[:nestedCallsMaxRows]
 		more = len(calls) - nestedCallsMaxRows
 	}
-	rows := make([]string, 0, len(shown)+1)
+	rows := make([]string, 0, len(shown)+2)
 	for _, c := range shown {
 		rows = append(rows, nestedCallRow(c, inner))
 	}
 	if more > 0 {
-		rows = append(rows, toolStyle.Render(fmt.Sprintf("  · … %d more call%s", more, plural(more))))
+		// "collapsed", not "more calls": this line is OUR doing, and it has
+		// to read differently from a line below it that means calls were
+		// genuinely lost. Two elisions that look alike is how a truncated
+		// record passes for a complete one.
+		rows = append(rows, toolStyle.Render(fmt.Sprintf("  · … %d more collapsed", more)))
+	}
+	if note := nestedTruncationNote(calls); note != "" {
+		rows = append(rows, warnStyle.Render("  "+note))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+}
+
+// nestedTruncationNote states why a codemode record is shorter than what the
+// script actually did, in the words that fit the cause. It returns "" when
+// nothing was lost, so the common case renders exactly as it did before.
+//
+// pi never says HOW MANY calls it dropped — `complete:false` is a bare
+// boolean on the persisted record — so nothing here claims a count pi did
+// not give. Both causes are derived from the rows themselves rather than
+// stored, because the live path never sees `complete` at all: only the
+// persisted record carries it (NestedCallSummary,
+// dist/core/nested-tool-calls.d.ts:25).
+func nestedTruncationNote(calls []chat.NestedCall) string {
+	var notes []string
+	if len(calls) >= pirpc.NestedCallsMaxCalls {
+		notes = append(notes, fmt.Sprintf("record incomplete — pi keeps at most %d calls", pirpc.NestedCallsMaxCalls))
+	}
+	// A row left "unfinished" is a call the script did not wait for: it will
+	// never complete, and the row's neutral glyph alone does not say so.
+	var unfinished int
+	for _, c := range calls {
+		if c.Status == "unfinished" {
+			unfinished++
+		}
+	}
+	if unfinished > 0 {
+		notes = append(notes, fmt.Sprintf("%d call%s still running when the script returned", unfinished, plural(unfinished)))
+	}
+	if len(notes) == 0 {
+		return ""
+	}
+	return "! " + strings.Join(notes, "; ")
 }
 
 // nestedCallRow is one child row: the status glyph, the tool name, the

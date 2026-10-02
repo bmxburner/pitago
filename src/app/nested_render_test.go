@@ -1,10 +1,13 @@
 package app
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"pitago/src/pirpc"
 )
 
 // Nested tool calls (pi's codemode) are grouped under their parent block
@@ -83,7 +86,10 @@ func TestNestedRowDegradesWhenArgumentsOmitted(t *testing.T) {
 func TestNestedCallsElidePastTheCap(t *testing.T) {
 	out, _ := (&Model{}).renderOneBlock(codemodeBlock(20), 60)
 	text := stripANSI(out)
-	if !strings.Contains(text, "more calls") {
+	// "collapsed", not "more calls": this line is the renderer's own doing,
+	// and it must not read like calls were lost (nestedTruncationNote says
+	// that, and says it differently).
+	if !strings.Contains(text, "more collapsed") {
 		t.Errorf("past-cap nested calls must render a count line:\n%s", text)
 	}
 	if got := strings.Count(text, "read"); got != nestedCallsMaxRows {
@@ -147,4 +153,65 @@ func TestShellParentRendersNestedCalls(t *testing.T) {
 	if got := strings.Count(text, "read"); got != 3 {
 		t.Errorf("want 3 nested rows under the shell parent, got %d:\n%s", got, text)
 	}
+}
+
+// A record that lost calls must say so, and must not say it the same way
+// our own row-collapse does. The two lines sit adjacent in the frame, so a
+// single "more calls" wording for both is how a truncated record passes
+// for a complete one.
+func TestNestedTruncationIsDistinguishedFromOurCollapse(t *testing.T) {
+	complete := Block{Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		ToolResult: "ok", NestedCalls: manyNestedCalls(12, "ok")}
+	out := renderNestedCalls(complete, 72)
+	if !containsAll(out, "more collapsed") {
+		t.Errorf("our own elision must read as a collapse:\n%s", out)
+	}
+	if containsAll(out, "!") {
+		t.Errorf("a complete record must not warn:\n%s", out)
+	}
+	if containsAll(out, "more calls") {
+		t.Errorf("old ambiguous wording still present:\n%s", out)
+	}
+
+	// At pi's bound: calls may have been dropped beyond what we hold.
+	full := Block{Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		ToolResult: "ok", NestedCalls: manyNestedCalls(pirpc.NestedCallsMaxCalls, "ok")}
+	out = renderNestedCalls(full, 72)
+	if !containsAll(out, "! record incomplete") {
+		t.Errorf("a record at pi's bound must warn:\n%s", tail(out))
+	}
+
+	// A call the script never waited for: the row's neutral glyph alone
+	// does not tell the user it will never finish.
+	unfinished := Block{Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		ToolResult: "ok", NestedCalls: []NestedCall{
+			{ID: "c/1", Name: "read", Status: "ok", DurationMs: 9, Arguments: `{"path":"a"}`},
+			{ID: "c/2", Name: "write", Status: "unfinished", Arguments: `{"path":"b"}`},
+		}}
+	out = renderNestedCalls(unfinished, 72)
+	if !containsAll(out, "! 1 call still running when the script returned") {
+		t.Errorf("an unfinished nested call must be called out:\n%s", out)
+	}
+}
+
+// manyNestedCalls builds n distinct completed rows.
+func manyNestedCalls(n int, status string) []NestedCall {
+	out := make([]NestedCall, n)
+	for i := range out {
+		out[i] = NestedCall{
+			ID: "c/" + strconv.Itoa(i), Name: "grep", Status: status,
+			DurationMs: 10 + i, Arguments: `{"pattern":"x"}`,
+		}
+	}
+	return out
+}
+
+// tail is the last few lines of a render, for failure output that is not
+// the whole frame.
+func tail(s string) string {
+	lines := strings.Split(s, "\n")
+	if len(lines) > 4 {
+		lines = lines[len(lines)-4:]
+	}
+	return strings.Join(lines, "\n")
 }
