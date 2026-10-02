@@ -49,6 +49,15 @@ func collectBlockContent(bl Block) BlockContent {
 // exists to be the record, so eliding calls here would delete the very
 // audit trail grouping took away. The rendered frame stays bounded; the
 // copy does not.
+// nestedCopyContent is the "with nested calls" copy payload: the script's
+// output followed by every call the script made. It is the only record of
+// what a codemode script did — grouping the calls under their parent is
+// exactly what removes them as copyable top-level blocks — so nothing here
+// is shortened. The rendered rows cap arguments at 48 cells to keep a frame
+// one line; reusing that cap here would truncate a write's content and an
+// edit's diff, which for those two tools IS the call. pi's own limits
+// (8 KiB per call, 32 KiB total, 500 chars of error) are the budget, and
+// they are already applied upstream.
 func nestedCopyContent(bl Block, scriptOut string) string {
 	if len(bl.NestedCalls) == 0 {
 		return ""
@@ -68,8 +77,13 @@ func nestedCopyContent(bl Block, scriptOut string) string {
 		if c.DurationMs > 0 {
 			b.WriteString(" " + formatDurationMs(c.DurationMs))
 		}
-		if hint := nestedArgsHint(c); hint != "" {
-			b.WriteString(" " + hint)
+		// Full arguments, not nestedArgsHint: a hint is for a one-line row.
+		if a := strings.TrimSpace(c.Arguments); a != "" {
+			b.WriteString(" " + a)
+		} else if c.ArgumentsBytes > 0 {
+			// pi dropped these past its byte budget and reported only the
+			// size; say that rather than pretending there were none.
+			b.WriteString(fmt.Sprintf(" (args omitted, %s)", formatBytes(c.ArgumentsBytes)))
 		}
 		if t := strings.TrimSpace(c.Error); t != "" {
 			b.WriteString("\n  error: " + t)

@@ -231,3 +231,37 @@ func tail(s string) string {
 	}
 	return strings.Join(lines, "\n")
 }
+
+// The "with nested calls" copy is the ONLY record of what a codemode script
+// did — grouping the calls under their parent is precisely what stops them
+// being copyable on their own. So it must carry full arguments. It reused
+// the rendered row's 48-cell hint, which truncated a write's content and an
+// edit's diff — for those two tools the arguments ARE the call.
+func TestNestedCopyKeepsFullArguments(t *testing.T) {
+	const content = "package main\n\nfunc main() {\n\tprintln(\"hello, world\")\n}\n"
+	bl := Block{Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		ToolResult: "Script completed",
+		NestedCalls: []NestedCall{
+			{ID: "c/1", Name: "write", Status: "ok", DurationMs: 30,
+				Arguments: `{"path":"out.txt","content":"` + content + `"}`},
+			{ID: "c/2", Name: "bash", Status: "error", ArgumentsBytes: 4192,
+				Error: "exit status 1: cannot find module 'x'"},
+		}}
+	out := collectBlockContent(bl).WithNested
+	if !strings.Contains(out, content) {
+		t.Errorf("copy truncated a write's content:\n%s", out)
+	}
+	// pi dropped the second call's arguments past its byte budget: the copy
+	// must say so rather than imply the call had none.
+	if !strings.Contains(out, "args omitted, 4.1KB") {
+		t.Errorf("copy must report pi's omitted arguments:\n%s", out)
+	}
+	if !strings.Contains(out, "cannot find module") {
+		t.Errorf("copy dropped the error text:\n%s", out)
+	}
+	// The rendered row is still bounded — the fix is in the copy path only.
+	row := renderNestedCalls(bl, 72)
+	if strings.Contains(stripANSI(row), content) {
+		t.Errorf("rendered row must stay bounded:\n%s", stripANSI(row))
+	}
+}
