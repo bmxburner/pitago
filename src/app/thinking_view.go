@@ -94,7 +94,7 @@ func renderThinkingCollapsed(text string) string {
 	if first == "" {
 		return ""
 	}
-	return statusBarStyle.Render("○ ") + toolStyle.Render(Short(first, 160)) + "\n\n"
+	return statusBarStyle.Render("○ ") + thinkStyle.Render(Short(first, 160)) + "\n\n"
 }
 
 // renderThinkingTail keeps the last few lines and states how many were
@@ -113,13 +113,13 @@ func renderThinkingTail(text string, cw int) string {
 		lines = lines[elided:]
 	}
 	var b strings.Builder
-	b.WriteString(statusBarStyle.Render("○ ") + toolStyle.Render(fmt.Sprintf("thinking · last %d", len(lines))))
+	b.WriteString(statusBarStyle.Render("○ ") + thinkStyle.Render(fmt.Sprintf("thinking · last %d", len(lines))))
 	if elided > 0 {
-		b.WriteString(toolStyle.Render(fmt.Sprintf(" (%d earlier lines elided)", elided)))
+		b.WriteString(thinkStyle.Render(fmt.Sprintf(" (%d earlier lines elided)", elided)))
 	}
 	b.WriteString("\n")
 	for _, ln := range lines {
-		b.WriteString(toolStyle.Render(Short(ln, cw)) + "\n")
+		b.WriteString(thinkStyle.Render(Short(ln, cw)) + "\n")
 	}
 	return b.String() + "\n"
 }
@@ -130,5 +130,5 @@ func renderThinkingTail(text string, cw int) string {
 // rendered markdown block means re-styling every span it emitted, and
 // the label is enough to tell reasoning from an answer.
 func renderThinkingFull(m *Model, text string, cw int) string {
-	return statusBarStyle.Render("○ thinking") + "\n" + renderMarkdown(m, text, cw) + "\n\n"
+	return thinkStyle.Render("○ thinking") + "\n" + renderMarkdown(m, text, cw) + "\n\n"
 }
