@@ -41,6 +41,7 @@ type Prefs struct {
 	RecentCmds            []string          `json:"recentCmds,omitempty"`            // last-run /command names, most recent first (floated to the top of the "/" popup)
 	SuggestPlugins        []string          `json:"suggestPlugins,omitempty"`        // extra packages suggested in the hub Plugins tab (Ctrl+F), bare npm names
 	Tidy                  bool              `json:"tidy,omitempty"`                  // tidy mode: tool blocks collapse to their header (no args detail, no result/diff/output)
+	Background            string            `json:"background,omitempty"`            // app surface: an opencode background slug, "" = the terminal's own
 	AnnotateSurface       string            `json:"annotateSurface,omitempty"`       // auto | tui | clipboard
 	AnnotatePlacement     string            `json:"annotatePlacement,omitempty"`     // native TUI placement
 	AnnotateTUIExecutable string            `json:"annotateTUIExecutable,omitempty"` // optional explicit plannotator-tui path
