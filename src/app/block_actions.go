@@ -268,6 +268,19 @@ func newBlockActionsDialog(blocks []Block, idx int) *Dialog {
 	return d
 }
 
+// blockIsCopyable reports whether a chat block has semantic content worth
+// putting in the copy menu. assistant carries markdown/tables/code; tool
+// carries its result plus, for a codemode block, the record of the calls the
+// script made. Both are real content, and OpenBlockActions still declines
+// the ones with nothing to copy, so this only has to say "not obviously not".
+func blockIsCopyable(bl Block) bool {
+	switch bl.Kind {
+	case "assistant", "tool", "bash":
+		return true
+	}
+	return false
+}
+
 // OpenBlockActions opens the semantic copy menu for a block index. It reports
 // whether a menu was opened — false when the block has nothing copyable. The
 // right-click path and the tests both go through here so the menu is built the

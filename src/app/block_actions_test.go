@@ -397,3 +397,48 @@ func TestExtractTablesSeparatesAdjacentTables(t *testing.T) {
 		t.Errorf("second table = %q", got[1])
 	}
 }
+
+// A TOOL block must be right-clickable too, not just an assistant message.
+// The codemode "Copy result with nested calls" entry is the only record of
+// what a script did — grouping the calls under their parent is exactly what
+// removes them as individually copyable blocks — and it lives on a tool
+// block, so an assistant-only gate made the whole feature unreachable.
+//
+// This drives the real Update path: the earlier test on this behaviour calls
+// collectBlockContent directly, which never touches the gate, so it passed
+// while the feature was unreachable.
+func TestRightClickOpensBlockActionsOnToolBlock(t *testing.T) {
+	m := New(nil, t.TempDir())
+	m.Mouse = true
+	m.winW, m.winH = 100, 40
+	m.vp.Width, m.vp.Height = 40, 5
+	m.blocks = []Block{{Kind: "tool", ToolName: "codemode", ToolStatus: "done",
+		ToolResult: "Script completed",
+		NestedCalls: []NestedCall{
+			{ID: "c/1", Name: "write", Status: "ok",
+				Arguments: `{"path":"out.txt","content":"hello"}`},
+		}}}
+	m.renderBlocks()
+	m.vp.SetContent(strings.Join(m.chatLines, "\n"))
+	tm, _ := m.Update(tea.MouseMsg{
+		X: 1, Y: 1, Action: tea.MouseActionPress, Button: tea.MouseButtonRight,
+	})
+	got := tm.(Model)
+	if len(got.Dialogs) != 1 || got.Dialogs[0].Kind != "blockactions" {
+		t.Fatalf("right-click on a tool block must open the copy menu, got %+v", got.Dialogs)
+	}
+	// And the nested entry must actually be offered, not just an empty menu.
+	opts, payload := got.Dialogs[0].Options, got.Dialogs[0].Payload
+	found := false
+	for i, p := range payload {
+		if p == "nested" {
+			found = true
+			if !strings.Contains(opts[i], "nested") {
+				t.Errorf("nested payload carries an unrelated label: %q", opts[i])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("copy menu on a codemode block must offer the nested entry, got %v", opts)
+	}
+}

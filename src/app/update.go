@@ -1437,14 +1437,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m2, cmd, handled := m.updateSelection(msg); handled {
 			return m2, cmd
 		}
-		// Right-click on an assistant chat block → semantic copy menu.
+		// Right-click on a copyable chat block → semantic copy menu.
 		// Chat-only: sidebars keep their own click handlers below. The
 		// bound is the painted chat frame, not m.vp — rows below it are the
 		// task widget or a plugin panel, not transcript blocks.
+		//
+		// TOOL blocks are copyable, not just assistant ones: a tool block
+		// holds its result, and a codemode block additionally holds the
+		// record of the calls its script made. That record is the ONLY copy
+		// of those calls once they are grouped under their parent, so an
+		// assistant-only gate here made the whole feature unreachable — the
+		// menu could be built for a tool block and nothing could open it.
 		if m.Mouse && msg.Action == tea.MouseActionPress &&
 			msg.Button == tea.MouseButtonRight && !m.overSide(msg.X) &&
 			msg.Y >= 1 && msg.Y <= m.chatViewport().Height {
-			if idx := m.chatRowToBlock(msg.Y); idx >= 0 && m.blocks[idx].Kind == "assistant" {
+			if idx := m.chatRowToBlock(msg.Y); idx >= 0 && blockIsCopyable(m.blocks[idx]) {
 				if m.OpenBlockActions(idx) {
 					return m, nil
 				}
