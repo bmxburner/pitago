@@ -578,7 +578,7 @@ func (m Model) renderToolBlock(bl Block, w int) string {
 		return m.renderShellBlock(bl, w)
 	}
 	inner := blockInner(w)
-	rows := []string{toolHeaderRow(bl, toolHeadWithNested(bl, false), inner)}
+	rows := []string{toolHeaderRow(bl, toolHeadWithNested(bl), inner)}
 	// Tidy mode, collapsed: the header IS the block. A tool call reads as
 	// "● edit src/app/view.go" with no args line and no result, diff or
 	// preview underneath — the whole point of the mode.
@@ -616,23 +616,23 @@ func toolHead(bl Block) string {
 	return head
 }
 
-// toolHeadWithNested is toolHead plus the nested-call count, placed where
-// the caller wants it: the expanded frame reads args-then-count, while the
-// tidy pill LEADS with the count — the pill truncates the tail of its head
-// and would otherwise reduce "· 2 calls" to "· 2 cal…", which is the one
-// fact tidy mode exists to keep visible. A block with no nested calls is
-// exactly toolHead.
-func toolHeadWithNested(bl Block, countFirst bool) string {
+// toolHeadWithNested is toolHead plus the nested-call count, which LEADS.
+//
+// The count leads in both the frame and the pill because both truncate the
+// TAIL of the head: appended last, it is the first thing to go, and for
+// codemode it always goes — a script's arguments are a whole JavaScript
+// program, so they fill the budget at every realistic width and took the
+// count with them. That left a codemode block showing no sign that it had
+// made calls at all, which is the one fact the grouping exists to convey.
+// Leading costs only a shorter argument preview, which is the cheapest thing
+// on the row to lose. A block with no nested calls is exactly toolHead.
+func toolHeadWithNested(bl Block) string {
 	base := toolHead(bl)
 	n := len(bl.NestedCalls)
 	if n == 0 {
 		return base
 	}
-	count := fmt.Sprintf("· %d call%s", n, plural(n))
-	if countFirst {
-		return strings.TrimSpace(count + "  " + base)
-	}
-	return strings.TrimSpace(base + " " + count)
+	return fmt.Sprintf("· %d call%s  %s", n, plural(n), base)
 }
 
 // Bounds on what one nested-call row can claim of the block's inner

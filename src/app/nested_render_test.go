@@ -37,22 +37,38 @@ func codemodeBlock(n int) Block {
 }
 
 // The header states how many calls the script made, so the collapsed pill
-// and the expanded frame agree on what the block contains. The count is
-// placed differently in each surface: the pill LEADS with it because the
-// pill truncates its tail and would otherwise cut "· 2 calls" to "· 2
-// cal…", while the expanded frame appends it after the args.
+// and the expanded frame agree on what the block contains. The count LEADS
+// in both, because both truncate the head's tail. In the frame that was
+// not cosmetic: a codemode block's arguments are a whole JavaScript
+// program, so they filled the budget at every realistic width and took the
+// count with them — the block showed no sign it had made any calls.
 func TestToolHeadCarriesNestedCallCount(t *testing.T) {
-	if got := toolHeadWithNested(codemodeBlock(7), false); !strings.Contains(got, "· 7 calls") {
-		t.Errorf("frame head dropped the nested-call count: %q", got)
+	if got := toolHeadWithNested(codemodeBlock(7)); !strings.HasPrefix(got, "· 7 calls") {
+		t.Errorf("head must LEAD with the nested-call count, got %q", got)
 	}
-	if got := toolHeadWithNested(codemodeBlock(7), true); !strings.HasPrefix(got, "· 7 calls") {
-		t.Errorf("pill head must LEAD with the count, got %q", got)
-	}
-	if got := toolHeadWithNested(codemodeBlock(1), false); !strings.Contains(got, "· 1 call") {
+	if got := toolHeadWithNested(codemodeBlock(1)); !strings.HasPrefix(got, "· 1 call") {
 		t.Errorf("singular nested-call count must not take a plural: %q", got)
 	}
-	if got := toolHeadWithNested(readBlock("done"), false); got != toolHead(readBlock("done")) {
+	if got := toolHeadWithNested(readBlock("done")); got != toolHead(readBlock("done")) {
 		t.Errorf("a block with no nested calls must be plain toolHead: %q vs %q", got, toolHead(readBlock("done")))
+	}
+}
+
+// The count must survive a real header at a real width. This is the
+// regression the live test surfaced: the frame truncated the head's tail,
+// and a codemode block's args are always long enough to eat the count at
+// every width a terminal realistically has.
+func TestNestedCountSurvivesHeaderTruncation(t *testing.T) {
+	const script = `{"code":"const [s, n] = await Promise.allSettled([\n` +
+		`  tools.session_search({query: \"previous work\"}),\n` +
+		`  tools.get_session_name({}),\n]);\nreturn n;"}`
+	for _, w := range []int{50, 60, 76, 100, 140} {
+		bl := codemodeBlock(2)
+		bl.ToolArgs = script
+		row := stripANSI(toolHeaderRow(bl, toolHeadWithNested(bl), blockInner(w)))
+		if !strings.Contains(row, "· 2 calls") {
+			t.Errorf("w=%d: nested-call count truncated away: %q", w, row)
+		}
 	}
 }
 

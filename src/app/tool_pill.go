@@ -37,7 +37,7 @@ func toolPillRow(bl Block, w int, hint string) string {
 	// The count leads in the pill (see toolHeadWithNested): args are
 	// truncated to whatever the budget leaves, and a count cut to
 	// "· 2 cal…" would defeat the point of the collapse.
-	head := strings.TrimSpace(toolHeadWithNested(bl, true))
+	head := strings.TrimSpace(toolHeadWithNested(bl))
 	if head == "" {
 		// A call with no args yet (still streaming, or a bare status
 		// refresh): the chip IS the block. Return without the separator
