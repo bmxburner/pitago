@@ -58,6 +58,18 @@ type McpServerInfo struct {
 	Resources         int      `json:"resources"`
 	ResourceTemplates int      `json:"resourceTemplates"`
 	Error             string   `json:"error"`
+	// ToolExposure carries the PER-TOOL exposure overrides pi prints
+	// (dist/extensions/mcp/cli.js:376, `report.toolExposure =
+	// Object.fromEntries(overrides)`): a tool whose own exposure
+	// differs from the server default. A tool that is absent here
+	// inherits the server's Exposure, exactly as pi resolves it.
+	ToolExposure map[string]string `json:"toolExposure"`
+	// DirectTokens is the adapter panel's per-server token estimate for
+	// its DIRECT tools (mcp-panel.ts estimateTokens), summed. The
+	// `pi mcp list` path cannot produce it — that CLI prints tool NAMES
+	// only, never a schema — so it stays 0 there and the renderer hides
+	// the ~N column rather than printing a made-up 0.
+	DirectTokens int `json:"-"`
 }
 
 // IsHTTP reports whether the server is a streamable-HTTP server: pi
@@ -141,6 +153,7 @@ var ErrUnreadableMcpConfig = errors.New("pi mcp: refusing to rewrite an unreadab
 // applyMcpPatch (the default value removes the key instead of writing
 // it, so a server never carries redundant config).
 type McpConfigPatch struct {
+	Disabled *bool
 	Enabled  *bool
 	Exposure *string
 }
@@ -224,6 +237,16 @@ func (o *orderedObject) applyMcpPatch(patch McpConfigPatch) {
 			o.set("enabled", json.RawMessage("false"))
 		}
 	}
+	// The adapter's own config speaks `disabled`, not pi's `enabled`, and
+	// an absent key IS enabled there — so enabling removes it rather than
+	// writing `disabled: false`, which the adapter would ignore on restart.
+	if patch.Disabled != nil {
+		if *patch.Disabled {
+			o.set("disabled", json.RawMessage("true"))
+		} else {
+			o.del("disabled")
+		}
+	}
 	if patch.Exposure != nil {
 		if *patch.Exposure == "" || *patch.Exposure == "codemode" {
 			o.del("exposure")
@@ -257,4 +280,30 @@ func readMcpConfigForWrite(file string) ([]byte, *orderedObject, error) {
 		return nil, nil, fmt.Errorf("%w (%v): %s was left exactly as it is", ErrUnreadableMcpConfig, err, file)
 	}
 	return raw, root, nil
+}
+
+// DefaultMcpExposure is the exposure a server gets when it declares none.
+const DefaultMcpExposure = "codemode"
+
+// ToolCounts is how many of a server's tools are exposed directly to the
+// model, and how many it has in all. A per-tool exposure override wins
+// over the server default, exactly as pi resolves it, so the direct count
+// matches what actually reaches the context rather than what the server
+// nominally declares.
+func (s McpServerInfo) ToolCounts() (direct, total int) {
+	def := s.Exposure
+	if def == "" {
+		def = DefaultMcpExposure
+	}
+	total = len(s.Tools)
+	for _, t := range s.Tools {
+		exp := def
+		if over, ok := s.ToolExposure[t]; ok {
+			exp = over
+		}
+		if exp == "direct" {
+			direct++
+		}
+	}
+	return direct, total
 }

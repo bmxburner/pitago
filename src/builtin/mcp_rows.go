@@ -161,6 +161,27 @@ func loadMcp(m *app.Model) tea.Cmd {
 	m.Refresh()
 	bin := m.PiBin()
 	return func() tea.Msg {
+		// The adapter is the MCP host whenever it is installed, because
+		// `pi mcp list` only ever reads ~/.pi/agent/mcp.json — a file
+		// that does not exist in that setup, so it reports zero servers
+		// while six are live. Reading the adapter's own files is
+		// therefore tried FIRST, and `pi mcp list` remains the fallback
+		// for the install where pi's builtin mcp extension owns MCP.
+		if servers, ok, aerr := pirpc.McpAdapterServers(); ok {
+			if aerr != nil {
+				return app.McpMsg{Err: aerr}
+			}
+			// Not sorted: the adapter panel lists servers in the order the
+			// config declares them, which is the order mcpAdapterServers
+			// deliberately preserves.
+			ordered := servers
+			return app.McpMsg{
+				Options: mcpRowLabels(ordered),
+				Descs:   mcpRowDescs(ordered),
+				Payload: mcpRowDetails(ordered),
+				Servers: ordered,
+			}
+		}
 		out, err := pirpc.RunMcp(bin, pirpc.McpListTimeout, "list", "--json")
 		// pi exits 1 while ANY server is wrong, but still prints the
 		// whole document: a failed server is a row, not an error. So the

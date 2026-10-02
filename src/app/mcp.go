@@ -476,3 +476,16 @@ func (m Model) mcpHubDef(name string) (pirpc.McpDef, bool) {
 	d, ok := m.mcpHubDefs[name]
 	return d, ok
 }
+
+// mcpHubIsAdapterServer reports whether a server name came from the
+// pi-mcp-adapter rather than from a pi mcp.json. The adapter's servers are
+// read from its own file, so the mcp.json snapshot has no entry for them
+// and a missing entry there means "not ours", not "not configured".
+func (m Model) mcpHubIsAdapterServer(name string) bool {
+	for _, s := range m.McpInfo {
+		if s.Name == name {
+			return s.Scope == pirpc.AdapterScope
+		}
+	}
+	return false
+}

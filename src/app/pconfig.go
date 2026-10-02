@@ -455,6 +455,14 @@ func mcpHubServerRows(srv pirpc.McpServerInfo, w int) []string {
 func mcpHubEntryRows(sel string, m *Model, w int) []string {
 	def, have := m.mcpHubDef(sel)
 	if !have {
+		// An adapter-owned server is NOT missing from a config — it lives in
+		// the adapter's mcp-adapter.json, which this cache never reads. Say
+		// so, or the panel claims a server that plainly exists is not in
+		// mcp.json, which is the exact wrong answer the adapter exists to
+		// stop giving.
+		if m.mcpHubIsAdapterServer(sel) {
+			return []string{mcpDetailRow("Entry", "owned by the pi-mcp-adapter", w)}
+		}
 		return []string{mcpDetailRow("Entry", "not in the agent dir's mcp.json", w)}
 	}
 	label, target := "Command", def.Command
